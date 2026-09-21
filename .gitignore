@@ -1,0 +1,26 @@
+# PlatformIO
+.pio/
+.platformio/
+build/
+
+# IDE
+.vscode/
+*.code-workspace
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.pyc
+__pycache__/
+
+# Dependencies
+.pio/libdeps/
+
+# Documentation
+docs/**/*.tmp

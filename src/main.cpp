@@ -307,7 +307,6 @@ void readIna219At50Hz()
 void pageIna219()
 {
   if (!available.ina219) return unavailable("INA219", "0x40", "I2C address:");
-  row(52, "I2C address:", "0x40", TFT_YELLOW);
   row(76, "Bus voltage:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
   row(100, "Shunt voltage:", String(ina219Values.shunt, 3) + " mV", TFT_GREEN);
   row(124, "Load voltage:", String(ina219Values.load, 3) + " V", TFT_GREEN);
@@ -397,7 +396,6 @@ void pageBme280()
   float pressure = bme280.readPressure() / 100.0f;
   float altitude = bme280.readAltitude(1013.25f);
   float dewPoint = temp - ((100.0f - humidity) / 5.0f);
-  row(52, "I2C address:", "0x77", TFT_YELLOW);
   row(76, "Temperature:", String(temp, 2) + " C", TFT_GREEN);
   row(100, "Humidity:", String(humidity, 2) + " %", TFT_GREEN);
   row(124, "Pressure:", String(pressure, 2) + " hPa", TFT_ORANGE);
@@ -424,7 +422,6 @@ String gamepadEventText()
 void pageGamepad()
 {
   if (!available.gamepad) return unavailable("Gamepad QT", "0x50", "I2C address:");
-  row(52, "I2C address:", "0x50", TFT_YELLOW);
   row(76, "Joystick X:", String(gamepadValues.x), TFT_GREEN);
   row(100, "Joystick Y:", String(gamepadValues.y), TFT_GREEN);
   row(124, "Button X:", gamepadButtonState(GAMEPAD_BUTTON_X), TFT_ORANGE);

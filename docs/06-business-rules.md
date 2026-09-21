@@ -1565,23 +1565,21 @@ This section maps each business rule to recommended test coverage and identifies
 
 ## Display Rules
 
-### BR-027: Page Title Format Includes I2C Address
+### BR-027: I2C Address Display (Header Only)
 
 **Description:**  
-Each sensor page displays its title with the corresponding I2C address appended in parentheses. This provides immediate sensor identification without requiring users to reference separate documentation.
+Each sensor page displays the I2C address ONLY in the page header (title). The address is not displayed elsewhere on the page to avoid redundancy.
 
-**Format:**  
+**Title Format:**  
 `"${SensorName} (${Address})"`
 
-**Trigger:**  
-Page header rendered; `drawHeader(title)` called during page change or boot.
-
 **Behavior:**  
-Title strings include addresses in the following format:
-- Standard I2C: Hexadecimal notation with "0x" prefix (e.g., "BME280 (0x77)")
-- Dual-address sensors: Slash-separated notation (e.g., "VEML6070 (0x38/0x39)")
+- Address format: Hexadecimal with "0x" prefix (e.g., "0x77")
+- Dual-address sensors: Slash-separated (e.g., "0x38/0x39")
+- Trigger: Page header rendered on page change or boot
+- Location: Header/title only (y=8)
 
-**Page Title Examples:**
+**Page Examples:**
 
 | Page | Title |
 |------|-------|
@@ -1596,12 +1594,17 @@ Title strings include addresses in the following format:
 | 8 | VEML6075 (0x10) |
 
 **Implementation:**  
-Titles are hardcoded string literals in the `titles[]` array within `drawCurrentPage()` function. No dynamic formatting; addresses are compile-time constants.
+- Titles: Hardcoded strings in `titles[]` array (lines 444–453 in main.cpp)
+- Display: `drawHeader(titles[currentPage])` call (line 459)
+- No data rows or footer redundancy
 
 **Evidence:**  
-- `const char *titles[]` array (lines 448–457 in main.cpp)
+- `const char *titles[]` array (lines 444–453 in main.cpp)
 - `drawHeader(titles[currentPage])` call (line 459)
-- Page renderer switch statement (lines 461–470)
+- Page functions start at y=76 for first data row (address not repeated)
+
+**Rationale:**
+Single display location reduces screen clutter while providing immediate sensor identification.
 
 **Confidence:**  
 HIGH
