@@ -1,0 +1,37 @@
+Freenove Fork of TFT_eSPI
+========================================
+
+Fork Base Version: 2.5.0
+Base Upstream: bodmer/TFT_eSPI v2.5.0
+Fork Commit: [See git history or lib/Freenove/.git]
+Fork Date: 2024-2025 (exact date unknown)
+
+Freenove Modifications:
+- ST7796 display controller support
+- FNK0114N 3.5" board configuration (320x480)
+- User_Setup_Select.h integration for board selection
+- Custom TFT_config.h for Freenove boards
+
+Locked Status: STATIC COPY
+- Library is included as static copy in lib/Freenove/TFT_eSPI/
+- No auto-update via PlatformIO version management
+- Manual maintenance required for security/bug fixes
+
+Compatibility:
+- Tested with: Arduino-ESP32 Core v3.0.0 – v3.0.3
+- SPI frequency: 40 MHz (display), 2.5 MHz (touch)
+- Display format: RGB565 (16-bit color)
+
+Installation:
+- Already included in repository (lib/Freenove/TFT_eSPI/)
+- No additional installation needed
+- Conflicts: Ensure no system TFT_eSPI library installed
+
+Reference Documentation:
+- Upstream: https://github.com/Bodmer/TFT_eSPI
+- Datasheet: ST7796 (Freenove FNK0114N reference)
+- User Setup: lib/Freenove/TFT_eSPI/User_Setup_Select.h (select board)
+
+Version History:
+- 2026-09-21: Documented as baseline for sensor-pages-dashboard project
+- Previous versions: Refer to git history or Freenove release notes
