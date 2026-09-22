@@ -14,7 +14,7 @@
 - **No RTOS:** Single-threaded bare Arduino superloop; no FreeRTOS task creation by application.
 - **No State Machine Framework:** Minimal state management (page index, sensor detection flags).
 - **Polling-Based:** All inputs and sensors polled at fixed time intervals.
-- **Non-Blocking I/O:** Single I2C/1-Wire read per cycle; no multi-buffer async patterns.
+- **Non-Blocking I/O:** Single I2C read per cycle; no multi-buffer async patterns.
 - **Time-Gate Guards:** Loop actions gated by signed integer rollover-safe timing: `(int32_t)(now - deadline) >= 0`.
 - **Global Mutable State:** All data structures are global (static) C structs, not encapsulated in classes.
 
@@ -48,7 +48,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │  DEVICE DRIVER LAYER                                            │
 │  ├─ Adafruit Sensor Libraries (INA219, BME280, TSL2591, ...)    │
-│  ├─ I2C/1-Wire Protocol Handlers (readReg16, scd30Crc, ...)     │
+│  ├─ I2C Protocol Handlers (readReg16, scd30Crc, ...)     │
 │  ├─ seesaw NeoPixel Control (encoder LED)                       │
 │  └─ TFT_eSPI Graphics (fillScreen, drawString, ...)             │
 └─────────────────────────────────────────────────────────────────┘
@@ -180,21 +180,8 @@ struct GamepadValues {
 };
 ```
 - **Read by:** `readGamepadAt40Hz()` every 25 ms (only when available).
-- **Displayed by:** `pageGamepad()` on page 2.
+- **Displayed by:** `pageGamepad()` on page 1.
 - **Used for:** Page navigation (Y button → prev, A button → next).
-
-#### **Ds18b20Values**
-```cpp
-struct Ds18b20Values {
-  DeviceAddress addresses[MAX_DS18B20_SENSORS];  // 8×8 bytes (ROM addresses)
-  float temperatures[MAX_DS18B20_SENSORS];       // Last-read temps
-  uint8_t count;                                  // Current device count
-};
-```
-- **Unique:** Full ROM addresses stored (not just indices).
-- **Read by:** `updateDs18b20()` (non-blocking async state machine); `rescanDs18b20()` every 3 s.
-- **Hot-plug detection:** Compares current ROM list to previous via `memcmp()`.
-- **Displayed by:** `pageDs18b20()` on page 1.
 
 ---
 
@@ -204,12 +191,12 @@ struct Ds18b20Values {
 
 | Property | Value |
 |---|---|
-| **Responsibility** | Boot-time enumeration of all I2C/1-Wire devices; initialize driver state. |
-| **Inputs** | None (scans I2C bus directly, OneWire bus). |
-| **Outputs** | `SensorStatus available{}` flags set, each sensor library initialized, DS18B20 ROM cache populated. |
-| **Dependencies** | Adafruit libraries (INA219, BME280, TSL2591, SI1145, seesaw), DallasTemperature, OneWire. |
+| **Responsibility** | Boot-time enumeration of all I2C devices; initialize driver state. |
+| **Inputs** | None (scans I2C bus directly). |
+| **Outputs** | `SensorStatus available{}` flags set, each sensor library initialized. |
+| **Dependencies** | Adafruit libraries (INA219, BME280, TSL2591, SI1145, seesaw). |
 | **Constraints** | Runs once at `setup()`; no re-detection; missing sensors do not crash (all checks guarded by `if (available.X)`). |
-| **Implementation Details** | <details><summary>Click to expand</summary><pre>- INA219: `ina219.begin(&Wire)` probe<br>- VEML6075: Write ID register, read back<br>- TSL2591: `tsl2591.begin()` + config gain/timing<br>- Encoder: `encoder.begin(ENCODER_ADDR)` + NeoPixel init<br>- VEML6070: Write mode, readback from MSB<br>- SI1145: `si1145.begin()` probe<br>- SCD30: Send START command<br>- BME280: `bme280.begin(BME280_ADDR, &Wire)`<br>- Gamepad: `gamepad.begin(GAMEPAD_ADDR)` + GPIO interrupt config<br>- DS18B20: `ds18b20Sensors.setResolution(9)`, then `rescanDs18b20()`</pre></details> |
+| **Implementation Details** | <details><summary>Click to expand</summary><pre>- INA219: `ina219.begin(&Wire)` probe<br>- VEML6075: Write ID register, read back<br>- TSL2591: `tsl2591.begin()` + config gain/timing<br>- Encoder: `encoder.begin(ENCODER_ADDR)` + NeoPixel init<br>- VEML6070: Write mode, readback from MSB<br>- SI1145: `si1145.begin()` probe<br>- SCD30: Send START command<br>- BME280: `bme280.begin(BME280_ADDR, &Wire)`<br>- Gamepad: `gamepad.begin(GAMEPAD_ADDR)` + GPIO interrupt config</pre></details> |
 
 ---
 
@@ -263,31 +250,7 @@ struct Ds18b20Values {
 | **Constraints** | X/Y inverted: `1023 - analogRead(14/15)`. Button states are active-low (0=PRESSED, 1=released). Page navigation triggered by falling edge detection (comparing current vs. previous button state). |
 | **Event Handling** | Optionally reads and decodes keypad events from seesaw queue (not used for page nav; displayed as debug info). |
 
-#### **Component: updateDs18b20() [Non-Blocking Async State Machine]**
 
-| Property | Value |
-|---|---|
-| **Responsibility** | Manage non-blocking DS18B20 temperature conversion: request → wait 100 ms → fetch. |
-| **Inputs** | None (reads 1-Wire directly via DallasTemperature). |
-| **Outputs** | Updates `ds18b20Values.temperatures[index]` for each device; sets `ds18b20ConversionPending` flag. |
-| **Dependencies** | DallasTemperature, OneWire. |
-| **Call Frequency** | Every loop iteration (gated state machine). |
-| **State Variables** | `ds18b20ConversionPending` (bool), `ds18b20ConversionStartedMs` (timestamp). |
-| **Constraints** | Non-blocking (unlike `multi-sensor-dashboard`'s blocking `requestTemperatures()`). Waits exactly 100 ms before fetching (library resolution set to 9 bits, ~95 ms max conversion). |
-| **State Diagram** | <details><summary>Click to expand</summary><pre>Initial state: `pending=false`<br>  ↓<br>[1] If not pending: call `requestTemperatures()`, set `pending=true`, record `startedMs`<br>  ↓<br>[2] Wait loop: if `millis() - startedMs < 100ms`: return early<br>  ↓<br>[3] After 100ms: fetch all temps via `getTempC(address)`, set `pending=false`<br>  ↓<br>Loop back to [1]</pre></details> |
-
-#### **Component: rescanDs18b20() [Periodic Device Detection]**
-
-| Property | Value |
-|---|---|
-| **Responsibility** | Periodically (3 s) re-enumerate 1-Wire bus; detect added/removed devices; trigger page redraw if on DS18B20 page. |
-| **Inputs** | None (scans 1-Wire directly). |
-| **Outputs** | Updates `ds18b20Values` (addresses, count); returns `true` if device list changed. |
-| **Dependencies** | DallasTemperature, OneWire. |
-| **Call Frequency** | Every 3 s (gate: `(int32_t)(now - nextDs18b20RescanMs) >= 0`). |
-| **Change Detection** | Compares new device count + `memcmp()` of ROM address arrays to previous state. |
-| **Side Effect** | If devices changed AND currentPage==1, immediately calls `drawCurrentPage(true)` (full redraw). |
-| **Constraints** | Max `MAX_DS18B20_SENSORS` (8 devices) supported; excess silently capped. |
 
 ---
 
@@ -301,7 +264,7 @@ struct Ds18b20Values {
 | **Inputs** | `pageChanged` (bool): if true, redraw entire screen including header; if false, only update data rows. |
 | **Outputs** | TFT display output (SPI frames to display). |
 | **Dependencies** | TFT_eSPI, all page-specific renderer functions (pageBme280, pageEncoder, etc.). |
-| **Call Sites** | <ul><li>`setup()` (initial draw)</li><li>`loop()` on page change (`currentPage != lastPage`)</li><li>Every 20 ms when currentPage==2 or 4 (live pages)</li><li>Every 500 ms for sensor data update</li><li>`rescanDs18b20()` if devices changed on page 1</li></ul> |
+| **Call Sites** | <ul><li>`setup()` (initial draw)</li><li>`loop()` on page change (`currentPage != lastPage`)</li><li>Every 20 ms when currentPage==2 or 4 (live pages)</li><li>Every 500 ms for sensor data update</li></ul> |
 | **Constraints** | Single-page static layout (no scrolling); 9 pages total (indices 0–8). |
 
 #### **Page Renderers: pageBme280(), pageEncoder(), pageGamepad(), pageIna219(), etc.**
@@ -322,7 +285,7 @@ Each page-specific renderer has identical structure:
 | Property | Value |
 |---|---|
 | **Responsibility** | Display standardized "sensor not found" error screen (red, I2C address, navigation hints). |
-| **Inputs** | Sensor name, I2C/1-Wire address string, optional address label. |
+| **Inputs** | Sensor name, I2C address string, optional address label. |
 | **Outputs** | TFT display. |
 
 #### **Helper: drawHeader(title)**
@@ -422,12 +385,12 @@ Each page-specific renderer has identical structure:
 
 ```
 ┌─────────────────────────────────────┐
-│  Hardware (I2C/1-Wire Devices)      │
+│  Hardware (I2C Devices)              │
 └──────────────────┬──────────────────┘
                    │ (bytes, electrical signal)
                    ↓
 ┌─────────────────────────────────────┐
-│  Wire / OneWire / SPI Drivers       │
+│  Wire / SPI Drivers                 │
 │  (Arduino built-in HAL)             │
 └──────────────────┬──────────────────┘
                    │ (raw register values)
@@ -452,8 +415,7 @@ Each page-specific renderer has identical structure:
                    ├──→ [readSensors()]  → every 500 ms
                    ├──→ [readIna219At50Hz()] → every 20 µs
                    ├──→ [readEncoderAt50Hz()] → every 20 ms
-                   ├──→ [readGamepadAt40Hz()] → every 25 ms
-                   └──→ [updateDs18b20()] → every loop iteration
+                   └──→ [readGamepadAt40Hz()] → every 25 ms
                    │
                    ↓
 ┌─────────────────────────────────────┐
@@ -498,9 +460,7 @@ setup()
 │  ├─ Probe INA219 @ 0x40
 │  ├─ Probe VEML6075 @ 0x10
 │  ├─ Probe TSL2591 (via Adafruit library)
-│  ├─ ... (all 9 sensors)
-│  ├─ Enumerate OneWire @ GPIO23
-│  └─ For each found device: record address, set resolution=9-bit
+│  └─ ... (all 9 sensors)
 ├─ readSensors()                                // Initial sensor read
 ├─ drawCurrentPage(true)                        // Display page 0 (BME280)
 └─ [Loop begins]
@@ -591,39 +551,7 @@ loop() iteration while currentPage==4 (Encoder page)
 └─ [Continue looping]
 ```
 
-### Use Case 5: DS18B20 Async Non-Blocking Read Cycle
-
-```
-[Loop iterations across 100+ ms period; DS18B20 state machine progresses asynchronously]
-
-Iteration N: updateDs18b20()
-├─ ds18b20ConversionPending? NO
-├─ ds18b20Sensors.requestTemperatures()  // Start conversion on all devices
-├─ ds18b20ConversionStartedMs = millis()  // Record timestamp
-├─ ds18b20ConversionPending = true
-└─ Return (non-blocking)
-
-Iterations N+1 to N+95: updateDs18b20()
-├─ ds18b20ConversionPending? YES
-├─ millis() - startedMs < 100?  YES (still waiting)
-└─ Return (non-blocking)
-
-Iteration N+96 (100+ ms later): updateDs18b20()
-├─ ds18b20ConversionPending? YES
-├─ millis() - startedMs < 100?  NO (100 ms elapsed)
-├─ for index = 0 to count-1:
-│  └─ temperatures[index] = getTempC(addresses[index])  // Fetch result
-├─ ds18b20ConversionPending = false
-└─ Return
-
-[Loop continues; next iteration restarts the cycle]
-
-[If DS18B20 device count changes: rescanDs18b20() called every 3 s]
-├─ Detects new device count / ROM address changes
-└─ If on page 1 (DS18B20 page): trigger full page redraw
-```
-
-### Use Case 6: Gamepad Page Navigation (Y Button = Prev, A Button = Next)
+### Use Case 5: Gamepad Page Navigation (Y Button = Prev, A Button = Next)
 
 ```
 loop() iteration
@@ -685,22 +613,7 @@ loop() iteration
 
 **Error Handling:** None (silent failure; last value persists).
 
-### 6.2 1-Wire Communication (DS18B20)
-
-**Protocol:** Master (ESP32 @ GPIO23) ↔ Slaves (DS18B20 thermometers, max 8)
-
-**Features:**
-- Parasitic power or external power (firmware does not differentiate).
-- ROM address enumeration via DallasTemperature library.
-- Non-blocking temperature conversion (100 ms wait).
-- 9-bit resolution mode (max ~95 ms conversion per Sensirion datasheet).
-
-**Read Flow:**
-1. `requestTemperatures()` broadcasts conversion request to all devices.
-2. Wait 100 ms (empirically determined; not adjustable).
-3. `getTempC(address)` fetches result from specific device.
-
-### 6.3 Serial Communication (Debug Only)
+### 6.2 Serial Communication (Debug Only)
 
 **Baud Rate:** 115200
 
@@ -710,7 +623,7 @@ loop() iteration
 
 **Not Used For:** Telemetry, command input, or inter-device communication.
 
-### 6.4 SPI Communication (Display)
+### 6.3 SPI Communication (Display)
 
 **Protocol:** Hardware SPI (implicit via TFT_eSPI library)
 
@@ -728,8 +641,7 @@ loop() iteration
 
 | Component | Type | Rationale |
 |---|---|---|
-| **Sensor Reads (I2C/1-Wire)** | Synchronous (blocking) | Simple embedded firmware; sensors respond quickly (~1–50 ms); no async library support. |
-| **DS18B20 Temperature Fetch** | Hybrid semi-async | Request is async (non-blocking state machine), but fetch is blocking (within `updateDs18b20()`). |
+| **Sensor Reads (I2C)** | Synchronous (blocking) | Simple embedded firmware; sensors respond quickly (~1–50 ms); no async library support. |
 | **Display Output (TFT_eSPI)** | Synchronous (blocking) | SPI writes are inherently synchronous; no buffering layer. |
 | **Gamepad/Encoder Input** | Synchronous polling | No interrupts; polled every 20–40 ms. |
 | **Interrupts** | None used by firmware | seesaw keypad interrupts configured (`gamepad.setGPIOInterrupts()`), but firmware only polls. |
@@ -749,8 +661,6 @@ loop() iteration
 | **Sensor not detected at boot** | Probe fails (e.g., INA219.begin() returns false) | Flag set to `available.X = false`; UI shows "Sensor nicht vorhanden"; no crash |
 | **I2C read fails mid-run** | `Wire.endTransmission()` != 0 or `Wire.requestFrom()` returns < expected bytes | Function returns false; global sensor struct **not updated** (last value persists) |
 | **SCD30 CRC mismatch** | All 6 CRC bytes (per 18-byte response) validated; mismatch detected | `readScd30()` returns false; CO₂/temp/humidity values **not updated** |
-| **DS18B20 device disappears** | ROM address missing from next 3-second rescan | Detect via `memcmp()`; entry removed from local array; temperature value may show stale data until next read |
-| **DS18B20 sensor reads as "disconnected"** | Temperature == or < `DEVICE_DISCONNECTED_C` (~–127°C) | Display "disconnected" (red text) on page 1; firmware does not validate this check [UNKNOWN - depends on DallasTemperature library] |
 | **I2C bus congestion/timeout** | Wire library's internal timeouts [UNKNOWN] | No explicit recovery; next poll attempt in 20–500 ms |
 | **Encoder/Gamepad event queue overflow** | seesaw internal buffer full | Old events dropped; only newest event reported [UNKNOWN - seesaw firmware behavior] |
 | **Encolder dial wrap-around** | `position` is int32_t; no saturation | Firmware assumes position never overflows during session (years of operation needed to overflow) |
@@ -777,11 +687,10 @@ Any person with physical access to the powered ESP32 and serial port can observe
 |---|---|---|---|
 | **I2C Pins** | SDA=32, SCL=25 | `#define SDA_PIN`, `#define SCL_PIN` | Recompile |
 | **I2C Clock** | 400 kHz | `Wire.setClock(400000)` | Recompile |
-| **DS18B20 Pin** | GPIO23 | `#define DS18B20_PIN 23` | Recompile |
 | **Serial Baud** | 115200 | `Serial.begin(115200)` | Recompile |
-| **Encoder Resolution** | 9 bits | `ds18b20Sensors.setResolution(9)` | Recompile |
+| **Encoder Resolution** | 9 bits | `encoder.readPosition()` | Recompile |
 | **Display Rotation** | 3 (landscape) | `tft.setRotation(3)` | Recompile |
-| **Refresh Rates** | Sensor 500ms, Input 20–25ms, DS18B20 rescan 3s | `#define SENSOR_REFRESH_MS`, etc. | Recompile |
+| **Refresh Rates** | Sensor 500ms, Input 20–25ms, Gamepad 25ms | `#define SENSOR_REFRESH_MS`, etc. | Recompile |
 | **Encoder LED Colors** | 4 hardcoded RGB triplets | `encoderColors[]` array | Recompile |
 
 ### Runtime Configuration
@@ -800,7 +709,6 @@ Any person with physical access to the powered ESP32 and serial port can observe
 | **Page Index** | `uint8_t currentPage` | None | Until reboot (user page selection lost) |
 | **Encoder Press Count** | `uint32_t encoderPressCount` | None | Until reboot |
 | **INA219 Charge Accumulator** | `float ina219Values.chargeMah` | None | Until reboot (unbounded, no reset possible) |
-| **DS18B20 ROM Addresses** | `Ds18b20Values.addresses[8]` | None (except rescans every 3s) | Until reboot or device removed |
 | **LED Color/Brightness** | `encoderColorIndex`, `encoderBrightness` | None | Until reboot |
 
 **No SPIFFS, NVS, EEPROM, SD card, or external storage used.**
@@ -824,7 +732,6 @@ Arduino FreeRTOS kernel (built into ESP32 framework) runs in background for WiFi
 | Data | Cache Lifetime | Invalidation |
 |---|---|---|
 | **Sensor readings** | Until next successful read (500 ms cycle) | Age is implicit; no staleness indicator |
-| **DS18B20 temperatures** | Until next `getTempC()` fetch (non-blocking cycle) | ROM address change triggers rescan |
 | **Encoder position** | Until next read (20 ms cycle) | Delta computed fresh each cycle |
 | **Gamepad buttons** | Until next read (25 ms cycle) | Edge detection via compare-to-previous |
 
@@ -869,7 +776,6 @@ if ((int32_t)(now - deadline) >= 0)
 | **Encoder reads** | 20 ms | `millis()` | `(int32_t)(millis() - nextEncoderMs) >= 0` | `readEncoderAt50Hz()` @ 50 Hz (only page==4) |
 | **INA219 samples** | 20 µs | `micros()` | `(int32_t)(micros() - nextInaSampleUs) >= 0` | `readIna219At50Hz()` @ 50 Hz via µs precision |
 | **Sensor reads** | 500 ms | `millis()` | `(int32_t)(millis() - nextSensorMs) >= 0` | `readSensors()` @ 2 Hz |
-| **DS18B20 rescan** | 3000 ms | `millis()` | `(int32_t)(millis() - nextDs18b20RescanMs) >= 0` | `rescanDs18b20()` @ 0.33 Hz |
 | **Live page refresh** | 20 ms | `millis()` | `(int32_t)(millis() - nextSelectedDisplayMs) >= 0` | `drawCurrentPage(false)` for pages 2 & 4 @ 50 Hz |
 
 ### Deadline-Driven Architecture
@@ -894,7 +800,6 @@ graph TD
     SETUP["setup()"]
     DETECTSENSORS["detectSensors()"]
     WIRE["Wire I2C Driver"]
-    ONEWIRE["OneWire 1-Wire Driver"]
     SERIAL["Serial UART Driver"]
     TFTSPI["TFT_eSPI SPI/Display"]
     
@@ -904,39 +809,32 @@ graph TD
     SI1145LIB["Adafruit SI1145"]
     SEESAWLIB["Adafruit seesaw"]
     NEOXLIB["seesaw_NeoPixel"]
-    DALLAS["DallasTemperature"]
     
     LOOP["loop()"]
     READGAMEPAD["readGamepadAt40Hz()"]
     READENCODER["readEncoderAt50Hz()"]
     READINA219["readIna219At50Hz()"]
     READSENSORS["readSensors()"]
-    UPDATEDS18B20["updateDs18b20()"]
-    RESCANDS18B20["rescanDs18b20()"]
     DRAWPAGE["drawCurrentPage()"]
     
     STRUCT_INA["Ina219Values"]
     STRUCT_BME["BME280Values"]
     STRUCT_ENC["EncoderValues"]
     STRUCT_PAD["GamepadValues"]
-    STRUCT_DS["Ds18b20Values"]
     
     SETUP --> DETECTSENSORS
     DETECTSENSORS --> WIRE
-    DETECTSENSORS --> ONEWIRE
     DETECTSENSORS --> INA219LIB
     DETECTSENSORS --> BME280LIB
     DETECTSENSORS --> TSL2591LIB
     DETECTSENSORS --> SI1145LIB
     DETECTSENSORS --> SEESAWLIB
-    DETECTSENSORS --> DALLAS
     
     INA219LIB --> WIRE
     BME280LIB --> WIRE
     TSL2591LIB --> WIRE
     SI1145LIB --> WIRE
     SEESAWLIB --> WIRE
-    DALLAS --> ONEWIRE
     NEOXLIB --> SEESAWLIB
     
     SETUP --> READSENSORS
@@ -945,8 +843,6 @@ graph TD
     LOOP --> READGAMEPAD
     LOOP --> READENCODER
     LOOP --> READINA219
-    LOOP --> UPDATEDS18B20
-    LOOP --> RESCANDS18B20
     LOOP --> READSENSORS
     LOOP --> DRAWPAGE
     
@@ -956,27 +852,22 @@ graph TD
     READINA219 --> INA219LIB
     READSENSORS --> TSL2591LIB
     READSENSORS --> SI1145LIB
-    UPDATEDS18B20 --> DALLAS
-    RESCANDS18B20 --> DALLAS
     
     READGAMEPAD --> STRUCT_PAD
     READENCODER --> STRUCT_ENC
     READINA219 --> STRUCT_INA
     READSENSORS --> STRUCT_BME
-    UPDATEDS18B20 --> STRUCT_DS
     
     DRAWPAGE --> TFTSPI
     DRAWPAGE --> STRUCT_INA
     DRAWPAGE --> STRUCT_ENC
     DRAWPAGE --> STRUCT_PAD
-    DRAWPAGE --> STRUCT_DS
     
     TFTSPI --> SERIAL
     
     style SETUP fill:#e1f5ff
     style LOOP fill:#e1f5ff
     style WIRE fill:#fff3e0
-    style ONEWIRE fill:#fff3e0
     style SERIAL fill:#fff3e0
     style TFTSPI fill:#fff3e0
 ```
@@ -991,7 +882,6 @@ sequenceDiagram
     participant GateMgr as Timing Gates
     participant Gamepad as Gamepad (I2C)
     participant Sensors as Sensors (I2C)
-    participant DS18B20 as DS18B20 (1-Wire)
     participant Display as TFT Display
     
     Loop->>GateMgr: Check if 25ms gamepad gate expired
@@ -1024,21 +914,6 @@ sequenceDiagram
         Loop->>Display: drawCurrentPage(pageChanged=true)
         Display->>Display: Draw header + page-specific rows
         Display-->>Loop: TFT written
-    end
-    
-    Loop->>DS18B20: updateDs18b20() [async state machine]
-    DS18B20->>DS18B20: Manage request/wait/fetch cycle
-    DS18B20-->>Loop: Update ds18b20Values struct
-    
-    Loop->>GateMgr: Check if 3000ms DS18B20 rescan ready
-    alt Rescan ready
-        Loop->>DS18B20: rescanDs18b20()
-        DS18B20->>DS18B20: Enumerate ROM addresses
-        DS18B20-->>Loop: Update device list; return changed?
-        alt Devices changed AND on page 1
-            Loop->>Display: drawCurrentPage(pageChanged=true)
-        end
-        GateMgr->>GateMgr: Set next rescan deadline
     end
     
     Loop->>GateMgr: Check if live page refresh ready
@@ -1140,13 +1015,8 @@ flowchart TD
     GAMEPAD_OK -->|Yes| GAMEPAD_TRUE["available.gamepad = true<br/>Config interrupts"]
     GAMEPAD_OK -->|No| GAMEPAD_FALSE["available.gamepad = false"]
     
-    GAMEPAD_TRUE --> DS18B20
-    GAMEPAD_FALSE --> DS18B20
-    
-    DS18B20["DS18B20: Set resolution,<br/>enumerate"]
-    DS18B20 --> RESCAN["rescanDs18b20()"]
-    RESCAN --> DS18B20_DONE["ds18b20Values<br/>populated"]
-    DS18B20_DONE --> END["detectSensors() done"]
+    GAMEPAD_TRUE --> END["detectSensors() done"]
+    GAMEPAD_FALSE --> END["detectSensors() done"]
 ```
 
 ---
@@ -1165,19 +1035,7 @@ flowchart TD
 
 **User Impact:** INA219 displays stale charge value; no visual error indicator.
 
-### Scenario 2: DS18B20 Device Hot-Removed
-
-**Cause:** Sensor unplugged from 1-Wire bus mid-run.
-
-**Detection:** Next `rescanDs18b20()` (every 3 s) detects ROM address missing from list.
-
-**Behavior:** Device entry removed from `ds18b20Values`; `updateDs18b20()` no longer fetches its temperature; display row omitted.
-
-**Mitigation:** Automatic detection every 3 s; page redraw triggered if on DS18B20 page.
-
-**User Impact:** Device name disappears from display; temperature row removed.
-
-### Scenario 3: SCD30 CRC Checksum Mismatch
+### Scenario 2: SCD30 CRC Checksum Mismatch
 
 **Cause:** I2C bit corruption, software/hardware error, or sensor malfunction.
 
@@ -1209,14 +1067,10 @@ flowchart TD
 |---|---|---|
 | ST7796 Rotation Semantics (setRotation(3)) | Display layout | Pixel coordinate mapping unknown; assumed landscape. |
 | I2C Bus Clock Stretching Timeout | Fault recovery | Wire library timeout value unspecified; behavior on slow devices unknown. |
-| DS18B20 Parasitic Power Support | Sensor power | Code does not differentiate parasitic vs. external power; mixed operation untested. |
 | Encoder Dial Resolution | UI responsiveness | Position units unspecified; delta per mechanical tick unknown. |
 | seesaw NeoPixel Command Timeout | LED control robustness | Failure mode unknown; LED may silently freeze. |
 | Serial Output Format | Debugging | Only one hardcoded message; no structured telemetry format. |
-| DallasTemperature Library Version | Sensor compatibility | DEVICE_DISCONNECTED_C sentinel value depends on library version (version not pinned in platformio.ini). |
 | I2C Bus Congestion Recovery | Fault tolerance | No explicit recovery logic; retry strategy unknown. |
-| micros() Rollover Handling at INA219 50Hz Gate | Energy accumulation | Rollover happens every 71 min; comparison is signed, should work correctly, but not explicitly tested. |
-| Gamepad Firmware Version | Sensor compatibility | seesaw library assumes ≥3.x, but firmware version not checked at runtime. |
 
 ---
 

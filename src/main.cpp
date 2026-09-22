@@ -111,7 +111,7 @@ void drawHeader(const char *title)
   tft.setTextDatum(TL_DATUM);
   writeText(6, 8, title, TFT_CYAN, 4);
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawFastHLine(6, 42, 468, TFT_DARKGREY);
+  tft.drawFastHLine(6, 38, 468, TFT_DARKGREY);
 }
 
 void row(int y, const char *label, const String &value, uint16_t color = TFT_WHITE)
@@ -307,24 +307,24 @@ void readIna219At50Hz()
 void pageIna219()
 {
   if (!available.ina219) return unavailable("INA219", "0x40", "I2C address:");
-  row(76, "Bus voltage:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
-  row(100, "Shunt voltage:", String(ina219Values.shunt, 3) + " mV", TFT_GREEN);
-  row(124, "Load voltage:", String(ina219Values.load, 3) + " V", TFT_GREEN);
-  row(148, "Current:", String(ina219Values.current, 3) + " mA", TFT_ORANGE);
-  row(172, "Power:", String(ina219Values.power, 3) + " mW", TFT_ORANGE);
-  row(172, "Charge:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
+  row(56, "Bus voltage:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
+  row(80, "Shunt voltage:", String(ina219Values.shunt, 3) + " mV", TFT_GREEN);
+  row(104, "Load voltage:", String(ina219Values.load, 3) + " V", TFT_GREEN);
+  row(128, "Current:", String(ina219Values.current, 3) + " mA", TFT_ORANGE);
+  row(152, "Power:", String(ina219Values.power, 3) + " mW", TFT_ORANGE);
+  row(152, "Charge:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
   footer("Y/A: Seite wechseln | INA219");
 }
 
 void pageVeml6075()
 {
   if (!available.veml6075) return unavailable("VEML6075", "0x10", "I2C address:");
-  row(52, "UVA raw:", String(veml6075Values.uva), TFT_GREEN);
-  row(76, "UVB raw:", String(veml6075Values.uvb), TFT_GREEN);
-  row(100, "UVCOMP1/2:", String(veml6075Values.comp1) + " / " + String(veml6075Values.comp2), TFT_ORANGE);
-  row(124, "UVA compensated:", String(veml6075Values.uvaComp, 1), TFT_CYAN);
-  row(148, "UVB compensated:", String(veml6075Values.uvbComp, 1), TFT_CYAN);
-  row(172, "UV index:", String(veml6075Values.index, 2), TFT_MAGENTA);
+  row(56, "UVA raw:", String(veml6075Values.uva), TFT_GREEN);
+  row(80, "UVB raw:", String(veml6075Values.uvb), TFT_GREEN);
+  row(104, "UVCOMP1/2:", String(veml6075Values.comp1) + " / " + String(veml6075Values.comp2), TFT_ORANGE);
+  row(128, "UVA compensated:", String(veml6075Values.uvaComp, 1), TFT_CYAN);
+  row(152, "UVB compensated:", String(veml6075Values.uvbComp, 1), TFT_CYAN);
+  row(176, "UV index:", String(veml6075Values.index, 2), TFT_MAGENTA);
   footer("Y/A: Seite wechseln | VEML6075");
 }
 
@@ -336,23 +336,23 @@ void pageTsl2591()
   uint16_t full = luminosity & 0xFFFF;
   int32_t visible = max(0L, (long)full - (long)ir);
   float lux = tsl2591.calculateLux(full, ir);
-  row(52, "Full spectrum:", String(full), TFT_GREEN);
-  row(76, "Infrared:", String(ir), TFT_GREEN);
-  row(100, "Visible:", String((long)visible), TFT_ORANGE);
-  row(124, "Lux:", String(lux, 2), TFT_CYAN);
+  row(56, "Full spectrum:", String(full), TFT_GREEN);
+  row(80, "Infrared:", String(ir), TFT_GREEN);
+  row(104, "Visible:", String((long)visible), TFT_ORANGE);
+  row(128, "Lux:", String(lux, 2), TFT_CYAN);
   footer("Y/A: Seite wechseln | TSL2591");
 }
 
 void pageEncoder()
 {
   if (!available.encoder) return unavailable("Rotary Encoder", "0x36", "I2C address:");
-  row(52, "Position:", String((long)encoderValues.position), TFT_GREEN);
-  row(76, "Delta:", String((long)encoderValues.delta), TFT_GREEN);
-  row(100, "Button:", encoderValues.pressed ? "PRESSED" : "released", TFT_ORANGE);
-  row(124, "Presses:", String((unsigned long)encoderValues.presses), TFT_ORANGE);
-  row(148, "LED color:", encoderValues.color, TFT_CYAN);
-  row(172, "LED brightness:", String((int)encoderValues.brightness) + " / 255", TFT_CYAN);
-  row(196, "Seesaw temp:", String(seesawTemperature, 1) + " C", TFT_ORANGE);
+  row(56, "Position:", String((long)encoderValues.position), TFT_GREEN);
+  row(80, "Delta:", String((long)encoderValues.delta), TFT_GREEN);
+  row(104, "Button:", encoderValues.pressed ? "PRESSED" : "released", TFT_ORANGE);
+  row(128, "Presses:", String((unsigned long)encoderValues.presses), TFT_ORANGE);
+  row(152, "LED color:", encoderValues.color, TFT_CYAN);
+  row(176, "LED brightness:", String((int)encoderValues.brightness) + " / 255", TFT_CYAN);
+  row(200, "Seesaw temp:", String(seesawTemperature, 1) + " C", TFT_ORANGE);
   footer("Y/A: Seite wechseln | Encoder");
 }
 
@@ -360,9 +360,9 @@ void pageVeml6070()
 {
   if (!available.veml6070) return unavailable("VEML6070", "0x38/0x39", "I2C address:");
   const char *level = veml6070Values.raw < 200 ? "Very low" : veml6070Values.raw < 500 ? "Low" : veml6070Values.raw < 1000 ? "Moderate" : veml6070Values.raw < 2000 ? "High" : "Very high";
-  row(52, "UVA raw:", String(veml6070Values.raw), TFT_GREEN);
-  row(76, "LSB / MSB:", String("0x") + String(veml6070Values.lsb, HEX) + " / 0x" + String(veml6070Values.msb, HEX), TFT_ORANGE);
-  row(100, "UV level:", level, TFT_CYAN);
+  row(56, "UVA raw:", String(veml6070Values.raw), TFT_GREEN);
+  row(80, "LSB / MSB:", String("0x") + String(veml6070Values.lsb, HEX) + " / 0x" + String(veml6070Values.msb, HEX), TFT_ORANGE);
+  row(104, "UV level:", level, TFT_CYAN);
   footer("Y/A: Seite wechseln | VEML6070");
 }
 
@@ -372,19 +372,19 @@ void pageSi1145()
   uint32_t visible = si1145.readVisible();
   uint32_t infrared = si1145.readIR();
   uint16_t uv = si1145.readUV();
-  row(52, "Visible:", String((unsigned long)visible), TFT_GREEN);
-  row(76, "Infrared:", String((unsigned long)infrared), TFT_GREEN);
-  row(100, "UV raw:", String(uv), TFT_ORANGE);
-  row(124, "UV index:", String(uv / 100.0f, 2), TFT_CYAN);
+  row(56, "Visible:", String((unsigned long)visible), TFT_GREEN);
+  row(80, "Infrared:", String((unsigned long)infrared), TFT_GREEN);
+  row(104, "UV raw:", String(uv), TFT_ORANGE);
+  row(128, "UV index:", String(uv / 100.0f, 2), TFT_CYAN);
   footer("Y/A: Seite wechseln | SI1145");
 }
 
 void pageScd30()
 {
   if (!available.scd30) return unavailable("SCD30", "0x61", "I2C address:");
-  row(52, "CO2:", String(scd30Values.co2, 1) + " ppm", TFT_GREEN);
-  row(76, "Temperature:", String(scd30Values.temp, 2) + " C", TFT_GREEN);
-  row(100, "Humidity:", String(scd30Values.humidity, 2) + " %", TFT_ORANGE);
+  row(56, "CO2 ppm:", String(scd30Values.co2, 0), TFT_GREEN);
+  row(80, "Temperature:", String(scd30Values.temp, 2) + " C", TFT_GREEN);
+  row(104, "Humidity:", String(scd30Values.humidity, 2) + " %", TFT_ORANGE);
   footer("Y/A: Seite wechseln | SCD30");
 }
 
@@ -396,11 +396,11 @@ void pageBme280()
   float pressure = bme280.readPressure() / 100.0f;
   float altitude = bme280.readAltitude(1013.25f);
   float dewPoint = temp - ((100.0f - humidity) / 5.0f);
-  row(76, "Temperature:", String(temp, 2) + " C", TFT_GREEN);
-  row(100, "Humidity:", String(humidity, 2) + " %", TFT_GREEN);
-  row(124, "Pressure:", String(pressure, 2) + " hPa", TFT_ORANGE);
-  row(148, "Altitude:", String(altitude, 1) + " m", TFT_CYAN);
-  row(172, "Dew point:", String(dewPoint, 2) + " C", TFT_CYAN);
+  row(56, "Temperature:", String(temp, 2) + " C", TFT_GREEN);
+  row(80, "Humidity:", String(humidity, 2) + " %", TFT_GREEN);
+  row(104, "Pressure:", String(pressure, 2) + " hPa", TFT_ORANGE);
+  row(128, "Altitude:", String(altitude, 1) + " m", TFT_CYAN);
+  row(152, "Dew point:", String(dewPoint, 2) + " C", TFT_CYAN);
   footer("Y/A: Seite wechseln | BME280");
 }
 
@@ -422,15 +422,15 @@ String gamepadEventText()
 void pageGamepad()
 {
   if (!available.gamepad) return unavailable("Gamepad QT", "0x50", "I2C address:");
-  row(76, "Joystick X:", String(gamepadValues.x), TFT_GREEN);
-  row(100, "Joystick Y:", String(gamepadValues.y), TFT_GREEN);
-  row(124, "Button X:", gamepadButtonState(GAMEPAD_BUTTON_X), TFT_ORANGE);
-  row(148, "Button Y:", gamepadButtonState(GAMEPAD_BUTTON_Y), TFT_ORANGE);
-  row(172, "Button A:", gamepadButtonState(GAMEPAD_BUTTON_A), TFT_ORANGE);
-  row(196, "Button B:", gamepadButtonState(GAMEPAD_BUTTON_B), TFT_ORANGE);
-  row(220, "Select / Start:", gamepadButtonState(GAMEPAD_BUTTON_SELECT) + " / " + gamepadButtonState(GAMEPAD_BUTTON_START), TFT_ORANGE);
-  row(244, "Button mask:", String("0x") + String((unsigned long)gamepadValues.buttons, HEX), TFT_MAGENTA);
-  row(268, "Last event:", gamepadEventText(), TFT_MAGENTA);
+  row(56, "Joystick X:", String(gamepadValues.x), TFT_GREEN);
+  row(80, "Joystick Y:", String(gamepadValues.y), TFT_GREEN);
+  row(104, "Button X:", gamepadButtonState(GAMEPAD_BUTTON_X), TFT_ORANGE);
+  row(128, "Button Y:", gamepadButtonState(GAMEPAD_BUTTON_Y), TFT_ORANGE);
+  row(152, "Button A:", gamepadButtonState(GAMEPAD_BUTTON_A), TFT_ORANGE);
+  row(176, "Button B:", gamepadButtonState(GAMEPAD_BUTTON_B), TFT_ORANGE);
+  row(200, "Select / Start:", gamepadButtonState(GAMEPAD_BUTTON_SELECT) + " / " + gamepadButtonState(GAMEPAD_BUTTON_START), TFT_ORANGE);
+  row(224, "Button mask:", String("0x") + String((unsigned long)gamepadValues.buttons, HEX), TFT_MAGENTA);
+  row(248, "Last event:", gamepadEventText(), TFT_MAGENTA);
   footer("Y/A: Seite wechseln | Gamepad QT");
 }
 

@@ -160,14 +160,12 @@ Set up all build-time dependencies, configure PlatformIO, verify toolchain, and 
 
 1. **Add library dependencies to `platformio.ini`**
    - Source: [12-dependencies.md](docs/12-dependencies.md), "Primary Dependencies" section
-   - Add all 7 core sensor libraries:
+   - Add all 5 core sensor libraries:
      - `adafruit/Adafruit INA219 @ ^1.2.3`
      - `adafruit/Adafruit TSL2591 Library @ ^1.4.5`
      - `adafruit/Adafruit SI1145 Library @ ^1.2.0`
      - `adafruit/Adafruit BME280 Library @ ^2.3.0`
      - `adafruit/Adafruit seesaw Library @ ^1.7.9`
-     - `paulstoffregen/OneWire @ ^2.3.8`
-     - `milesburton/DallasTemperature @ ^4.0.4`
    - Rationale: These are pinned to compatible versions (caret ^) to allow patch updates
 
 2. **Add build flags to `platformio.ini`**
@@ -284,9 +282,8 @@ Define all data structures, global variables, constants, and type definitions th
    - GPIO pins: SDA=32, SCL=25, GAMEPAD_ADDR=0x50, ENCODER_ADDR=0x36, etc.
    - Register addresses: VEML6075_REG_*, SCD30_CMD_*
    - Button constants: GAMEPAD_BUTTON_Y, GAMEPAD_BUTTON_A, etc.
-   - Timing intervals: SENSOR_REFRESH_MS=500, INPUT_REFRESH_MS=20, DS18B20_RESCAN_MS=3000
-   - Page count: PAGE_COUNT=10
-   - Max devices: MAX_DS18B20_SENSORS=8
+   - Timing intervals: SENSOR_REFRESH_MS=500, INPUT_REFRESH_MS=20
+   - Page count: PAGE_COUNT=9
    - Source: [01-requirements.md](docs/01-requirements.md), [09-configuration.md](docs/09-configuration.md)
 
 3. **Define all struct types (in order of dependency)**
@@ -309,8 +306,7 @@ Define all data structures, global variables, constants, and type definitions th
    - `Adafruit_seesaw gamepad;`
    - `Adafruit_seesaw encoder;`
    - `seesaw_NeoPixel encoderLed;`
-   - `OneWire oneWire(DS18B20_PIN);`
-   - `DallasTemperature ds18b20Sensors(&oneWire);`
+
 
 5. **Instantiate all global data structures**
    - `SensorStatus available{};` (zero-initialized)
@@ -320,14 +316,13 @@ Define all data structures, global variables, constants, and type definitions th
    - `Scd30Values scd30Values{};`
    - `EncoderValues encoderValues{};`
    - `GamepadValues gamepadValues{};`
-   - `Ds18b20Values ds18b20Values{};`
+
 
 6. **Define auxiliary global variables**
    - Current page: `uint8_t currentPage = 0;`
    - Last page (for change detection): `uint8_t lastPage = 0xFF;`
    - Encoder state: `int32_t encoderLastPosition = 0;`, `uint32_t encoderPressCount = 0;`, `bool encoderLastPressed = false;`, `uint8_t encoderColorIndex = 0;`, `uint8_t encoderBrightness = 64;`
-   - DS18B20 async state: `bool ds18b20ConversionPending = false;`, `uint32_t ds18b20ConversionStartedMs = 0;`
-   - Timing gate next-execution times: `uint32_t nextInaS, nextEncoderMs, nextGamepadMs, nextSensorMs, nextDs18b20RescanMs;`
+   - Timing gate next-execution times: `uint32_t nextInaS, nextEncoderMs, nextGamepadMs, nextSensorMs;`
    - Source: [04-data-model.md](docs/04-data-model.md)
 
 7. **Define LED color palette**
@@ -336,9 +331,9 @@ Define all data structures, global variables, constants, and type definitions th
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-010
 
 8. **Add stub function declarations** (actual implementation in Phase 5)
-   - Sensor read functions: `void readIna219At50Hz()`, `void readEncoderAt50Hz()`, `void readGamepadAt40Hz()`, `void updateDs18b20()`, `void rescanDs18b20()`, etc.
+   - Sensor read functions: `void readIna219At50Hz()`, `void readEncoderAt50Hz()`, `void readGamepadAt40Hz()`, etc.
    - Display functions: `void drawHeader()`, `void row()`, `void footer()`, `void unavailable()`, `void drawCurrentPage()`, etc.
-   - Page renderers: `void pageBme280()`, `void pageDs18b20()`, ..., `void pageVeml6075()`
+   - Page renderers: `void pageBme280()`, `void pageGamepad()`, ..., `void pageVeml6075()`
    - Initialization: `void detectSensors()`, `void setup()`, `void loop()`
 
 ### Acceptance Criteria
@@ -348,7 +343,7 @@ Define all data structures, global variables, constants, and type definitions th
 - [ ] All 9 I2C addresses #define'd correctly
 - [ ] All GPIO pin assignments #define'd
 - [ ] All timing intervals #define'd with correct values (ms units)
-- [ ] PAGE_COUNT = 10, MAX_DS18B20_SENSORS = 8
+- [ ] PAGE_COUNT = 9
 - [ ] All global variables declared and zero-initialized
 - [ ] All library instances created with correct parameters
 - [ ] Encoder color arrays have exactly 4 entries
@@ -754,10 +749,10 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 7. **Implement `drawCurrentPage(bool pageChanged)` dispatcher**
    - If pageChanged == true: call drawHeader() (clears screen)
    - Else: skip header (data-only refresh)
-   - Switch on currentPage (0-9) and call appropriate page renderer
+   - Switch on currentPage (0-8) and call appropriate page renderer
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-015
 
-8. **Implement 10 page renderer functions** (in order of [01-requirements.md](docs/01-requirements.md))
+8. **Implement 9 page renderer functions** (in order of [01-requirements.md](docs/01-requirements.md))
 
    **Page 0: `pageBme280()`**
    - Check available.bme280; if false, return unavailable(...)
@@ -836,16 +831,15 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 
 ### Acceptance Criteria
 
-- [ ] All 10 page renderers implemented with correct layout (pixel coordinates match [07-ui.md](docs/07-ui.md))
+- [ ] All 9 page renderers implemented with correct layout (pixel coordinates match [07-ui.md](docs/07-ui.md))
 - [ ] All page titles displayed in cyan
 - [ ] All labels displayed in white
 - [ ] All sensor values displayed in correct colors (green/orange/cyan/magenta as specified)
-- [ ] Header drawn with divider line @ y=42
+- [ ] Header drawn with divider line @ y=38
 - [ ] Footer drawn with navigation hints
 - [ ] "Sensor nicht vorhanden" error screen displays for missing sensors
 - [ ] All error screens allow navigation (Y/A buttons still work)
 - [ ] Coulomb counter displays on INA219 page (mAh)
-- [ ] DS18B20 "disconnected" shows in red when sentinel detected
 - [ ] UV level classification bins display correctly (5 categories)
 - [ ] Encoder color shows one of: blue, green, red, purple
 - [ ] Encoder brightness shows 0-255 range
@@ -856,8 +850,8 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 ### Tests/Validation Before Proceeding
 
 ```bash
-# Verify all 10 page functions present
-grep -c "void page" src/main.cpp  # Should show 10+
+# Verify all 9 page functions present
+grep -c "void page" src/main.cpp  # Should show 9+
 
 # Verify header/footer/row helpers present
 grep -c "void drawHeader\|void row\|void footer\|void unavailable\|void writeText" src/main.cpp  # Should show 5+

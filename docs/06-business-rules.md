@@ -387,133 +387,7 @@ Classification is **display-only** (not persisted in data struct). Recalculated 
 **Confidence:**  
 HIGH
 
----
 
-### BR-008: DS18B20 Async Non-Blocking Read Cycle (100 ms)
-
-**Description:**  
-DS18B20 temperature sensors use a 3-stage non-blocking async state machine to avoid blocking the main loop during 95+ ms conversion time. Each sensor triggers a conversion request, then waits 100 ms before fetching results.
-
-**Trigger:**  
-Every loop iteration; `updateDs18b20()` called continuously.
-
-**Conditions:**  
-- DS18B20 devices detected at boot (`ds18b20Values.count > 0`)
-- Non-blocking mode enabled at boot: `ds18b20Sensors.setWaitForConversion(false)`
-
-**Behavior:**  
-
-**Stage 1: Request (pending=false)**
-```cpp
-if (!ds18b20ConversionPending) {
-  ds18b20Sensors.requestTemperatures();  // Broadcast conversion start
-  ds18b20ConversionStartedMs = millis();
-  ds18b20ConversionPending = true;
-  return;  // Non-blocking: return immediately
-}
-```
-
-**Stage 2: Wait (pending=true, elapsed < 100 ms)**
-```cpp
-if (millis() - ds18b20ConversionStartedMs < 100) 
-  return;  // Still waiting: return without doing anything
-```
-
-**Stage 3: Fetch (pending=true, elapsed ≥ 100 ms)**
-```cpp
-for (uint8_t index = 0; index < ds18b20Values.count; index++) {
-  ds18b20Values.temperatures[index] = ds18b20Sensors.getTempC(ds18b20Values.addresses[index]);
-}
-ds18b20ConversionPending = false;  // Reset for next cycle
-```
-
-**Cycle Duration:** Exactly 100 ms wait (hardcoded; not configurable).
-
-**Resolution Config:** 9-bit resolution (set at boot: `ds18b20Sensors.setResolution(9)`), which has theoretical max ~95 ms conversion. Empirical 100 ms wait chosen to ensure completion.
-
-**Failure Behavior:**  
-- If device disconnects mid-conversion, `getTempC()` returns sentinel value (~–127 °C)
-- If `requestTemperatures()` fails (I2C error), no error indication; stale temps persist
-- If any `getTempC()` fails, that device's temperature not updated
-
-**Evidence:**  
-- `updateDs18b20()` lines 308–329
-- Async state machine logic: lines 311–328
-- Config at boot: line 617 (`ds18b20Sensors.setWaitForConversion(false)`)
-
-**Confidence:**  
-HIGH
-
----
-
-### BR-009: DS18B20 Hot-Plug Detection (3-Second Rescan)
-
-**Description:**  
-The DS18B20 1-Wire bus is rescanned every 3000 ms to detect added/removed devices. Device list change detection uses `memcmp()` on ROM addresses. If device list changes and current page is DS18B20 (page 1), display is immediately redrawn.
-
-**Trigger:**  
-Every 3000 ms (gate: `(int32_t)(now - nextDs18b20RescanMs) >= 0`); called in main loop.
-
-**Conditions:**  
-- `rescanDs18b20()` runs regardless of device presence
-- Compares new device list to previous
-
-**Behavior:**  
-```cpp
-bool rescanDs18b20() {
-  ds18b20Sensors.begin();  // Re-enumerate bus
-  const uint8_t newCount = min((uint8_t)ds18b20Sensors.getDeviceCount(), (uint8_t)MAX_DS18B20_SENSORS);
-  
-  DeviceAddress newAddresses[MAX_DS18B20_SENSORS];
-  for (uint8_t index = 0; index < newCount; index++) {
-    ds18b20Sensors.getAddress(newAddresses[index], index);
-  }
-  
-  // Detect change via count or ROM address comparison
-  const bool changed = newCount != ds18b20Values.count ||
-    memcmp(newAddresses, ds18b20Values.addresses, newCount * sizeof(DeviceAddress)) != 0;
-  
-  if (!changed) return false;  // No change: return false
-  
-  // Change detected: update and reset state
-  ds18b20Values.count = newCount;
-  memcpy(ds18b20Values.addresses, newAddresses, newCount * sizeof(DeviceAddress));
-  memset(ds18b20Values.temperatures, 0, sizeof(ds18b20Values.temperatures));  // Zero temps
-  ds18b20ConversionPending = false;  // Reset async state machine
-  return true;  // Signal change occurred
-}
-
-// In loop():
-if ((int32_t)(now - nextDs18b20RescanMs) >= 0) {
-  if (rescanDs18b20() && currentPage == 1) 
-    drawCurrentPage(true);  // Full redraw if on page 1
-  nextDs18b20RescanMs = now + DS18B20_RESCAN_MS;
-}
-```
-
-**Side Effects on Device Change:**
-- Device count updated
-- ROM addresses updated
-- All temperatures zeroed (freshness reset)
-- Async conversion state reset to `pending=false`
-- If on DS18B20 page: full page redraw (header + data)
-
-**Device Limit:** Max 8 devices (`MAX_DS18B20_SENSORS`); excess silently capped by `min()`.
-
-**Failure Behavior:**  
-- If 1-Wire bus enumeration fails, previous device list retained (no error indicated)
-- If device becomes unreachable but still responds to ROM query, it's retained in list
-- Removed device temperatures persist in array (hidden by `count` field, not displayed)
-
-**Evidence:**  
-- `rescanDs18b20()` lines 295–313
-- Loop gate lines 666–671: rescan and page redraw logic
-- Constant: `DS18B20_RESCAN_MS = 3000` (line 48)
-
-**Confidence:**  
-HIGH
-
----
 
 ### BR-010: Encoder LED Color Cycling (4-State Cycle)
 
@@ -658,7 +532,7 @@ if (available.gamepad && (int32_t)(now - nextGamepadMs) >= 0) {
 - Active-low (hardware convention): 0 = pressed, 1 = released
 - Negation `!(...& (1UL << pin))` inverts to intuitive: 1 = pressed, 0 = released
 
-**Page Count:** 10 (indices 0–9): BME280, DS18B20, Gamepad, INA219, Encoder, SCD30, SI1145, TSL2591, VEML6070, VEML6075
+**Page Count:** 9 (indices 0–8): BME280, Gamepad QT, INA219, Rotary Encoder, SCD30, SI1145, TSL2591, VEML6070, VEML6075
 
 **Wrap-Around:**  
 - Next from page 8 → page 0 (via `(8 + 1) % 9 = 0`)
@@ -672,7 +546,7 @@ if (available.gamepad && (int32_t)(now - nextGamepadMs) >= 0) {
 **Evidence:**  
 - Loop code lines 623–633
 - Button definitions lines 17–22
-- Page count line 47: `constexpr uint8_t PAGE_COUNT = 10;`
+- Page count line 47: `constexpr uint8_t PAGE_COUNT = 9;`
 
 **Confidence:**  
 HIGH
@@ -736,53 +610,6 @@ HIGH
 
 ---
 
-### BR-014: Temperature Sentinel Detection (DS18B20 Disconnect)
-
-**Description:**  
-DS18B20 sensor reports disconnect via sentinel value (approximately –127 °C, exact value per DallasTemperature library). Page renderer checks for this sentinel and displays "disconnected" in red text instead of temperature.
-
-**Trigger:**  
-DS18B20 page rendered; temperature values from struct examined.
-
-**Conditions:**  
-- DS18B20 page (page 1) is current page
-- Device temperature ≤ `DEVICE_DISCONNECTED_C` sentinel
-
-**Behavior:**  
-```cpp
-void pageDs18b20() {
-  // ...
-  for (uint8_t index = 0; index < ds18b20Values.count; index++) {
-    const float tempC = ds18b20Values.temperatures[index];
-    const bool disconnected = tempC <= DEVICE_DISCONNECTED_C;
-    row(100 + index * 24, label.c_str(), 
-        disconnected ? "disconnected" : String(tempC, 2) + " C", 
-        disconnected ? TFT_RED : TFT_GREEN);
-  }
-  // ...
-}
-```
-
-**Sentinel Value:** `DEVICE_DISCONNECTED_C` is a library-defined constant (~–127 °C). [UNKNOWN - exact value depends on DallasTemperature library version]
-
-**Display Behavior:**  
-- Temperature ≤ sentinel → red "disconnected" label
-- Temperature > sentinel → green value in °C (2 decimal places)
-
-**Failure Behavior:**  
-- If device truly disconnected but returns legitimate –100 °C (edge case), still shows "disconnected" [ambiguous]
-- No recovery mechanism; device remains disconnected until rescan + reconnect
-
-**Evidence:**  
-- `pageDs18b20()` lines 465–479
-- Sentinel check line 473: `const bool disconnected = tempC <= DEVICE_DISCONNECTED_C;`
-- [UNKNOWN] Exact sentinel value: not defined in firmware; from DallasTemperature library
-
-**Confidence:**  
-MEDIUM (depends on library version)
-
----
-
 ## Display & Rendering Rules
 
 ### BR-015: Page Redraw Only on Page Change (Header Skip)
@@ -802,7 +629,17 @@ Multiple call sites in loop with different `pageChanged` values:
 **Behavior:**  
 ```cpp
 void drawCurrentPage(bool pageChanged) {
-  const char *titles[] = {"BME280", "DS18B20", "Gamepad QT", "INA219", "Rotary Encoder", "SCD30", "SI1145", "TSL2591", "VEML6070", "VEML6075"};
+  const char *titles[] = {
+    "BME280 (0x77)",
+    "Gamepad QT (0x50)",
+    "INA219 (0x40)",
+    "Rotary Encoder (0x36)",
+    "SCD30 (0x61)",
+    "SI1145 (0x60)",
+    "TSL2591 (0x29)",
+    "VEML6070 (0x38/0x39)",
+    "VEML6075 (0x10)"
+  };
   
   if (pageChanged) 
     drawHeader(titles[currentPage]);  // Full screen clear + header
@@ -1189,64 +1026,6 @@ HIGH
 
 ---
 
-### BR-023: DS18B20 Conversion Wait (100 ms Fixed)
-
-**Description:**  
-After requesting DS18B20 temperature conversion, firmware waits exactly 100 ms before fetching results. Conversion duration depends on resolution (9-bit ~95 ms, 12-bit ~750 ms). Firmware uses fixed 9-bit resolution; 100 ms ensures completion even with hardware delays.
-
-**Trigger:**  
-`updateDs18b20()` enters wait phase (pending=true).
-
-**Conditions:**  
-- DS18B20 devices detected
-- Conversion request issued
-- Time elapsed since request < 100 ms
-
-**Behavior:**  
-```cpp
-if (!ds18b20ConversionPending) {
-  ds18b20Sensors.requestTemperatures();  // Start conversion
-  ds18b20ConversionStartedMs = millis();
-  ds18b20ConversionPending = true;
-  return;  // Non-blocking
-}
-
-if (millis() - ds18b20ConversionStartedMs < 100) {  // Wait 100 ms
-  return;  // Keep waiting
-}
-
-// After 100 ms: fetch
-for (uint8_t index = 0; index < ds18b20Values.count; index++) {
-  ds18b20Values.temperatures[index] = ds18b20Sensors.getTempC(ds18b20Values.addresses[index]);
-}
-ds18b20ConversionPending = false;
-```
-
-**Boot-Time Config:**
-```cpp
-ds18b20Sensors.setResolution(9);  // 9-bit: ~95 ms conversion
-```
-
-**Rationale:**  
-- 9-bit chosen for speed (95 ms < 100 ms margin)
-- 100 ms wait chosen empirically; allows margin for clock drift, ISR delays
-- Not adjustable; hardcoded constant
-
-**Failure Behavior:**  
-- If fetch issued before conversion done (< 95 ms), sensor returns garbage or 0
-- If 100 ms timer drifts, may fetch early/late (clock-dependent accuracy)
-- No timeout; if conversion never completes, stuck in waiting state indefinitely
-
-**Evidence:**  
-- `updateDs18b20()` lines 311–328
-- Boot config line 617: `ds18b20Sensors.setResolution(9);`
-- Constant lines 315–316: 100 ms hardcoded
-
-**Confidence:**  
-HIGH
-
----
-
 ## Initialization & Boot Rules
 
 ### BR-024: VEML6075 Config Write on Boot
@@ -1372,13 +1151,10 @@ HIGH
 | BR-005 | SCD30 | CRC8 validation all-or-nothing | HIGH |
 | BR-006 | VEML6075 | UV compensation formulas | HIGH |
 | BR-007 | VEML6070 | UV level classification (5 bins) | HIGH |
-| BR-008 | DS18B20 | Async non-blocking read state machine (100ms) | HIGH |
-| BR-009 | DS18B20 | Hot-plug detection (3-sec rescan) | HIGH |
 | BR-010 | Encoder | LED color cycling (4-state) | HIGH |
 | BR-011 | Encoder | Dial brightness adjustment (delta×8, clamp 0-255) | HIGH |
 | BR-012 | Gamepad | Button page navigation (edge detect, modulo wrap) | HIGH |
 | BR-013 | Gamepad | Joystick analog values inverted | HIGH |
-| BR-014 | DS18B20 | Temperature sentinel detection (disconnect) | MEDIUM |
 | BR-015 | Display | Page redraw only on change (header skip) | HIGH |
 | BR-016 | Display | Page-specific refresh rates (20ms live, 500ms slow) | HIGH |
 | BR-017 | Display | Sensor unavailable error screen | HIGH |
@@ -1387,7 +1163,6 @@ HIGH
 | BR-020 | Input | Gamepad keypad events (debug only, not nav) | HIGH |
 | BR-021 | Timing | Time-gate rollover safety (signed comparison) | HIGH |
 | BR-022 | INA219 | Accumulation time-gap sanity check (200ms max) | HIGH |
-| BR-023 | DS18B20 | Conversion wait fixed 100ms | HIGH |
 | BR-024 | Init | VEML6075 config write on boot | HIGH |
 | BR-025 | Init | Encoder default LED brightness (64/255) | HIGH |
 | BR-026 | Init | TSL2591 gain & timing config (boot-time only) | HIGH |
@@ -1411,13 +1186,10 @@ This section maps each business rule to recommended test coverage and identifies
 | BR-005 | CRC8 Validation | Unit | HIGH | Functional | Test CRC8 algorithm with valid/corrupted data; all-or-nothing semantics |
 | BR-006 | UV Compensation | Unit | MEDIUM | Functional | Test compensation formulas (2.22×comp1, etc.) with known inputs |
 | BR-007 | UV Level Bins | Unit | LOW | Implementation | Hardcoded thresholds; verify binning logic only |
-| BR-008 | Async State Machine | Integration | HIGH | Functional | Verify 100ms wait, conversion completion, non-blocking behavior |
-| BR-009 | Hot-Plug Detection | Integration | HIGH | Functional | Connect/disconnect devices during runtime; verify detection within 3s |
 | BR-010 | LED Color Cycle | Unit | MEDIUM | Functional | Test modulo-4 cycling; verify color sequence |
 | BR-011 | LED Brightness | Unit | MEDIUM | Functional | Test delta×8 formula; verify clamping to 0–255 |
 | BR-012 | Page Navigation | Unit | HIGH | Functional | Test falling-edge detection; verify modulo wrap 0–9 |
 | BR-013 | Joystick Inversion | Unit | LOW | Implementation | Inversion formula 1023–raw; verify on display |
-| BR-014 | Disconnect Sentinel | Integration | MEDIUM | Functional | Verify sentinel value triggers "disconnected" display |
 | BR-015 | Page Redraw Gate | Integration | MEDIUM | Implementation | Full redraw when page changes; data-only otherwise |
 | BR-016 | Refresh Rates | Integration | MEDIUM | Functional | Verify 20ms (live) vs 500ms (slow) refresh rates |
 | BR-017 | Error Display | Integration | MEDIUM | Functional | Navigate to missing sensor; verify error screen renders |
@@ -1426,7 +1198,6 @@ This section maps each business rule to recommended test coverage and identifies
 | BR-020 | Keypad Events | Integration | LOW | Implementation | Events captured but not used for navigation; debug only |
 | BR-021 | Rollover Safety | Unit | CRITICAL | Functional | Timer wrap-around safety via signed comparison; must pass after 49 days or 71 min |
 | BR-022 | Gap Sanity Check | Unit | HIGH | Functional | Verify 200ms gap threshold; gaps >200ms skipped in accumulation |
-| BR-023 | DS18B20 Wait | Integration | MEDIUM | Implementation | 100ms wait empirically chosen; test with real devices |
 | BR-024 | VEML6075 Config | Integration | LOW | Implementation | Write 0x0000 to config register; no error if fails silently |
 | BR-025 | LED Init Brightness | Unit | LOW | Implementation | Default brightness 64/255 (25%); verify clamping |
 | BR-026 | TSL2591 Config | Integration | LOW | Implementation | Boot-time gain/timing config; not reconfigurable at runtime |
@@ -1480,10 +1251,6 @@ This section maps each business rule to recommended test coverage and identifies
 | **BR-001** Sensor Detect | `test_missing_sensor_graceful()` | One sensor disconnected | Boot & navigate to page | Error screen displayed | No crash; navigation works |
 | **BR-002** Stale Data | `test_i2c_read_failure_preserves_value()` | SCD30 connected; simulate I2C error | Read sensor with error | Previous value persists | Value corrupted or changed |
 | **BR-003** Gamepad Gate | `test_navigation_disabled_no_gamepad()` | Gamepad disconnected | Try Y/A buttons on page 0 | Page remains 0 | Page changes (navigation enabled) |
-| **BR-008** Async State | `test_ds18b20_async_complete()` | DS18B20 connected | Request conversion; wait 100ms | Temperature updated | Stuck in pending state; timeout |
-| **BR-009** Hot-Plug | `test_ds18b20_new_device_detected()` | 1 device connected; add 2nd mid-run | Wait 3s after connect | Device count increases | Device not detected |
-| **BR-009** Hot-Plug | `test_ds18b20_removed_device_detected()` | 2 devices connected; remove 1 | Wait 3s after disconnect | Device count decreases | Device not removed from list |
-| **BR-014** Disconnect | `test_ds18b20_disconnect_sentinel()` | DS18B20 with device removed | Display page 1 | "disconnected" in red | Garbage temperature displayed |
 | **BR-016** Refresh Rate | `test_gamepad_page_20ms_refresh()` | Gamepad connected & page 2 active | Measure refresh cycles | 50 Hz (20ms) ±5% | Slower or irregular refresh |
 | **BR-016** Refresh Rate | `test_sensor_page_500ms_refresh()` | BME280 page active | Measure refresh cycles | 2 Hz (500ms) ±5% | Faster or irregular refresh |
 | **BR-017** Error Display | `test_missing_sensor_error_screen()` | Sensor disconnected | Navigate to its page | "Sensor nicht vorhanden" in red | Normal data displayed or crash |
@@ -1499,7 +1266,6 @@ This section maps each business rule to recommended test coverage and identifies
 | **BR-011** LED Bright | `test_encoder_led_brightness_adjust()` | Encoder connected | Rotate dial; measure LED PWM | Brightness changes proportionally | LED stays same brightness |
 | **BR-012** Nav Real | `test_gamepad_nav_real_buttons()` | Gamepad connected | Press Y/A buttons | Pages navigate correctly | Page doesn't change |
 | **BR-015** Page Redraw | `test_page_change_full_redraw()` | Any page active | Change page | Header + data redrawn | Only data redrawn; old header visible |
-| **BR-023** Wait | `test_ds18b20_actual_conversion_time()` | DS18B20 connected | Time from request to completion | <100ms elapsed | Conversion incomplete; timeout |
 
 #### Recommended Integration Tests (Priority: LOW/IMPLEMENTATION)
 
@@ -1519,8 +1285,6 @@ This section maps each business rule to recommended test coverage and identifies
 **Functional Behaviors** (must be tested; represent intended business logic):
 - BR-004: Coulomb accumulation formula (business requirement for energy tracking)
 - BR-005: CRC8 validation (data integrity requirement)
-- BR-008: Async state machine (real-time requirement; don't block)
-- BR-009: Hot-plug detection (dynamic device discovery)
 - BR-012: Page navigation (UI requirement)
 - BR-021: Rollover safety (system stability requirement)
 
@@ -1542,10 +1306,7 @@ This section maps each business rule to recommended test coverage and identifies
 | Rule | Edge Case | Test Strategy |
 |------|-----------|----------------|
 | BR-004 | Timer rollover (49 days) | Simulate micros() wrap; verify signed comparison handles it |
-| BR-008 | Conversion timeout (>100ms) | Force 1-Wire busy for >100ms; verify timeout handling |
-| BR-009 | Max devices (8) | Connect 10 DS18B20s; verify count capped at 8 |
 | BR-012 | Rapid button presses | Press Y/A 20 times/second; verify no double navigation |
-| BR-014 | Temp ≤ -127 °C | Test boundary; sentinel value vs. legitimate cold temps |
 | BR-021 | Timing gate at exact rollover | Set deadline = 0xFFFFFFFF; verify gate fires at wrap |
 | BR-022 | Gap exactly 200ms | Elapsed=200000µs; verify on boundary; then 200001µs (should skip) |
 
@@ -1557,8 +1318,6 @@ This section maps each business rule to recommended test coverage and identifies
 | BR-002 | SCD30 CRC corruption | Entire read rejected; stale values persist |
 | BR-003 | Gamepad not detected | Page navigation disabled; lock at page 0 |
 | BR-005 | SCD30 I2C timeout | Timeout handled gracefully; stale data displayed |
-| BR-008 | 1-Wire bus error | Async wait continues; potential hang if error permanent |
-| BR-014 | Device truly cold (–100 °C) | Displays "disconnected" (ambiguous; legitimate cold reading) |
 | BR-017 | User navigates to missing sensor | Error screen displayed; navigation works |
 
 ---

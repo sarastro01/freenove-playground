@@ -404,59 +404,6 @@ uint8_t key  = lastEvent >> 2;     // Bits 2–7
 
 ---
 
-### 2.8 Ds18b20Values
-
-**Purpose:** Cache of 1-Wire device addresses and temperature readings from DS18B20 sensors (async non-blocking state machine, rescan every 3 s).
-
-**Lifecycle:** Initialized at boot via `rescanDs18b20()`; updated continuously by `updateDs18b20()` and rescanned every 3000 ms.
-
-**Scope:** Global static, mutable.
-
-**ROM Address Persistence:** Unlike other structs, this stores full 8-byte ROM addresses (not just indices), enabling device identification and hot-plug detection.
-
-```cpp
-struct Ds18b20Values {
-  DeviceAddress addresses[MAX_DS18B20_SENSORS];  // 8 * 8 = 64 bytes
-  float temperatures[MAX_DS18B20_SENSORS];       // 8 * 4 = 32 bytes; DEVICE_DISCONNECTED_C sentinel value: -127 (confirmed from DallasTemperature v4.0.4); source: milesburton/DallasTemperature library, constant DEVICE_DISCONNECTED_C [RESOLVED ISSUE-014: Sentinel value verified in library v4.0.4]
-  uint8_t count;                                  // 1 byte
-};
-Ds18b20Values ds18b20Values{};  // 97 bytes, zero-initialized
-// where MAX_DS18B20_SENSORS = 8
-```
-
-**Field Details:**
-
-| Field | Type | Source | Set By | Constraint |
-|-------|------|--------|--------|-----------|
-| `addresses[8]` | DeviceAddress[8] | 1-Wire ROM | `rescanDs18b20()` every 3s | 8-byte unique ROM address per device; [UNKNOWN] endianness |
-| `temperatures[8]` | float[8] | DS18B20 sensor | `updateDs18b20()` every 100ms | Temperature reading; sentinel value = DEVICE_DISCONNECTED_C (~–127°C) indicates disconnect |
-| `count` | uint8_t | 1-Wire bus | `rescanDs18b20()` every 3s | Number of detected devices (0–8) |
-
-**DeviceAddress Type:** Defined by DallasTemperature library; typically `uint8_t[8]`.
-
-**Async State Machine (`updateDs18b20()`):**
-1. If not pending: call `requestTemperatures()` (broadcast to all devices), set `pending=true`, record timestamp.
-2. While pending: wait until 100 ms elapsed.
-3. After 100 ms: fetch all temperatures via `getTempC(address[i])`, set `pending=false`.
-4. Loop restarts.
-
-**Rescan Detection (`rescanDs18b20()` every 3 s):**
-- Re-enumerate 1-Wire bus.
-- Compare new device count + ROM addresses to previous via `memcmp()`.
-- If changed: update `addresses`, `count`, zero-initialize `temperatures`, set `pending=false`.
-- Return true if list changed (triggers page redraw if on page 1).
-
-**Disconnect Sentinel:**
-```cpp
-// If temperature == DEVICE_DISCONNECTED_C (typically -127.0):
-//   Display shows "disconnected" in red text
-// [UNKNOWN]: Exact sentinel value depends on DallasTemperature library version
-```
-
-**Failure Behavior:** If `getTempC()` returns sentinel, no special handling; displayed as "disconnected".
-
----
-
 ## 3. Auxiliary Global Variables
 
 Beyond the main data structs, several global scalars track runtime state:
@@ -470,8 +417,6 @@ uint32_t encoderPressedSince = 0;     // 4 bytes — timestamp when encoder butt
 bool encoderLastPressed = false;      // 1 byte — button state last cycle (for edge detection)
 uint8_t encoderColorIndex = 0;        // 1 byte — LED color cycle index (0–3)
 uint8_t encoderBrightness = 64;       // 1 byte — LED brightness (0–255, default 64)
-uint32_t ds18b20ConversionStartedMs = 0;  // 4 bytes — timestamp of DS18B20 request
-bool ds18b20ConversionPending = false;    // 1 byte — DS18B20 async state flag
 ```
 
 **Purpose:** Transient state tracking (edge detection, timing, LED control).
@@ -593,28 +538,7 @@ if (yPressed && !lastY) {
 buttonsBefore = buttons;
 ```
 
-### Async State Machine: DS18B20 Temperatures
 
-```cpp
-// Cycle 1: Request phase (no wait)
-if (!pending) {
-  requestTemperatures();   // Start conversion
-  pending = true;
-  startedMs = millis();
-  return;
-}
-
-// Cycles 2–95: Wait phase
-if (millis() - startedMs < 100) return;
-
-// Cycle 96: Fetch phase
-for (i = 0; i < count; i++) {
-  temperatures[i] = getTempC(addresses[i]);
-}
-pending = false;
-```
-
----
 
 ## 6. Validation & Constraints
 
@@ -628,11 +552,9 @@ All fields in all structs are **always initialized to zero/false** at compile-ti
 |-------|-----------|----------|
 | **I2C Read Failures** | `Wire.endTransmission()` != 0 | Returns false; struct not updated; last value persists |
 | **SCD30 CRC Checksum** | All 6 CRC8 bytes must match polynomial 0x31 | Returns false; struct not updated |
-| **DS18B20 Disconnect Sentinel** | Temperature == DEVICE_DISCONNECTED_C | Displayed as "disconnected" (red); [UNKNOWN] no validation in firmware |
 | **INA219 Accumulation Sanity** | `if (elapsed_µs < 200000)` | Discard huge time jumps; skip accumulation |
 | **Encoder Dial Brightness** | `constrain(brightness, 0, 255)` | Clamp to valid 8-bit range |
-| **Page Navigation Wrap** | `(currentPage + 1) % PAGE_COUNT` | Circular wrap-around (0–9) |
-| **DS18B20 Device Count** | `min(deviceCount, MAX_DS18B20_SENSORS)` | Cap at 8; excess devices ignored |
+| **Page Navigation Wrap** | `(currentPage + 1) % PAGE_COUNT` | Circular wrap-around (0–8) |
 
 ### No Explicit Constraints
 
@@ -652,8 +574,6 @@ All fields in all structs are **always initialized to zero/false** at compile-ti
 | `SensorStatus.ina219` | `Ina219Values.*` | If false, Ina219Values never updated | 0..1 : 0..1 | Guard: `if (available.ina219)` |
 | `SensorStatus.encoder` | `EncoderValues.*` | If false, Encoder page shows error | 0..1 : 0..1 | Guard: `if (available.encoder)` |
 | `SensorStatus.gamepad` | `GamepadValues.*` | If false, Gamepad page shows error | 0..1 : 0..1 | Guard: `if (available.gamepad)` |
-| `Ds18b20Values.count` | `Ds18b20Values.addresses[i]` | count = number of valid ROM addresses | 1 : count | Address valid if index < count |
-| `Ds18b20Values.addresses[i]` | `Ds18b20Values.temperatures[i]` | Parallel arrays (same index) | 1 : 1 | Same index binds device to temp |
 | `currentPage` | `page*()` renderers | Page index selects renderer | 1 : 1 | Switch statement dispatches |
 | `encoderColorIndex` | `encoderColors[i]` | Index into color array | 1 : 1 | Modulo 4 wrapping |
 
@@ -678,12 +598,9 @@ erDiagram
     SENSOR_STATUS ||--o{ SCD30_VALUES : "guards"
     SENSOR_STATUS ||--o{ ENCODER_VALUES : "guards"
     SENSOR_STATUS ||--o{ GAMEPAD_VALUES : "guards"
-    SENSOR_STATUS ||--o{ DS18B20_VALUES : "guards"
     
     ENCODER_VALUES ||--o{ NEOPIXEL_STATE : "controls"
     GAMEPAD_VALUES ||--o{ PAGE_INDEX : "influences"
-    
-    DS18B20_VALUES ||--|{ DEVICE_TEMPERATURES : "contains"
     
     SENSOR_STATUS {
         bool ina219 PK
@@ -748,15 +665,6 @@ erDiagram
         bool hasEvent
     }
     
-    DS18B20_VALUES {
-        uint8_t count
-    }
-    
-    DEVICE_TEMPERATURES {
-        bytes8 address FK "ROM ADDRESS"
-        float temperature
-    }
-    
     NEOPIXEL_STATE {
         uint8_t brightness
         string color
@@ -818,9 +726,8 @@ erDiagram
 | Scd30Values | 12 B | 1 | 12 B |
 | EncoderValues | 22 B + ptr | 1 | 30 B |
 | GamepadValues | 18 B | 1 | 18 B |
-| Ds18b20Values | 97 B | 1 | 97 B |
-| **Auxiliary scalars** | ~40 B | 1 | 40 B |
-| **TOTAL** | | | **263 B** |
+| **Auxiliary scalars** | ~24 B | 1 | 24 B |
+| **TOTAL** | | | **166 B** |
 
 **Actual RAM usage:** ~300 B (with alignment padding).
 
@@ -879,11 +786,11 @@ if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
 
 To rebuild this firmware **without source code**, you would:
 
-1. **Define 8 C structs** (provided in §2.1–2.8).
+1. **Define 7 C structs** (provided in §2.1–2.7).
 2. **Allocate them globally** (zero-initialized).
-3. **Implement read functions** that populate each struct via I2C/1-Wire.
+3. **Implement read functions** that populate each struct via I2C.
 4. **Implement display renderers** that format struct fields into UI rows.
-5. **Implement state machines** (DS18B20 async, INA219 Coulomb counter, Encoder LED control, Gamepad edge detection).
+5. **Implement state machines** (INA219 Coulomb counter, Encoder LED control, Gamepad edge detection).
 6. **Implement main loop** with timing gates (20 µs to 3000 ms intervals).
 
 **No database knowledge required.** This is pure embedded firmware; relational database concepts do not apply.

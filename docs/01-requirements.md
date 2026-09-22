@@ -325,7 +325,6 @@ Application relies on Adafruit sensor libraries for I2C abstraction.
 - seesaw (encoder/gamepad): Adafruit seesaw library
 - NeoPixel: seesaw_NeoPixel (part of seesaw library)
 - TFT display: TFT_eSPI library (third-party, Freenove variant)
-- Temperature sensors: DallasTemperature + OneWire (standard Arduino)
 
 **Risk:** Library version mismatches; dependency updates may break compatibility.
 

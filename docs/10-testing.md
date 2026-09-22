@@ -45,7 +45,7 @@ Based on reverse-engineered business rules (docs/06-business-rules.md), the foll
 
 | Behavior | Why Important | Test Category |
 |----------|---------------|----------------|
-| All 10 pages render without crashes | Core functionality | Integration |
+| All 9 pages render without crashes | Core functionality | Integration |
 | Page refresh rates (20 ms vs 500 ms) met | Performance | Integration |
 | Sensor missing → error screen (no crash) | Graceful degradation | Integration |
 | Gamepad falling-edge detection works | Correct page navigation | Integration |
@@ -741,7 +741,7 @@ Adding test code increases binary size; may exceed ESP32 flash limits.
 **When Automated Tests Unavailable**  
 Use this checklist to validate changes before deployment:
 
-- [ ] All 10 pages render without crashes or visual artifacts
+- [ ] All 9 pages render without crashes or visual artifacts
 - [ ] Page navigation wraps correctly (0 ↔ 9)
 - [ ] Gamepad buttons work: Y=prev, A=next
 - [ ] Encoder dial adjusts LED brightness (0–255 range)

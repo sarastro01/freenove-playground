@@ -41,8 +41,6 @@ lib_deps =
   adafruit/Adafruit SI1145 Library @ ^1.2.0
   adafruit/Adafruit BME280 Library @ ^2.3.0
   adafruit/Adafruit seesaw Library @ ^1.7.9
-  paulstoffregen/OneWire @ ^2.3.8
-  milesburton/DallasTemperature @ ^4.0.4
 
 build_flags =
   -Iinclude
@@ -184,16 +182,6 @@ Wire.setClock(400000);        // 400 kHz
 3. **Slow device** (conversion delay): May timeout if previous read still in progress
 
 **No explicit recovery implemented** — sensors re-probed at boot; thereafter no recovery if bus fails.
-
-### 1-Wire Configuration
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| **Protocol** | Dallas 1-Wire | Single-wire serial protocol |
-| **Data Pin** | GPIO 23 | Pulled HIGH by 4.7 kΩ resistor (hardware) |
-| **Max Devices** | 9 | All I2C-based; no 1-Wire devices |
-| **Resolution** | 9-bit | ~0.5 °C precision; 95 ms conversion time (line 617) |
-| **Power Mode** | Parasitic (from data line) | No external power; devices powered via 1-Wire bus |
 
 ### Memory Configuration
 
