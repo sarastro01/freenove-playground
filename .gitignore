@@ -1,26 +1,19 @@
-# PlatformIO
+# Build artifacts
 .pio/
-.platformio/
-build/
+.venv/
+.env
 
 # IDE
 .vscode/
-*.code-workspace
-.idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-*.o
-*.a
-*.so
-*.pyc
+# Python
 __pycache__/
-
-# Dependencies
-.pio/libdeps/
-
-# Documentation
-docs/**/*.tmp
+*.py[cod]
+*$py.class
