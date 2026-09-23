@@ -7,6 +7,8 @@
 #include <Adafruit_BME280.h>
 #include <Adafruit_seesaw.h>
 #include <seesaw_neopixel.h>
+#include <Adafruit_DS248x.h>
+#include <OneWire.h>
 #include <math.h>
 #include <string.h>
 
@@ -36,6 +38,7 @@
 #define SI1145_ADDR 0x60
 #define SCD30_ADDR 0x61
 #define BME280_ADDR 0x77
+#define DS2484_ADDR 0x18
 
 #define VEML6075_REG_CONF 0x00
 #define VEML6075_REG_UVA 0x07
@@ -47,7 +50,7 @@
 #define SCD30_CMD_READY 0x0202
 #define SCD30_CMD_READ 0x0300
 
-constexpr uint8_t PAGE_COUNT = 9;
+constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
 constexpr uint32_t INPUT_REFRESH_MS = 20;
 constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUTTON_Y) |
@@ -63,6 +66,9 @@ Adafruit_seesaw gamepad;
 Adafruit_seesaw encoder;
 seesaw_NeoPixel encoderLed(1, ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800, &Wire);
 
+// DS2484 I2C-to-1-Wire adapter via Adafruit library
+Adafruit_DS248x ds2484Master;
+
 struct SensorStatus {
   bool ina219;
   bool veml6075;
@@ -73,6 +79,7 @@ struct SensorStatus {
   bool scd30;
   bool bme280;
   bool gamepad;
+  bool ds2484;      // DS2484 I2C-to-1-Wire adapter detected
 };
 SensorStatus available{};
 
@@ -83,12 +90,32 @@ struct Scd30Values { float co2; float temp; float humidity; };
 struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
 struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
 
+// 1-Wire temperature sensor struct (single sensor on DS2484)
+struct Ds18b20Sensor {
+  uint8_t address[8];      // 8-byte ROM-ID
+  uint8_t familyCode;      // First byte of ROM-ID (0x28, 0x22, 0x10, etc.)
+  float temperature;       // Latest temperature reading (°C)
+  uint32_t lastReadMs;     // Timestamp of last read
+  bool available;          // Online/offline status
+  uint8_t errorCount;      // Error counter (0-3, then offline)
+};
+
+// DS2484 I2C-to-1-Wire adapter struct
+struct Ds2484Values {
+  bool masterPresent;           // DS2484 adapter detected via I2C probe
+  uint8_t sensorCount;          // Number of discovered sensors (0-3)
+  Ds18b20Sensor sensors[3];     // Array of up to 3 sensors
+  uint32_t lastScanMs;          // Timestamp of last bus scan (60s interval)
+  uint32_t lastConversionMs;    // Timestamp of last temperature conversion (3s interval)
+};
+
 Ina219Values ina219Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
 EncoderValues encoderValues{};
 GamepadValues gamepadValues{};
+Ds2484Values ds2484Values{};  // DS2484 1-Wire adapter and sensors
 uint32_t fwVersion = 0;
 uint32_t optionsMask = 0;
 float seesawTemperature = 0.0f;
@@ -233,6 +260,179 @@ bool readVeml6070(Veml6070Values &values)
   return true;
 }
 
+// DS2484 1-Wire temperature sensor functions
+String formatRomId(const uint8_t *address)
+{
+  String result = "";
+  for (uint8_t i = 0; i < 8; i++) {
+    if (i > 0) result += ":";
+    if (address[i] < 0x10) result += "0";
+    result += String(address[i], HEX);
+  }
+  return result;
+}
+
+bool initDs2484()
+{
+  if (!available.ds2484) return false;
+  // Initialize Adafruit DS248x (parameter order: TwoWire*, uint8_t address)
+  bool success = ds2484Master.begin(&Wire, DS2484_ADDR);
+  if (success) {
+    Serial.println("DS2484: Initialized at 0x18");
+  } else {
+    Serial.println("DS2484: Initialization FAILED");
+  }
+  return success;
+}
+
+// DS2484 1-Wire operations via Adafruit library
+
+bool ds2484ResetBus()
+{
+  // DS2484 reset bus via Adafruit library
+  return ds2484Master.reset();
+}
+
+void performDs2484Scan()
+{
+  if (!available.ds2484) return;
+  
+  const uint32_t nowMs = millis();
+  
+  // Bus scan at 60-second interval (or on first scan when sensorCount == 0)
+  bool firstScan = ds2484Values.sensorCount == 0;
+  if (!firstScan && (int32_t)(nowMs - ds2484Values.lastScanMs) < 60000) return;
+  
+  Serial.println("DS2484: Scanning 1-Wire bus...");
+  
+  // Reset sensor count and clear all sensors
+  ds2484Values.sensorCount = 0;
+  for (uint8_t i = 0; i < 3; i++) {
+    ds2484Values.sensors[i].available = false;
+    ds2484Values.sensors[i].errorCount = 0;
+  }
+  
+  // Scan for all devices on 1-Wire bus via DS2484
+  uint8_t address[8];
+  ds2484Master.OneWireSearchReset();
+  
+  while (ds2484Master.OneWireSearch(address) && ds2484Values.sensorCount < 3) {
+    // Verify CRC of address
+    if (OneWire::crc8(address, 7) != address[7]) {
+      continue;  // CRC mismatch, skip
+    }
+    
+    Ds18b20Sensor &sensor = ds2484Values.sensors[ds2484Values.sensorCount];
+    memcpy(sensor.address, address, 8);
+    sensor.familyCode = address[0];
+    sensor.available = true;
+    sensor.errorCount = 0;
+    sensor.temperature = 0.0f;
+    sensor.lastReadMs = nowMs;
+    
+    Serial.printf("DS2484: Found sensor %d: %s\n", ds2484Values.sensorCount, formatRomId(address).c_str());
+    ds2484Values.sensorCount++;
+  }
+  
+  Serial.printf("DS2484: Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
+  ds2484Values.lastScanMs = nowMs;
+}
+
+void readDs2484Temperatures()
+{
+  if (!available.ds2484 || ds2484Values.sensorCount == 0) return;
+  
+  const uint32_t nowMs = millis();
+  
+  // Temperature polling at 3-second interval
+  if ((int32_t)(nowMs - ds2484Values.lastConversionMs) < 3000) return;
+  
+  // Send Convert T command to all devices (0x44 via Skip ROM 0xCC)
+  if (!ds2484Master.OneWireReset()) {
+    ds2484Values.lastConversionMs = nowMs;
+    return;
+  }
+  
+  if (!ds2484Master.OneWireWriteByte(0xCC)) {  // Skip ROM
+    ds2484Values.lastConversionMs = nowMs;
+    return;
+  }
+  
+  if (!ds2484Master.OneWireWriteByte(0x44)) {  // Convert T
+    ds2484Values.lastConversionMs = nowMs;
+    return;
+  }
+  
+  delay(850);  // Wait for conversion (12-bit resolution = 750ms typical)
+  
+  // Read temperature for each discovered sensor
+  for (uint8_t i = 0; i < ds2484Values.sensorCount; i++) {
+    Ds18b20Sensor &sensor = ds2484Values.sensors[i];
+    
+    // Skip if already offline after 3 errors
+    if (sensor.errorCount >= 3) {
+      sensor.available = false;
+      continue;
+    }
+    
+    // Reset and select device using Match ROM
+    if (!ds2484Master.OneWireReset()) {
+      sensor.errorCount++;
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Match ROM (0x55) command
+    if (!ds2484Master.OneWireWriteByte(0x55)) {
+      sensor.errorCount++;
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Send 8-byte ROM address
+    bool romWriteOk = true;
+    for (uint8_t j = 0; j < 8; j++) {
+      if (!ds2484Master.OneWireWriteByte(sensor.address[j])) {
+        romWriteOk = false;
+        break;
+      }
+    }
+    
+    if (!romWriteOk) {
+      sensor.errorCount++;
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Read Scratchpad command (0xBE)
+    if (!ds2484Master.OneWireWriteByte(0xBE)) {
+      sensor.errorCount++;
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Read 2 bytes of temperature data (LSB, MSB)
+    uint8_t tempLsb, tempMsb;
+    if (!ds2484Master.OneWireReadByte(&tempLsb) || !ds2484Master.OneWireReadByte(&tempMsb)) {
+      sensor.errorCount++;
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Convert raw bytes to temperature
+    // DS18B20: 12-bit resolution, 0.0625°C per LSB
+    int16_t rawTemp = (int16_t)((tempMsb << 8) | tempLsb);
+    sensor.temperature = rawTemp * 0.0625f;
+    sensor.errorCount = 0;
+    sensor.available = true;
+    sensor.lastReadMs = nowMs;
+    
+    Serial.printf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
+  }
+  
+  ds2484Values.lastConversionMs = nowMs;
+}
+
 void updateEncoderLed()
 {
   if (!available.encoder) return;
@@ -273,6 +473,10 @@ void readSensors()
   if (available.veml6075) readVeml6075(veml6075Values);
   if (available.veml6070) readVeml6070(veml6070Values);
   if (available.scd30 && scd30Ready()) readScd30(scd30Values);
+  if (available.ds2484) {
+    performDs2484Scan();      // 60-second bus scan
+    readDs2484Temperatures(); // 3-second temperature polling
+  }
 }
 
 void readGamepadAt40Hz()
@@ -465,6 +669,51 @@ void pageGamepad()
   footer("Y/A: Seite wechseln | Gamepad QT");
 }
 
+void pageDs2484()
+{
+  if (!available.ds2484) return unavailable("DS2484 1-Wire", "0x18", "I2C address:");
+  
+  // Status line: adapter present and sensor count
+  const char *statusMsg = ds2484Values.sensorCount == 0 ? "OK - No Sensors Found" :
+                          ds2484Values.sensorCount == 1 ? "OK - 1 Sensor" :
+                          ds2484Values.sensorCount == 2 ? "OK - 2 Sensors" :
+                          "OK - 3 Sensors";
+  row(56, "Status:", statusMsg, TFT_GREEN);
+  
+  // Display up to 3 sensors with their ROM-IDs and temperatures
+  int displayY = 90;
+  for (uint8_t i = 0; i < ds2484Values.sensorCount && i < 3; i++) {
+    const Ds18b20Sensor &sensor = ds2484Values.sensors[i];
+    
+    // Sensor ID line (ROM-ID as HEX)
+    String romId = formatRomId(sensor.address);
+    writeText(6, displayY, String("Sensor ") + String(i + 1) + " ID:", TFT_WHITE);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setTextPadding(320);
+    tft.drawRightString(romId, 474, displayY, 2);  // Font 2 for consistency
+    displayY += 26;
+    
+    // Temperature line
+    String tempStr;
+    uint16_t tempColor;
+    if (!sensor.available) {
+      tempStr = "Disconnected";
+      tempColor = TFT_RED;
+    } else {
+      tempStr = String(sensor.temperature, 2) + " °C";
+      tempColor = TFT_CYAN;
+    }
+    writeText(6, displayY, "Temperature:", TFT_WHITE);
+    tft.setTextColor(tempColor, TFT_BLACK);
+    tft.setTextPadding(320);
+    tft.drawRightString(tempStr, 474, displayY, 2);  // Font 2 for consistency
+    displayY += 42;  // Spacing between sensor blocks
+  }
+  
+  tft.setTextPadding(0);
+  footer("Y/A: Seite wechseln | DS2484");
+}
+
 void drawCurrentPage(bool pageChanged)
 {
   if (pageChanged) {
@@ -477,7 +726,8 @@ void drawCurrentPage(bool pageChanged)
       "SI1145 (0x60)",
       "TSL2591 (0x29)",
       "VEML6070 (0x38/0x39)",
-      "VEML6075 (0x10)"
+      "VEML6075 (0x10)",
+      "DS2484 1-Wire (0x18)"
     };
     drawHeader(titles[currentPage]);
   }
@@ -491,6 +741,7 @@ void drawCurrentPage(bool pageChanged)
     case 6: pageTsl2591(); break;
     case 7: pageVeml6070(); break;
     case 8: pageVeml6075(); break;
+    case 9: pageDs2484(); break;
   }
 }
 
@@ -522,6 +773,19 @@ void detectSensors()
   available.gamepad = gamepad.begin(GAMEPAD_ADDR);
   if (available.gamepad) gamepad.pinModeBulk(BUTTON_MASK, INPUT_PULLUP);
   if (available.gamepad) gamepad.setGPIOInterrupts(BUTTON_MASK, true);
+  
+  // Probe DS2484 I2C-to-1-Wire adapter at 0x18
+  Serial.println("Probing DS2484 at 0x18...");
+  available.ds2484 = ds2484Master.begin(&Wire, DS2484_ADDR);
+  if (available.ds2484) {
+    Serial.println("DS2484: FOUND");
+    initDs2484();  // Initialize DS2484
+    ds2484Values.masterPresent = true;
+    ds2484Values.lastScanMs = 0;  // Trigger immediate bus scan
+    ds2484Values.lastConversionMs = 0;
+  } else {
+    Serial.println("DS2484: NOT FOUND");
+  }
 }
 
 
