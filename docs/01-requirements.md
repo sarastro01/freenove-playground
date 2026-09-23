@@ -1,6 +1,6 @@
 # Requirements: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
+**Last Updated:** 2026-09-23  
 **Project Type:** Embedded Firmware (ESP32)  
 **Platform:** PlatformIO + Arduino Framework
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-sensor-pages-dashboard is a firmware application for an ESP32 microcontroller with a TFT display and multiple sensor inputs. The application provides a paginated sensor monitoring interface with real-time data display, interrupt-driven user input, and multi-rate asynchronous sensor polling.
+sensor-pages-dashboard is a firmware application for an ESP32 microcontroller with a TFT display and multiple sensor inputs. The application provides a paginated sensor monitoring interface with real-time data display, interrupt-driven user input, and multi-rate asynchronous sensor polling. Includes support for 1-Wire temperature sensors via I2C-to-1-Wire adapter.
 
 ---
 
@@ -17,14 +17,15 @@ sensor-pages-dashboard is a firmware application for an ESP32 microcontroller wi
 ### FR-001: Multi-Sensor Data Acquisition
 
 **Requirement:**  
-The system shall acquire data from multiple sensor types via I2C bus.
+The system shall acquire data from multiple sensor types via I2C bus and 1-Wire bus.
 
 **Details:**
-- Support 9 distinct I2C-based sensors
+- Support 10 distinct I2C-based sensors (9 direct I2C + 1 I2C-to-1-Wire adapter)
+- Support for 1-Wire temperature sensors via DS2484 I2C adapter (up to 3 sensors)
 - Sensor presence detection at boot (no runtime re-detection)
 - Graceful degradation: missing sensors do not prevent system operation
 
-**Sensors Supported:**
+**I2C Sensors Supported:**
 - BME280 (0x77) — Climate sensor (temp/humidity/pressure)
 - Gamepad seesaw (0x50) — Joystick + 6 buttons
 - INA219 (0x40) — Power monitor
@@ -34,8 +35,16 @@ The system shall acquire data from multiple sensor types via I2C bus.
 - TSL2591 (0x29) — Light sensor (lux)
 - VEML6070 (0x38/0x39) — UV sensor (dual-address)
 - VEML6075 (0x10) — UV sensor (UVA/UVB)
+- DS2484 (0x18) — I2C-to-1-Wire adapter for temperature sensors
 
-**Evidence:** main.cpp detectSensors() function; all begin() calls
+**1-Wire Sensors Supported (via DS2484):**
+- DS18B20 (Family Code 0x28) — Digital thermometer
+- DS1822 (Family Code 0x22) — Digital thermometer
+- DS1820 (Family Code 0x10) — Digital thermometer
+- Other 1-Wire temperature sensor types compatible with DallasTemperature library
+- Maximum 3 sensors per adapter (hardware limit)
+
+**Evidence:** main.cpp detectSensors() function; all begin() calls; initDs2484(), performDs2484Scan(), readDs2484Temperatures() functions
 
 ---
 
@@ -61,19 +70,32 @@ The system shall display acquired sensor data on a TFT screen with color-coded i
 ### FR-003: Circular Pagination Navigation
 
 **Requirement:**  
-The system shall provide navigation through 9 sensor pages using gamepad buttons.
+The system shall provide navigation through 10 sensor pages using gamepad buttons.
 
 **Details:**
-- 9 pages (indices 0–8)
+- 10 pages (indices 0–9)
 - Y button: navigate to previous page (with wrap-around)
 - A button: navigate to next page (with wrap-around)
-- Page 0 Y button → Page 8
-- Page 8 A button → Page 0
+- Page 0 Y button → Page 9
+- Page 9 A button → Page 0
 - Navigation is falling-edge triggered (button press, not release)
+- PAGE_COUNT constant = 10
+
+**Page Order:**
+- Page 0: BME280 Climate Sensor
+- Page 1: Gamepad QT Input
+- Page 2: INA219 Battery Monitor
+- Page 3: Rotary Encoder
+- Page 4: SCD30 CO₂ Sensor
+- Page 5: SI1145 UV/IR Sensor
+- Page 6: TSL2591 Light Sensor
+- Page 7: VEML6070 UV Sensor
+- Page 8: VEML6075 UV Sensor
+- Page 9: DS2484 1-Wire Temperature Sensors (NEW)
 
 **Evidence:**
-- Page array: 9 titles (lines 448–457 in drawCurrentPage)
-- Navigation logic: lines 527–529 in loop()
+- Page array: 10 titles in drawCurrentPage
+- Navigation logic: modulo arithmetic with PAGE_COUNT=10
 - Edge detection: `yPressed && !lastY`, `aPressed && !lastA`
 
 ---
@@ -182,6 +204,28 @@ The system shall provide interactive control of a NeoPixel RGB LED via rotary en
 - Color array: lines 113–115
 - Brightness calculation: lines 278–281
 - LED update: line 257, `updateEncoderLed()`
+
+---
+
+### FR-010: 1-Wire Temperature Sensor Discovery & Monitoring
+
+**Requirement:**  
+The system shall discover and monitor 1-Wire temperature sensors via DS2484 I2C-to-1-Wire adapter.
+
+**Details:**
+- Periodic bus scan every 60 seconds to detect new/missing sensors
+- Support for multiple 1-Wire sensor types (DS18B20, DS1822, DS1820, etc.)
+- Maximum 3 sensors per adapter (hardware limit of Adafruit breakout)
+- Temperature polling every 3 seconds with 12-bit standard resolution
+- Display full 8-byte ROM-ID (Family Code + Serial Number + CRC) in HEX format
+- Error handling: mark sensors offline after 3 consecutive read failures
+- Recovery: re-enable sensors when communication succeeds again
+- Error display: "Disconnected" status for offline sensors
+
+**Evidence:** 
+- initDs2484(), performDs2484Scan(), readDs2484Temperatures(), pageDs2484() functions in main.cpp
+- Ds2484Values struct with sensor array
+- DS2484_SCAN_INTERVAL_MS = 60000, DS2484_TEMP_INTERVAL_MS = 3000 constants
 
 ---
 
@@ -350,24 +394,29 @@ Application targets ESP32 microcontroller (specific pin assignments).
 ### AC-001: Sensor Data Display
 
 **Criteria:**
-- ✅ All 9 pages render correctly with sensor data
-- ✅ Data refreshes at specified intervals (20 ms live, 500 ms sensor)
+- ✅ All 10 pages render correctly with sensor data (including DS2484 page 9)
+- ✅ Data refreshes at specified intervals (20 ms live, 500 ms sensor pages, 3s for temperatures)
 - ✅ Missing sensors display error screen
 - ✅ Color coding matches specification
+- ✅ DS2484 discovers and displays up to 3 1-Wire temperature sensors
+- ✅ ROM-IDs displayed in full 8-byte HEX format
+- ✅ Offline sensors marked with "Disconnected" status
 
-**Verification:** Manual testing on hardware; visual inspection
+**Verification:** Manual testing on hardware; visual inspection; 1-Wire sensor discovery validation
 
 ---
 
 ### AC-002: Navigation
 
 **Criteria:**
-- ✅ Y button navigates to previous page (with wrap-around 0→9)
-- ✅ A button navigates to next page (with wrap-around 9→0)
+- ✅ Y button navigates to previous page (with wrap-around Page 0 ↔ Page 9)
+- ✅ A button navigates to next page (with wrap-around Page 9 ↔ Page 0)
 - ✅ Page transitions are immediate (no lag)
 - ✅ Navigation works even if some sensors missing
+- ✅ All 10 pages are accessible in circular order
+- ✅ PAGE_COUNT constant correctly set to 10
 
-**Verification:** Manual testing; edge detection verification
+**Verification:** Manual testing; edge detection verification; all page transitions
 
 ---
 
@@ -402,7 +451,22 @@ Application targets ESP32 microcontroller (specific pin assignments).
 - ✅ Invalid reads (simulated CRC corruption) are rejected
 - ✅ Failed reads do not update displayed values
 
-**Verification:** Integration testing; I2C analyzer or simulation
+**V
+
+### AC-006: DS2484 1-Wire Temperature Monitoring (NEW)
+
+**Criteria:**
+- ✅ DS2484 adapter detected on I2C address 0x18 at boot
+- ✅ 1-Wire bus scan discovers all connected sensors (max 3)
+- ✅ Temperature readings updated every 3 seconds
+- ✅ Bus scan performed every 60 seconds
+- ✅ ROM-IDs captured and displayed in HEX format (8 bytes: "28:AB:CD:EF:01:02:03:04")
+- ✅ Multi-sensor-type support (DS18B20, DS1822, DS1820, etc.)
+- ✅ Error handling: 3 consecutive failures → "Disconnected" status
+- ✅ Recovery: sensors re-enabled when communication succeeds
+- ✅ All sensors displayed on single page (Page 9)
+
+**Verification:** Hardware testing with real DS2484 + 1-3 temperature sensors; test cases in docs/10-testing.mderification:** Integration testing; I2C analyzer or simulation
 
 ---
 

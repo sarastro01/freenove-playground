@@ -1,7 +1,7 @@
 # Testing Strategy & Coverage: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
-**Current Status:** ⚠️ **NO AUTOMATED TESTS** (Manual testing only)  
+**Last Updated:** 2026-09-23  
+**Current Status:** ⚠️ **NO AUTOMATED TESTS** (Manual testing only, includes DS2484 1-Wire tests)  
 **Test Framework:** None (PlatformIO Unity available but not used)
 
 ---
@@ -37,21 +37,22 @@ Based on reverse-engineered business rules (docs/06-business-rules.md), the foll
 | CRC8 validation rejects corrupted SCD30 data | Data integrity; safety | Unit |
 | Timing gates use signed arithmetic (rollover safe) | System stability; no data loss | Unit |
 | DS18B20 state machine terminates (no infinite wait) | Real-time response; no hangups | Integration |
-| Page navigation wraps correctly (0↔9 boundaries) | Usability; no stuck states | Unit |
+| Page navigation wraps correctly (0↔10 boundaries) | Usability; no stuck states (10 pages now) | Unit |
 | INA219 time-gap sanity check prevents overflow | Accumulator integrity | Unit |
 | LED updates immediately (< 20 ms latency) | User feedback; responsiveness | Integration |
+| DS2484 1-Wire bus scan discovers all sensors | Discovery correctness; max 3 sensors | Integration |
 
 ### TIER 2: Functional (Should Be Tested)
 
 | Behavior | Why Important | Test Category |
 |----------|---------------|----------------|
-| All 9 pages render without crashes | Core functionality | Integration |
+| All 10 pages render without crashes | Core functionality (10 pages now) | Integration |
 | Page refresh rates (20 ms vs 500 ms) met | Performance | Integration |
 | Sensor missing → error screen (no crash) | Graceful degradation | Integration |
 | Gamepad falling-edge detection works | Correct page navigation | Integration |
 | Encoder LED color cycles correctly | User feature | Unit |
-| Hot-plug detection finds new DS18B20 devices | Dynamic discovery | Integration |
-| I2C address decoding (all 9 sensors) correct | Correct sensor read | Unit |
+| DS2484 discovers and displays 1-Wire sensors | Multi-sensor support; discovery | Integration |
+| I2C address decoding (all 10 sensors) correct | Correct sensor read | Unit |
 
 ### TIER 3: Implementation-Specific (Should Be Monitored, Not Strictly Tested)
 
@@ -489,6 +490,102 @@ void test_gamepad_navigation_latency() {
 ```
 
 **Rationale:** Gamepad response time requires real hardware timing.
+
+#### Test Suite: DS2484 1-Wire Temperature Sensors (NEW)
+
+##### Integration Test T1: DS2484 Detection & Initialization
+1. Verify DS2484 breakout connected to I2C bus (SDA=GPIO32, SCL=GPIO25)
+2. Power on ESP32
+3. Observe serial monitor output
+4. **Expected:** `available.ds2484 = true` (logged or verified in code); DS2484 initialized successfully
+5. Navigate to Page 9 (DS2484)
+6. **Expected:** Page displays without error; "DS2484 1-Wire (0x18)" title shown
+
+##### Integration Test T2: 1-Wire Bus Scan & Sensor Discovery
+1. Connect 1–3 DS18B20/DS1822/DS1820 sensors to DS2484 DQ pin
+2. Power on ESP32
+3. Navigate to Page 9
+4. Wait for initial bus scan (< 2 seconds)
+5. **Expected:** 
+   - Status shows "OK - X Sensors" (X = number of connected sensors, 1–3)
+   - Each sensor displays 8-byte ROM-ID in HEX format (e.g., "28:AB:CD:EF:01:02:03:04")
+   - Sensor availability marked correctly (online = temperature visible, offline = "Disconnected")
+
+##### Integration Test T3: Temperature Polling & Display Update
+1. Page 9 displaying 1–3 sensors with temperature values
+2. Observe temperature display for 10 seconds
+3. Physically warm one sensor with finger or heat source
+4. Wait 3 seconds (polling interval)
+5. **Expected:** Temperature for that sensor increases (e.g., from 22.50°C to 24.30°C)
+6. Cool sensor back down
+7. **Expected:** Temperature decreases after next poll (3s)
+
+##### Integration Test T4: Sensor Disconnect Detection
+1. Page 9 showing 3 connected sensors, all online
+2. Physically disconnect 1 sensor from DS2484 DQ pin
+3. Wait for next bus scan (60 seconds) or up to 3 failed reads (9 seconds)
+4. **Expected:** Disconnected sensor shows "Disconnected" status in red
+5. Other sensors continue showing temperature normally
+
+##### Integration Test T5: Sensor Reconnection & Recovery
+1. Page 9 showing 1 sensor as "Disconnected"
+2. Reconnect sensor to DS2484 DQ pin
+3. Wait for next bus scan (60 seconds) or successful temperature read
+4. **Expected:** Sensor re-enabled, shows temperature again (no longer "Disconnected")
+5. Error counter reset internally (verified via code inspection)
+
+##### Integration Test T6: Multi-Sensor-Type Support
+1. Connect 2× DS18B20 (Family Code 0x28) + 1× DS1822 (Family Code 0x22) to DS2484
+2. Navigate to Page 9
+3. **Expected:** 
+   - All 3 sensors discovered and displayed
+   - ROM-IDs show correct family codes (28 for DS18B20, 22 for DS1822)
+   - All temperatures readable and correct
+
+##### Integration Test T7: PAGE_COUNT Navigation (10 Pages Circular)
+1. Navigate using Gamepad:
+   - From Page 8 (VEML6075), press A (next)
+   - **Expected:** Move to Page 9 (DS2484)
+2. From Page 9, press A (next)
+   - **Expected:** Wrap around to Page 0 (BME280)
+3. From Page 0, press Y (previous)
+   - **Expected:** Wrap around to Page 9 (DS2484)
+4. Continue navigation through all 10 pages
+   - **Expected:** All pages accessible, no stuck states
+
+##### Integration Test T8: Long-Running Stability (30-minute test)
+1. Page 9 displaying DS2484 sensors
+2. Let system run for 30 minutes
+3. Periodically navigate to other pages and back to Page 9
+4. **Expected:**
+   - No crashes or freezes
+   - Temperature values update correctly every 3 seconds
+   - Bus scan completes every 60 seconds without corruption
+   - No memory leaks (heap remains stable)
+   - ROM-IDs consistent across scans
+
+##### Integration Test T9: Error Recovery after I2C Glitch
+1. Page 9 displaying 2 sensors, both online
+2. Temporarily disrupt I2C bus (e.g., wiggle SDA/SCL cables briefly, < 100 ms)
+3. Observe error counter increment
+4. **Expected:** After 1–2 successful reads following the glitch, sensor remains online
+5. After 3 consecutive errors, sensor marked "Disconnected"
+6. When I2C recovers, sensor can be re-enabled
+
+##### Integration Test T10: Full Feature Integration
+1. Complete setup: DS2484 + 3 sensors + BME280 + INA219 + other sensors all connected
+2. Navigate between all 10 pages, including Page 9 (DS2484)
+3. Perform following actions simultaneously:
+   - INA219 charging/discharging with variable load
+   - Temperature sensors exposed to temperature changes
+   - Gamepad navigation between pages
+4. **Expected:**
+   - All sensor pages update independently without interference
+   - Page 9 displays correct DS2484 data while other pages update normally
+   - No deadlocks or data corruption
+   - Display refresh rate maintained (20 ms live, 500 ms sensors)
+
+---
 
 ### Layer 3: Performance & Profiling (Monitoring)
 
