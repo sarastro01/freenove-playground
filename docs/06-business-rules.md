@@ -1,8 +1,8 @@
 # Business Rules: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
-**Firmware Type:** Embedded bare-metal  
-**Business Domain:** Sensor data acquisition, display, input handling
+**Last Updated:** 2026-09-23  
+**Firmware Type:** Embedded bare-metal (includes 1-Wire temperature sensors)  
+**Business Domain:** Sensor data acquisition, display, input handling, 1-Wire discovery
 
 ---
 
@@ -37,6 +37,11 @@ For each sensor type, `detectSensors()` attempts to probe once:
 - TSL2591 @ 0x29: `available.tsl2591 = tsl2591.begin()`, then config gain/timing
 - VEML6070 @ 0x38/0x39: Dual-address probe
 - VEML6075 @ 0x10: `available.veml6075 = readReg16(0x10, 0x0C, veml6075DeviceId)` (read ID reg)
+- DS2484 @ 0x18: `available.ds2484 = ds2484Master.begin(&Wire, DS2484_ADDR)` (Adafruit_DS248x initialization)
+  - Library: Adafruit_DS248x @ 1.2.0
+  - I2C address: 0x18 (hardcoded constant DS2484_ADDR)
+  - On success: calls initDs2484() to guard 1-Wire bus scan initialization
+  - On failure: ds2484 flag remains false; page 9 displays error screen
 
 If any probe fails, the corresponding `available.X` remains `false` (default initialized).
 

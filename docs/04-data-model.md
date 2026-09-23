@@ -1,7 +1,7 @@
 # Data Model: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
-**Status:** NO PERSISTENCE LAYER — RAM-only in-memory structs
+**Last Updated:** 2026-09-23  
+**Status:** NO PERSISTENCE LAYER — RAM-only in-memory structs (includes 1-Wire adapter)
 
 ---
 
@@ -57,8 +57,9 @@ struct SensorStatus {
   bool scd30;       // 1 byte
   bool bme280;      // 1 byte
   bool gamepad;     // 1 byte
+  bool ds2484;      // 1 byte — DS2484 I2C-to-1-Wire adapter detected
 };
-SensorStatus available{};  // 9 bytes, zero-initialized
+SensorStatus available{};  // 10 bytes, zero-initialized
 ```
 
 **Field Details:**
@@ -74,6 +75,7 @@ SensorStatus available{};  // 9 bytes, zero-initialized
 | `scd30` | bool | 1 b | SCD30 @ 0x61 detected? | `detectSensors()` | All code | Non-zero = true; never re-probed |
 | `bme280` | bool | 1 b | BME280 @ 0x77 detected? | `detectSensors()` | All code | Non-zero = true; never re-probed |
 | `gamepad` | bool | 1 b | Gamepad seesaw @ 0x50 detected? | `detectSensors()` | All code | Non-zero = true; never re-probed |
+| `ds2484` | bool | 1 b | DS2484 I2C-to-1-Wire @ 0x18 detected? | `detectSensors()` | All code | Non-zero = true; never re-probed |
 
 **Initialization Pattern:** Aggregate initialization to `{}` (all zero); populated in boot sequence.
 
@@ -404,6 +406,71 @@ uint8_t key  = lastEvent >> 2;     // Bits 2–7
 
 ---
 
+### 2.8 Ds18b20Sensor and Ds2484Values (NEW)
+
+**Purpose:** Cache of 1-Wire temperature sensor readings via DS2484 I2C-to-1-Wire adapter (3 second polling cycle).
+
+**Lifecycle:** Initialized at boot; periodically updated every 3 seconds; bus scan every 60 seconds.
+
+**Scope:** Global static, mutable.
+
+```cpp
+struct Ds18b20Sensor {
+  uint8_t address[8];           // 8 bytes — 64-bit ROM-ID (FamilyCode + SerialNumber + CRC)
+  uint8_t familyCode;           // 1 byte — sensor family code (0x28=DS18B20, 0x22=DS1822, etc.)
+  float temperature;            // 4 bytes — last read temperature (°C)
+  uint32_t lastReadMs;          // 4 bytes — timestamp of last successful read (ms)
+  bool available;               // 1 byte — sensor responding/detected on bus
+  uint8_t errorCount;           // 1 byte — consecutive read failures (0–3+)
+};  // 20 bytes per sensor
+
+struct Ds2484Values {
+  bool masterPresent;           // 1 byte — DS2484 adapter present and functional
+  uint8_t sensorCount;          // 1 byte — number of detected sensors (0–3)
+  Ds18b20Sensor sensors[3];     // 60 bytes — array of up to 3 sensor structs
+  uint32_t lastScanMs;          // 4 bytes — timestamp of last bus scan (ms)
+  uint32_t lastConversionMs;    // 4 bytes — timestamp of last temperature conversion (ms)
+};  // 70 bytes total
+Ds2484Values ds2484Values{};  // 70 bytes, zero-initialized
+```
+
+**Ds18b20Sensor Field Details:**
+
+| Field | Type | Size | Interpretation | Set By | Read By | Constraint |
+|-------|------|------|---|---|---|---|
+| `address` | uint8_t[8] | 8 B | 64-bit ROM-ID | `performDs2484Scan()` | Display, error handling | Unique per sensor; format: Family(1B) + Serial(6B) + CRC(1B) |
+| `familyCode` | uint8_t | 1 B | Family code byte | `performDs2484Scan()` | Display filtering | 0x28 (DS18B20), 0x22 (DS1822), 0x10 (DS1820), etc. |
+| `temperature` | float | 4 B | °C | `readDs2484Temperatures()` | `pageDs2484()` display | -55 to +125°C typical range |
+| `lastReadMs` | uint32_t | 4 B | Milliseconds since boot | `readDs2484Temperatures()` | Timing diagnostics | Timestamp of successful read |
+| `available` | bool | 1 B | Sensor online? | `performDs2484Scan()`, `readDs2484Temperatures()` | All code | Set false after 3 consecutive errors; re-enabled on successful read |
+| `errorCount` | uint8_t | 1 B | Failure counter | `readDs2484Temperatures()` | Recovery logic | Incremented on CRC/timeout; reset to 0 on success; triggers offline at 3 |
+
+**Ds2484Values Field Details:**
+
+| Field | Type | Size | Interpretation | Set By | Read By | Constraint |
+|-------|------|------|---|---|---|---|
+| `masterPresent` | bool | 1 B | DS2484 adapter detected? | `initDs2484()` | Guard for all ops | Set once at boot; never changes |
+| `sensorCount` | uint8_t | 1 B | Sensors found | `performDs2484Scan()` | Display, loop iteration | 0–3; max 3 (hardware limit) |
+| `sensors[3]` | Ds18b20Sensor[3] | 60 B | Sensor array | `performDs2484Scan()`, `readDs2484Temperatures()` | Display, error checking | Only first `sensorCount` entries valid |
+| `lastScanMs` | uint32_t | 4 B | Last bus scan time | `performDs2484Scan()` | Timing info | Milliseconds since boot |
+| `lastConversionMs` | uint32_t | 4 B | Last temperature read | `readDs2484Temperatures()` | Timing info | Milliseconds since boot |
+
+**Failure Behavior:** 
+- I2C read failure (CRC, timeout, no ACK): errorCount incremented; struct NOT updated (stale data persists)
+- After 3 consecutive errors: `available = false`; displays "Disconnected"
+- Sensor disappears from scan: remains in array but `available = false`
+- Recovery: When `available = true` again, errorCount resets to 0
+
+**First Scan Optimization:**
+The bus scan timing gate includes special logic to force an immediate scan on boot:
+```cpp
+bool firstScan = ds2484Values.sensorCount == 0;
+if (!firstScan && (int32_t)(nowMs - ds2484Values.lastScanMs) < 60000) return;
+```
+This ensures sensors are discovered immediately after boot, even though `lastScanMs` is initialized to 0 and would normally block the 60-second timing gate. The first scan is always performed, guaranteeing sensor discovery before any UI display occurs.
+
+---
+
 ## 3. Auxiliary Global Variables
 
 Beyond the main data structs, several global scalars track runtime state:
@@ -719,21 +786,22 @@ erDiagram
 
 | Struct | Size | Count | Total |
 |--------|------|-------|-------|
-| SensorStatus | 9 B | 1 | 9 B |
+| SensorStatus | 10 B | 1 | 10 B |
 | Ina219Values | 29 B | 1 | 29 B |
 | Veml6075Values | 24 B | 1 | 24 B |
 | Veml6070Values | 4 B | 1 | 4 B |
 | Scd30Values | 12 B | 1 | 12 B |
 | EncoderValues | 22 B + ptr | 1 | 30 B |
 | GamepadValues | 18 B | 1 | 18 B |
+| Ds2484Values | 70 B | 1 | 70 B |
 | **Auxiliary scalars** | ~24 B | 1 | 24 B |
-| **TOTAL** | | | **166 B** |
+| **TOTAL** | | | **221 B** |
 
-**Actual RAM usage:** ~300 B (with alignment padding).
+**Actual RAM usage:** ~350 B (with alignment padding).
 
 **ESP32 heap:** 320 KB total.
 
-**Data structures as % of heap:** <0.1% (negligible).
+**Data structures as % of heap:** 0.11% (negligible; DS2484 adds ~0.02%).
 
 ---
 

@@ -156,37 +156,32 @@ All libraries are **pinned to compatible versions** in `platformio.ini`. Version
 | **Flash Size** | ~20 KB |
 | **Heap Size** | ~200 bytes |
 
-#### 6. OneWire Library
+#### 6. Adafruit DS248x Library
+
+| Property | Value |
+|----------|-------|
+| **Package** | `adafruit/Adafruit DS248x` |
+| **Version** | `^1.2.0` |
+| **Repository** | [adafruit/Adafruit_DS248x](https://github.com/adafruit/Adafruit_DS248x) |
+| **Purpose** | I2C-to-1-Wire bridge adapter driver (DS2484 @ 0x18) |
+| **Hardware** | DS2484 adapter + up to 3 DS18B20/DS1822/DS1820 temperature sensors |
+| **Key Functions** | `begin()`, `OneWireReset()`, `OneWireSearch()`, `OneWireWriteByte()`, `OneWireReadByte()`, `OneWireSearchReset()` |
+| **Dependency** | Adafruit_BusIO (for I2C communication) |
+| **Flash Size** | ~6 KB |
+| **Heap Size** | ~50 bytes |
+
+#### 7. OneWire Library
 
 | Property | Value |
 |----------|-------|
 | **Package** | `paulstoffregen/OneWire` |
 | **Version** | `^2.3.8` |
 | **Repository** | [PaulStoffregen/OneWire](https://github.com/PaulStoffregen/OneWire) |
-| **Purpose** | 1-Wire serial protocol driver (Dallas temperature sensors) |
-| **Hardware** | GPIO 23 (DS18B20 devices) |
-| **Key Functions** | `begin()`, `search()`, `crc8()`, `reset()`, `write()`, `read()` |
-| **Communication** | Synchronous bit-banging (not real hardware 1-Wire) |
-| **Dependency** | None (low-level) |
-| **Flash Size** | ~6 KB |
-| **Heap Size** | ~100 bytes |
-
-#### 7. DallasTemperature Library
-
-| Property | Value |
-|----------|-------|
-| **Package** | `milesburton/DallasTemperature` |
-| **Version** | `^4.0.4` |
-| **Repository** | [milesburton/Arduino-Temperature-Control-Library](https://github.com/milesburton/Arduino-Temperature-Control-Library) |
-| **Purpose** | DS18B20 temperature sensor abstraction (uses OneWire) |
-| **Hardware** | DS18B20 sensors on GPIO 23 (via OneWire) |
-| **Key Functions** | `begin()`, `requestTemperatures()`, `getTempC()`, `getDeviceCount()`, `getAddress()`, `setResolution()` |
-| **Configuration** | 9-bit resolution (95 ms conversion time) |
-| **Async Support** | `setWaitForConversion(false)` for non-blocking reads |
-| **Dependency** | OneWire library |
-| **Flash Size** | ~8 KB |
-| **Heap Size** | ~100 bytes |
-| **Sentinel Value** | `DEVICE_DISCONNECTED_C` (~–127 °C) [UNKNOWN - library version dependent] |
+| **Purpose** | 1-Wire protocol utility (CRC8 validation only) |
+| **Usage** | Called via `OneWire::crc8(address, 7)` to validate DS18B20 ROM addresses in performDs2484Scan() |
+| **Note** | NOT used as primary 1-Wire driver; Adafruit_DS248x provides complete 1-Wire interface via I2C bridge |
+| **Flash Size** | ~2 KB |
+| **Heap Size** | Minimal (utility functions only) |
 
 ### Sub-Dependency: Adafruit_BusIO
 
@@ -428,9 +423,9 @@ pio pkg install --save "adafruit/Adafruit INA219 @ ^1.3.0"
 | Constraint | Impact | Workaround |
 |-----------|--------|-----------|
 | Arduino Core @ v2.x vs v3.x | Potential compatibility issues with library versions | Explicitly pin espressif32 platform version |
-| DallasTemperature sentinel value | Exact DEVICE_DISCONNECTED_C value depends on library version | Check library docs for library version used |
-| TFT_eSPI Freenove fork | Freenove customizations may diverge from upstream | Use local copy; test against original if needed |
-| OneWire bit-banging | Slow; CPU busy during 1-Wire transactions | Use external 1-Wire master (future work) |
+| DS2484 I2C address conflicts | If external I2C device uses 0x18, adapter will not respond | Use I2C address scanner to diagnose |
+| Adafruit_DS248x 1-Wire timing | Conversion timing depends on CRC validation overhead | 850 ms delay accommodates worst-case |
+| OneWire CRC8 utility | Used for ROM address validation only; independent of primary 1-Wire driver | Ensures data integrity on noisy 1-Wire buses |
 | seesaw library version | Encoder/gamepad behavior depends on seesaw firmware version | Assume seesaw firmware ≥3.x; runtime check recommended |
 
 ---
@@ -472,7 +467,7 @@ pio pkg install --save "adafruit/Adafruit INA219 @ ^1.3.0"
 | **Adafruit BME280** | ✅ Active | 2024 | Actively maintained |
 | **Adafruit seesaw** | ✅ Active | 2023 | Actively maintained |
 | **OneWire (PaulStoffregen)** | ✅ Active | 2021 | Maintained; stable, no major changes |
-| **DallasTemperature** | ✅ Active | 2023 | Actively maintained by community |
+| **Adafruit DS248x** | ✅ Active | 2023 | Well-maintained; stable API |
 | **TFT_eSPI (Bodmer)** | ✅ Active | 2024 | Highly active; frequent updates |
 | **TFT_eSPI (Freenove fork)** | ⚠️ Static | [UNKNOWN] | Freenove's fork may lag behind upstream |
 | **Arduino Core ESP32** | ✅ Active | 2024 | Actively maintained by Espressif |
@@ -482,11 +477,11 @@ pio pkg install --save "adafruit/Adafruit INA219 @ ^1.3.0"
 
 **Low Risk (Safe to update):**
 - Adafruit sensor libraries (well-tested, backward-compatible)
-- OneWire (stable, no major API changes)
+- OneWire (stable, no major API changes; used for CRC8 only)
 
 **Medium Risk (Test before updating):**
 - TFT_eSPI (frequent updates; may include breaking changes)
-- DallasTemperature (API stable; but sentinel value may change with version)
+- Adafruit_DS248x (stable; but I2C timing may vary slightly)
 
 **High Risk (Recommend against updating):**
 - Arduino Core ESP32 (major version changes may break build)
@@ -578,11 +573,12 @@ pio run -t monitor
 | **Framework** | Runtime | 1 | ✅ Yes | Arduino |
 | **Sensor Libraries** | I2C drivers | 5 | ✅ Yes (but optional for individual sensors) | All Adafruit |
 | **Seesaw Library** | Encoder/gamepad | 1 | ✅ Optional | Adafruit |
-| **Protocol Libraries** | 1-Wire driver | 2 | ✅ Optional | OneWire + DallasTemperature |
+| **I2C-to-1-Wire Bridge** | DS2484 adapter driver | 1 | ✅ Yes | Adafruit_DS248x |
+| **Protocol Utilities** | CRC8 validation | 1 | ✅ Yes | OneWire (utility only) |
 | **Display Library** | TFT driver | 1 | ✅ Yes | TFT_eSPI (Freenove) |
 | **Sub-dependencies** | Auto-installed | 3 | ✅ Yes | Adafruit_BusIO, Adafruit_Sensor, seesaw_NeoPixel |
 | **Custom Libraries** | Local | 2 | ✅ Yes | TFT_eSPI, TFT_Touch (local Freenove copy) |
-| **Hardware Sensors** | I2C/1-Wire | 9 I2C + 8 1-Wire | Mostly Optional | All connected to same I2C/1-Wire buses |
+| **Hardware Sensors** | I2C + 1-Wire | 9 I2C + 3 1-Wire | Mostly Optional | All connected to same I2C/1-Wire buses |
 | **External Services** | Cloud/Network | 0 | ✗ No | None |
 | **Databases** | Persistent Storage | 0 | ✗ No | None (RAM-only) |
 
@@ -611,14 +607,29 @@ float humidity = bme280.readHumidity();
 float pressure = bme280.readPressure();
 ```
 
-### DS18B20 (Temperature)
+### DS18B20 (Temperature via DS2484 1-Wire Bridge)
 
 ```cpp
-DallasTemperature sensors(&oneWire);
-sensors.begin();
-sensors.requestTemperatures();
-float tempC = sensors.getTempC(address);
-if (tempC <= DEVICE_DISCONNECTED_C) { /* disconnected */ }
+Adafruit_DS248x ds2484Master;
+ds2484Master.begin(&Wire, 0x18);
+
+// Broadcast convert T to all sensors
+ds2484Master.OneWireReset();
+ds2484Master.OneWireWriteByte(0xCC);  // Skip ROM
+ds2484Master.OneWireWriteByte(0x44);  // Convert T
+delay(850);                            // Wait for conversion
+
+// Read temperature from specific sensor
+ds2484Master.OneWireReset();
+ds2484Master.OneWireWriteByte(0x55);   // Match ROM
+for (uint8_t i = 0; i < 8; i++)
+  ds2484Master.OneWireWriteByte(rom_address[i]);
+ds2484Master.OneWireWriteByte(0xBE);   // Read Scratchpad
+uint8_t lsb, msb;
+ds2484Master.OneWireReadByte(&lsb);
+ds2484Master.OneWireReadByte(&msb);
+int16_t raw = (int16_t)((msb << 8) | lsb);
+float tempC = raw * 0.0625f;
 ```
 
 ### Seesaw Encoder/Gamepad

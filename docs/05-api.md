@@ -1,6 +1,6 @@
 # API & External Interfaces: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
+**Last Updated:** 2026-09-23  
 **Project Type:** Embedded Firmware (No HTTP/REST APIs)
 
 ---
@@ -13,8 +13,8 @@ The sensor-pages-dashboard is a **bare-metal embedded firmware** running on ESP3
 
 | Protocol | Role | Devices | Direction |
 |----------|------|---------|-----------|
-| **I2C** | Multi-master sensor/controller bus | ESP32 ↔ 9 I2C devices | Bidirectional |
-| **1-Wire** | Single-wire temperature bus | ESP32 ↔ DS18B20 sensors | Bidirectional |
+| **I2C** | Multi-master sensor/controller bus | ESP32 ↔ 10 I2C devices (9 direct + 1 adapter) | Bidirectional |
+| **1-Wire** | Single-wire temperature bus (via I2C adapter) | ESP32 ↔ DS2484 ↔ DS18B20 sensors | Bidirectional |
 | **SPI** | Display graphics bus | ESP32 ↔ TFT display | Unidirectional (write-only) |
 | **Serial UART** | Debug output only | ESP32 → Host (USB) | Unidirectional (write-only) |
 
@@ -351,7 +351,137 @@ if (aPressed && !lastA) {
 
 ---
 
-### I2C Read Functions (Low-Level Helpers)
+#### Device 10: DS2484 I2C-to-1-Wire Adapter @ 0x18
+
+**Purpose:** Discover and read temperature from multiple 1-Wire sensors (DS18B20, DS1822, DS1820, etc.) via I2C-to-1-Wire bridge using Adafruit DS248x library.
+
+**Hardware:** Adafruit DS2484 I2C to 1-Wire Bus Adapter Breakout.
+
+**Protocol:** Adafruit DS248x library (low-level 1-Wire commands over I2C).
+
+**Library:** Adafruit DS248x @ 1.2.0
+
+**Supported Commands (via Adafruit_DS248x class):**
+
+| Function | Returns | Purpose |
+|----------|---------|----------|
+| `begin(TwoWire*, uint8_t address)` | bool | Initialize adapter at address (0x18 default) |
+| `OneWireReset()` | bool | Reset 1-Wire bus; returns true if presence pulse detected |
+| `OneWireSearchReset()` | bool | Start ROM address search sequence |
+| `OneWireSearch(uint8_t* address)` | bool | Find next device; fills 8-byte address array; returns false when search complete |
+| `OneWireWriteByte(uint8_t byte)` | bool | Write byte to 1-Wire bus; returns success |
+| `OneWireReadByte(uint8_t* byte)` | bool | Read byte from 1-Wire bus; returns success |
+
+**1-Wire Protocol Sequence (readDs2484Temperatures):**
+
+**Broadcast Convert T (all sensors):**
+```
+1. OneWireReset()             // Presence pulse
+2. OneWireWriteByte(0xCC)     // Skip ROM (broadcast to all)
+3. OneWireWriteByte(0x44)     // Convert T (start conversion)
+4. delay(850)                 // 12-bit resolution = 750 ms typical
+```
+
+**Read Temperature (per-device):**
+```
+1. OneWireReset()             // Presence pulse
+2. OneWireWriteByte(0x55)     // Match ROM (select specific device)
+3. OneWireWriteByte(addr[0])
+4. OneWireWriteByte(addr[1])
+5. ... (repeat for all 8 bytes of ROM address)
+6. OneWireWriteByte(0xBE)     // Read Scratchpad
+7. OneWireReadByte(&LSB)      // Temperature LSB
+8. OneWireReadByte(&MSB)      // Temperature MSB
+9. Convert: temp_C = raw_16bit * 0.0625
+```
+
+**Resolution & Timing:**
+
+| Resolution | Conversion Time | Accuracy |
+|------------|---|---|
+| 9 bits | ~95 ms | 0.5 °C |
+| 10 bits | ~188 ms | 0.25 °C |
+| 11 bits | ~375 ms | 0.125 °C |
+| **12 bits (default)** | **~750 ms** | **0.0625 °C** |
+
+**Firmware Config:** 12-bit standard resolution (hardcoded in readDs2484Temperatures() with 850 ms delay).
+
+**1-Wire Address Format (64-bit ROM-ID):**
+```
+Byte 0:   Family Code (0x28=DS18B20, 0x22=DS1822, 0x10=DS1820, etc.)
+Bytes 1-6: Serial Number (unique per device)
+Byte 7:   CRC8 checksum (validated via OneWire::crc8() function)
+```
+
+**Display Format:** HEX string (e.g., "28:AB:CD:EF:01:02:03:04").
+
+**Polling Schedule:**
+- **Bus Scan:** Every 60 seconds (detect new/missing sensors)
+- **Temperature Polling:** Every 3 seconds (read current values)
+- **First Scan:** Forced immediately on boot (despite lastScanMs=0)
+
+**Error Handling:**
+- CRC checksum failure: mark sensor offline after 3 consecutive errors
+- No ACK on bus operation: increment error counter; skip this read
+- Recovery: reset error counter to 0 when successful read occurs
+- Max sensors: 3 (hardware limit of Adafruit DS2484 breakout board)
+
+**Serial Debug Output (115200 baud, for development only):**
+```
+Probing DS2484 at 0x18...
+DS2484: FOUND
+DS2484: Initialized at 0x18
+DS2484: Scanning 1-Wire bus...
+DS2484: Found sensor 0: 28:bb:0e:68:05:00:00:fa
+DS2484: Bus scan complete - found 1 sensors
+DS2484: Sensor 0 temp = 20.50C
+```
+
+**Failure Mode:** If `ds2484Master.begin()` fails at boot, `available.ds2484 = false`; page 9 displays error screen.
+
+---
+
+## 2. Serial Debug Output
+
+**Configuration:**
+- Baud rate: 115200
+- Port: /dev/ttyUSB0 (hardware serial via USB UART bridge)
+- Purpose: Development and troubleshooting only (not user-facing)
+
+**DS2484-Related Messages:**
+
+| Message | Meaning | When |
+|---------|---------|------|
+| `Probing DS2484 at 0x18...` | Attempting to initialize adapter | Boot (detectSensors) |
+| `DS2484: FOUND` | Adapter detected and responding | Boot success |
+| `DS2484: NOT FOUND` | Adapter not detected on I2C bus | Boot failure |
+| `DS2484: Initialized at 0x18` | Adapter initialization complete | initDs2484() success |
+| `DS2484: Initialization FAILED` | Adapter initialization error | initDs2484() failure |
+| `DS2484: Scanning 1-Wire bus...` | Starting 60-second bus scan | performDs2484Scan() |
+| `DS2484: Found sensor 0: 28:bb:0e:68:05:00:00:fa` | Sensor discovered | performDs2484Scan() per sensor |
+| `DS2484: Bus scan complete - found 1 sensors` | Bus scan finished | performDs2484Scan() end |
+| `DS2484: Sensor 0 temp = 20.50C` | Temperature reading | readDs2484Temperatures() per sensor |
+
+**Example Boot Sequence Output:**
+```
+[  1940][E][Wire.cpp:513] requestFrom(): i2cRead returned Error 263
+[  2964][E][Wire.cpp:513] requestFrom(): i2cRead returned Error 263
+Probing DS2484 at 0x18...
+DS2484: FOUND
+DS2484: Initialized at 0x18
+DS2484: Scanning 1-Wire bus...
+DS2484: Found sensor 0: 28:bb:0e:68:05:00:00:fa
+DS2484: Bus scan complete - found 1 sensors
+DS2484: Sensor 0 temp = 20.50C
+```
+
+**Notes:**
+- Wire.cpp error 263 messages are expected (probe of missing sensors like SCD30 @ 0x61)
+- Serial output available only via USB connection; not stored or persisted
+
+---
+
+## 3. I2C Read Functions (Low-Level Helpers)
 
 #### readReg16(address, reg, &value)
 
@@ -408,45 +538,39 @@ uint16_t value    // 16-bit value to write
 
 ---
 
-## 2. 1-Wire Bus Protocol
+## 2. 1-Wire Bus Protocol (via DS2484 I2C Adapter)
 
 ### Overview
 
-**Master:** ESP32 (GPIO23)  
+**Interface:** I2C-to-1-Wire adapter (DS2484 @ 0x18)  
 **Topology:** Single-wire, parasitic or external power  
-**Devices:** DS18B20 temperature sensors (max 8)  
+**Devices:** DS18B20, DS1822, DS1820, and other compatible 1-Wire temperature sensors (max 3)  
 **Addressing:** 64-bit ROM addresses (8-byte device IDs)  
 
-### DS18B20 Temperature Sensors @ GPIO23
+### 1-Wire Temperature Sensors (via DS2484 @ 0x18)
 
-**Purpose:** Read temperature from multiple 1-Wire sensors (async non-blocking state machine; rescan every 3 s).
+**Purpose:** Read temperature from multiple 1-Wire sensors via I2C-to-1-Wire bridge (3 second async polling, 60 second bus scan).
 
-**Protocol:** DallasTemperature library (OneWire abstraction).
+**Protocol:** DallasTemperature library (OneWire abstraction over DS2484 I2C interface).
 
-**Supported Commands:**
+**Polling Schedule:**
+- **Bus Scan (60 seconds):** Detect new sensors, verify presence of known sensors
+- **Temperature Conversion (3 seconds):** Request measurements, read values asynchronously
 
-| Function | Returns | Side Effects |
-|----------|---------|---|
-| `ds18b20Sensors.begin()` | void | Initializes OneWire bus |
-| `ds18b20Sensors.setResolution(9)` | void | Set resolution to 9 bits (boot config) |
-| `ds18b20Sensors.setWaitForConversion(false)` | void | Enable non-blocking mode (boot config) |
-| `ds18b20Sensors.getDeviceCount()` | uint8_t | Count of devices on bus |
-| `ds18b20Sensors.getAddress(index)` | bool | Get ROM address of device at index |
-| `ds18b20Sensors.requestTemperatures()` | void | Start conversion on all devices (non-blocking) |
-| `ds18b20Sensors.getTempC(address)` | float | Get temperature after conversion (blocking fetch) |
+**Supported Sensor Types:**
+- DS18B20 (Family Code 0x28)
+- DS1822 (Family Code 0x22)
+- DS1820 (Family Code 0x10)
+- Other DallasTemperature-compatible sensors
 
-**Resolution & Conversion Time:**
+**Max Sensors:** 3 per adapter (Adafruit hardware limit).
 
-| Bits | Conversion Time | Accuracy |
-|------|---|---|
-| 9 | ~95 ms | 0.5 °C |
-| 10 | ~188 ms | 0.25 °C |
-| 11 | ~375 ms | 0.125 °C |
-| 12 | ~750 ms | 0.0625 °C |
+**Resolution (Standard 12-bit):**
+- Conversion time: ~750 ms per sensor
+- Accuracy: 0.0625 °C
+- Temperature range: -55 °C to +125 °C
 
-**Firmware Config:** 9-bit resolution (max ~95 ms conversion).
-
-### Async State Machine (updateDs18b20)
+### Async State Machine (readDs2484Temperatures)
 
 **Cycle Duration:** 100 ms (empirically set, not adjustable).
 

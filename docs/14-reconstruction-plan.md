@@ -532,24 +532,26 @@ Implement all sensor polling, data processing, event handling, state machines, a
     - `bool scd30Ready()` — Check data ready status via command 0x0202
     - Source: [05-api.md](docs/05-api.md), SCD30 section
 
-#### Group 4: State Machines & Async Operations
+#### Group 4: 1-Wire Temperature Polling
 
-11. **Implement `updateDs18b20()` 3-stage state machine**
-    - Stage 1 (pending=false): Call requestTemperatures(), set pending=true, record timestamp, return
-    - Stage 2 (pending=true, elapsed < 100ms): Wait, return
-    - Stage 3 (pending=true, elapsed ≥ 100ms): Call getTempC() for each device, set pending=false
-    - Cycle repeats automatically in loop
-    - Non-blocking: never delays main loop
-    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-008, BR-023
+11. **Implement `performDs2484Scan()` 1-Wire bus scan**
+    - Initialize Adafruit_DS248x adapter via I2C (0x18)
+    - Call OneWireSearchReset() to start device enumeration
+    - Loop: OneWireSearch() fills 8-byte ROM address array
+    - Validate CRC8 of each address using OneWire::crc8()
+    - Store discovered sensors in ds2484Values.sensors[0..2] (max 3)
+    - Timing: First scan forced on boot, then every 60 seconds
+    - Non-blocking: completed within single loop cycle
+    - Source: [05-api.md](docs/05-api.md), Device 10; [04-data-model.md](docs/04-data-model.md), Section 2.8
 
-12. **Implement `rescanDs18b20()` hot-plug detection**
-    - Enumerate 1-Wire bus via DallasTemperature.begin()
-    - Compare new device count + addresses to previous via memcmp()
-    - If changed: update addresses, zero temperatures, reset async state, return true
-    - Else: return false
-    - On change, if currentPage == 1: trigger full page redraw
-    - Called every 3000 ms (DS18B20_RESCAN_MS)
-    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-009
+12. **Implement `readDs2484Temperatures()` async temperature polling**
+    - Stage 1 (every 3 seconds): Broadcast Convert T command (0xCC 0x44) to all devices
+    - Wait 850 ms for 12-bit conversion (750 ms typical + margin)
+    - Stage 2 (same cycle): For each discovered sensor, use Match ROM (0x55) + Read Scratchpad (0xBE)
+    - Read 2 bytes (LSB, MSB) and convert: temp_C = (int16_t)((MSB << 8) | LSB) * 0.0625
+    - Error handling: 3-strike lockout per sensor; recovery on success
+    - Non-blocking: async conversion via DS2484 hardware timer
+    - Source: [05-api.md](docs/05-api.md), Device 10; [04-data-model.md](docs/04-data-model.md), Section 2.8
 
 #### Group 5: Timing & Main Loop
 
@@ -978,15 +980,14 @@ Implement all hardware protocol layers and communication with external devices (
    - On error: print to Serial (if debug enabled), return false from read function
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-002
 
-#### Group 2: 1-Wire Bus Initialization
+#### Group 2: I2C-to-1-Wire Bus Initialization
 
-3. **Initialize 1-Wire bus in `setup()`**
-   - `OneWire oneWire(DS18B20_PIN)` — Create object on GPIO 23
-   - `DallasTemperature ds18b20Sensors(&oneWire)` — Create temperature sensor wrapper
-   - `ds18b20Sensors.begin()` — Scan bus
-   - `ds18b20Sensors.setWaitForConversion(false)` — Enable non-blocking async mode
-   - `ds18b20Sensors.setResolution(9)` — Set 9-bit resolution (95 ms conversion)
-   - Source: [09-configuration.md](docs/09-configuration.md), 1-Wire Configuration
+3. **Initialize DS2484 I2C-to-1-Wire adapter in `setup()`**
+   - `Adafruit_DS248x ds2484Master` — Create adapter object
+   - `ds2484Master.begin(&Wire, DS2484_ADDR)` — Initialize at I2C address 0x18
+   - `initDs2484()` — Guard function that checks initialization success
+   - Set `ds2484Values.lastScanMs = 0` to force immediate bus scan on first loop
+   - Source: [05-api.md](docs/05-api.md), Device 10; [04-data-model.md](docs/04-data-model.md), Section 2.8
 
 #### Group 3: SPI Display Initialization
 
@@ -1055,11 +1056,11 @@ Implement all hardware protocol layers and communication with external devices (
 # Verify Wire.begin present
 grep "Wire.begin" src/main.cpp && echo "I2C OK"
 
-# Verify all 9 I2C addresses in code
-grep -o "0x[0-9a-fA-F][0-9a-fA-F]" src/main.cpp | sort -u | wc -l  # Should be 9+
+# Verify all 10 I2C addresses in code (includes DS2484)
+grep -o "0x[0-9a-fA-F][0-9a-fA-F]" src/main.cpp | sort -u | wc -l  # Should be 10+
 
-# Verify 1-Wire initialization
-grep "OneWire\|DallasTemperature\|setWaitForConversion\|setResolution" src/main.cpp | wc -l
+# Verify DS2484 1-Wire adapter initialization
+grep "Adafruit_DS248x\|performDs2484Scan\|readDs2484Temperatures" src/main.cpp | wc -l
 
 # Verify Serial initialization
 grep "Serial.begin" src/main.cpp && echo "Serial OK"
@@ -1609,7 +1610,7 @@ All phases must complete in sequence: 1→2/3→5/7/9→10→11→12
 | Dew point calculation formula | 7 (Page 0) | Consult meteorological standards or BME280 library docs |
 | SCD30 command protocol details | 9 | Refer to SCD30 datasheet (Sensirion) |
 | VEML sensor register addresses | 9 | Refer to VEML6075/VEML6070 datasheets |
-| DEVICE_DISCONNECTED_C sentinel value | 5, 7 | Check DallasTemperature library version |
+| DS2484 I2C address conflicts | 4 | Run I2C address scanner to detect conflicts |
 | I2C Wire library timeout values | 5, 9 | Check Arduino Wire library source or datasheet |
 | Seesaw firmware version requirements | 2, 9 | Assume ≥3.x; consider runtime version check |
 
