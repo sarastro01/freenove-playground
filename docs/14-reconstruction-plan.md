@@ -781,7 +781,7 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
    - Check available.ina219; if false, return unavailable(...)
    - Render: Bus Voltage, Shunt Voltage, Load Voltage, Current, Power, Coulomb counter (mAh)
    - Coulomb counter: display chargeMah (accumulates since boot)
-   - Colors: Voltage=GREEN, Current=GREEN, Power=MAGENTA
+   - Colors: Voltage=GREEN, Current=GREEN, Power=CYAN
    - Precision: 3 decimals for voltages, 1-2 for currents
    - Source: [07-ui.md](docs/07-ui.md), Page 3 INA219
 
@@ -836,7 +836,7 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 - [ ] All 9 page renderers implemented with correct layout (pixel coordinates match [07-ui.md](docs/07-ui.md))
 - [ ] All page titles displayed in cyan
 - [ ] All labels displayed in white
-- [ ] All sensor values displayed in correct colors (green/orange/cyan/magenta as specified)
+- [ ] All sensor values displayed in correct colors (green/orange/cyan/red as specified; never magenta)
 - [ ] Header drawn with divider line @ y=38
 - [ ] Footer drawn with navigation hints
 - [ ] "Sensor nicht vorhanden" error screen displays for missing sensors

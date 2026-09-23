@@ -110,7 +110,7 @@ Zeile 200: Power:           XXXX mW
 - **Batterie-Spannung:** TFT_GREEN (kritischer Wert)
 - **Versorgungsspannung:** TFT_GREEN (kritischer Wert)
 - **Strom:** TFT_ORANGE (mit Status-Label)
-- **Ladung:** TFT_MAGENTA (Historischer Wert)
+- **Ladung:** TFT_CYAN (Historischer Wert — bright, sunlight-readable)
 - **Shunt:** TFT_GREEN (Nebenparameter)
 
 ---
@@ -181,7 +181,7 @@ void pageIna219()
   row(80, "Batterie:", String(ina219Values.load, 3) + " V", TFT_GREEN);
   row(104, "Versorgung:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
   row(128, "Strom:", String(ina219Values.current, 1) + " mA [" + statusLabel + "]", TFT_ORANGE);
-  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
+  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_CYAN);
   row(176, "Shunt-Spannung:", String(ina219Values.shunt, 2) + " mV", TFT_GREEN);
   row(200, "Power:", String((uint16_t)ina219Values.power) + " mW", TFT_ORANGE);
   

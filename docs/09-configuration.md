@@ -283,7 +283,7 @@ This handles ESP32 timer wrap-around correctly (millis wraps every ~49 days, mic
 | **Primary data** | TFT_GREEN | (0, 255, 0) | 0x07E0 |
 | **Secondary data** | TFT_ORANGE | (255, 165, 0) | 0xFD20 |
 | **Titles/computed** | TFT_CYAN | (0, 255, 255) | 0x07FF |
-| **Accumulated values** | TFT_MAGENTA | (255, 0, 255) | 0xF81F |
+| **Derived/computed values** | TFT_CYAN | (0, 255, 255) | 0x07FF |
 | **Labels** | TFT_WHITE | (255, 255, 255) | 0xFFFF |
 | **Background** | TFT_BLACK | (0, 0, 0) | 0x0000 |
 | **Error/disconnect** | TFT_RED | (255, 0, 0) | 0xF800 |
@@ -424,7 +424,7 @@ constexpr uint32_t INPUT_REFRESH_MS = 20;    // Faster = more responsive (20ms =
 row(52, "Voltage (V)", String(busV, 3), TFT_GREEN);  // Change TFT_GREEN to another color
 ```
 
-**Available colors:** TFT_RED, TFT_GREEN, TFT_BLUE, TFT_YELLOW, TFT_CYAN, TFT_MAGENTA, etc.
+**Available colors:** TFT_RED, TFT_GREEN, TFT_BLUE, TFT_YELLOW, TFT_CYAN (use CYAN for derived values; never use MAGENTA — not readable in sunlight)
 
 ### Changing Serial Port
 

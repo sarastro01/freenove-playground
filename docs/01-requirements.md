@@ -58,12 +58,12 @@ The system shall display acquired sensor data on a TFT screen with color-coded i
 - Color: 16-bit RGB565
 - Refresh rate: 20 ms (live pages), 500 ms (sensor pages)
 - Data formatted with 1–3 decimal places (precision varies by sensor type)
-- Color coding: green (primary), orange (secondary), cyan (computed), magenta (accumulated)
+- Color coding: green (primary), orange (secondary), cyan (computed/derived), red (errors)
 
 **Evidence:** 
 - TFT initialization: `tft.init()`, `tft.setRotation(3)`
 - Page renderers: `pageBme280()`, `pageIna219()`, etc.
-- Color constants: TFT_GREEN, TFT_ORANGE, TFT_CYAN, TFT_MAGENTA
+- Color constants: TFT_GREEN, TFT_ORANGE, TFT_CYAN, TFT_RED (no TFT_MAGENTA — not readable in sunlight)
 
 ---
 

@@ -668,7 +668,9 @@ State: fetching
 | TFT_GREEN | 0x07E0 | Sensor readings (pass) |
 | TFT_ORANGE | 0xFD20 | Sensor readings (warning) |
 | TFT_RED | 0xF800 | Error messages |
-| TFT_MAGENTA | 0xF81F | Computed values |
+| TFT_CYAN | 0x07FF | Computed/derived values (bright, sunlight-readable) |
+
+**⚠️ Avoid:** TFT_MAGENTA (0xF81F) — Not readable in bright environments
 
 **Layout Constants:**
 

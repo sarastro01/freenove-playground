@@ -930,7 +930,7 @@ uint8_t key  = lastEvent >> 2;         // Bits 2–7: Key pin index (0–15)
 **Evidence:**  
 - `readGamepadAt40Hz()` lines 250–256
 - Display helper `gamepadEventText()` lines 488–497
-- Page display line 506: `row(268, "Last event:", gamepadEventText(), TFT_MAGENTA);`
+- Page display line 506: `row(268, "Last event:", gamepadEventText(), TFT_CYAN);`
 
 **Confidence:**  
 HIGH

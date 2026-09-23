@@ -544,7 +544,7 @@ void pageIna219()
   row(80, "Batterie:", String(ina219Values.load, 3) + " V", TFT_GREEN);
   row(104, "Versorgung:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
   row(128, "Strom:", String(ina219Values.current, 1) + " mA [" + statusLabel + "]", TFT_ORANGE);
-  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
+  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_CYAN);
   row(176, "Shunt-Spannung:", String(ina219Values.shunt, 2) + " mV", TFT_GREEN);
   row(200, "Power:", String((uint16_t)ina219Values.power) + " mW", TFT_ORANGE);
   
@@ -559,7 +559,7 @@ void pageVeml6075()
   row(104, "UVCOMP1/2:", String(veml6075Values.comp1) + " / " + String(veml6075Values.comp2), TFT_ORANGE);
   row(128, "UVA compensated:", String(veml6075Values.uvaComp, 1), TFT_CYAN);
   row(152, "UVB compensated:", String(veml6075Values.uvbComp, 1), TFT_CYAN);
-  row(176, "UV index:", String(veml6075Values.index, 2), TFT_MAGENTA);
+  row(176, "UV index:", String(veml6075Values.index, 2), TFT_CYAN);
   footer("Y/A: Seite wechseln | VEML6075");
 }
 
@@ -664,8 +664,8 @@ void pageGamepad()
   row(152, "Button A:", gamepadButtonState(GAMEPAD_BUTTON_A), TFT_ORANGE);
   row(176, "Button B:", gamepadButtonState(GAMEPAD_BUTTON_B), TFT_ORANGE);
   row(200, "Select / Start:", gamepadButtonState(GAMEPAD_BUTTON_SELECT) + " / " + gamepadButtonState(GAMEPAD_BUTTON_START), TFT_ORANGE);
-  row(224, "Button mask:", String("0x") + String((unsigned long)gamepadValues.buttons, HEX), TFT_MAGENTA);
-  row(248, "Last event:", gamepadEventText(), TFT_MAGENTA);
+  row(224, "Button mask:", String("0x") + String((unsigned long)gamepadValues.buttons, HEX), TFT_CYAN);
+  row(248, "Last event:", gamepadEventText(), TFT_CYAN);
   footer("Y/A: Seite wechseln | Gamepad QT");
 }
 
