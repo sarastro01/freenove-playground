@@ -471,6 +471,106 @@ tft.setSPISpeed(40000000);  // 40 MHz (slower for stability)
 
 ---
 
+## Large Display Mode Configuration (FR-012 — Page 2 INA219) — **NEW**
+
+### Layout Parameters
+
+Large Display Mode uses hardcoded pixel coordinates and font sizes for centered rendering. To customize layout, edit these constants in `sensor-pages-dashboard/src/main.cpp`:
+
+#### Display Coordinates (pixels)
+
+| Element | Variable | Value | Notes |
+|---------|----------|-------|-------|
+| Header Y | — | 18 | Header "INA219 Large Display" |
+| Separator Y | — | 48 | DarkGrey horizontal divider line |
+| Label Y | — | 70 | Value name (e.g., "Batterie") |
+| Value Y | — | 160 | Enlarged value display (focal point) |
+| Unit Y | — | 240 | Unit string (e.g., "V") |
+| Footer Y | — | 295 | Navigation footer "B:next X:prev Y:exit" |
+| All X | — | 240 | Horizontal center (480 ÷ 2) |
+
+**Adjustment Strategy:**
+- Y coordinates are fixed by display resolution and layout goals (320 px vertical height)
+- To reposition: Edit y values in `pageLargeDisplayIna219()` function (lines 263–312)
+- X coordinate (240) should remain centered; do not modify unless display resolution changes
+
+#### Font Sizes
+
+| Element | Font | Size | Purpose |
+|---------|------|------|---------|
+| Header | 4 | Medium | Section title; readable, not too large |
+| Label | 4 | Medium | Value name; contrast with footer |
+| Value | 8 | Large | Focal point; maximized readability |
+| Unit | 4 | Medium | Secondary info; readable with value |
+| Footer | 2 | Small | Navigation hint; doesn't dominate screen |
+
+**Font Adjustment:**
+- Standard TFT_eSPI fonts: 1–8 (increasing size)
+- Font 8 is maximum practical size for value display on 320 px height
+- To change: Edit font number in `pageLargeDisplayIna219()` calls (lines ~280–310)
+- Test on hardware after any change; verify text fits within screen bounds
+
+#### Color Scheme
+
+| Element | Color | TFT_eSPI Constant | RGB565 | Rationale |
+|---------|-------|-------------------|--------|-----------|
+| Header | Cyan | `TFT_CYAN` | 0x07FF | High contrast; derived value indicator |
+| Label | Cyan | `TFT_CYAN` | 0x07FF | Matches header; visual coherence |
+| Value (Cyan) | Cyan | `TFT_CYAN` | 0x07FF | Laufzeit, Ladung (computed values) |
+| Value (Green) | Green | `TFT_GREEN` | 0x07E0 | Batterie, Versorgung, Shunt (raw measurements) |
+| Value (Orange) | Orange | `TFT_ORANGE` | 0xFD20 | Strom, Power (secondary values) |
+| Unit | White | `TFT_WHITE` | 0xFFFF | Maximum contrast; supplement to value |
+| Footer | DarkGrey | `TFT_DARKGREY` | 0x39E7 | Subtle; navigation hint (not focal) |
+| Background | Black | `TFT_BLACK` | 0x0000 | Contrast base; power efficiency |
+
+**Color Assignment per Index:**
+- See [07-ui.md Section 7.2](07-ui.md#72-value-index--display-mapping) for exact index-to-color mapping
+
+**Customization:**
+- Edit color constants in `pageLargeDisplayIna219()` (lines ~285–310)
+- See [TFT_eSPI documentation](https://github.com/Bodmer/TFT_eSPI) for available color names
+- Test on actual display; colors may appear different under different lighting
+
+### Value Formatting Configuration
+
+Large Display Mode value formatting is inherited from the standard INA219 page via helper functions:
+
+| Index | Value Source | Decimal Places | Unit | Function |
+|-------|--------------|-----------------|------|----------|
+| 0 | Runtime counter | N/A | — | `formatRuntime()` (HH:MM:SS) |
+| 1 | Load voltage | 3 | V | `getLargeDisplayValue(1)` |
+| 2 | Bus voltage | 3 | V | `getLargeDisplayValue(2)` |
+| 3 | Current | 1 | mA | `getLargeDisplayValue(3)` |
+| 4 | Charge (mAh) | 3 | mAh | `getLargeDisplayValue(4)` |
+| 5 | Shunt voltage | 2 | mV | `getLargeDisplayValue(5)` |
+| 6 | Power | 0 | mW | `getLargeDisplayValue(6)` |
+
+**To Modify Decimal Places:**
+- Edit cases in `getLargeDisplayValue()` function (lines ~200–210)
+- Change `sprintf()` format string (e.g., `"%.1f"` for 1 decimal)
+- Rebuild and test: `pio run -t upload`
+
+**Consistency Requirement:**
+- Decimal places in large display must match standard page exactly
+- Verify both pages after any decimal change
+
+### Refresh Rate Configuration
+
+| Parameter | Current | Location | Notes |
+|-----------|---------|----------|-------|
+| `SENSOR_REFRESH_MS` | 500 | Line 55 | INA219 page base refresh (includes large display) |
+| `INPUT_REFRESH_MS` | 10 | Line 55 | Gamepad polling (100 Hz for button responsiveness) |
+
+**Large Display Mode inherits Page 2 refresh rate (500 ms).** To change:
+1. Edit `SENSOR_REFRESH_MS` constant in src/main.cpp
+2. Recompile: `pio run`
+3. Upload: `pio run -t upload`
+4. Verify timing on hardware
+
+**Performance Constraint:** Render time must fit within refresh window (~450 ms out of 500 ms available).
+
+---
+
 ## Known Configuration Limitations
 
 | Limitation | Impact | Workaround |

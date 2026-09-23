@@ -471,6 +471,98 @@ This ensures sensors are discovered immediately after boot, even though `lastSca
 
 ---
 
+### 2.9 Large Display Mode State (INA219 Page 2) — **NEW**
+
+**Purpose:** Track state for alternate display mode showing individual INA219 sensor values in large, centered format.
+
+**Lifecycle:** Initialized at boot; updated when user enters/exits large display mode and cycles through values.
+
+**Scope:** Global static, mutable; fields updated by button input handling in `loop()`.
+
+**Feature Scope:** INA219 page only (Page 2); extensible to other sensor pages in future versions.
+
+```cpp
+bool largeDisplayMode = false;        // 1 byte  — Is large display mode active?
+uint8_t largeDisplayIndex = 0;        // 1 byte  — Current value index (0–6)
+```
+
+**Field Details:**
+
+| Field | Type | Size | Interpretation | Set By | Read By | Range | Constraint |
+|-------|------|------|---|---|---|---|---|
+| `largeDisplayMode` | bool | 1 B | Mode active? | Button input (B enters, Y exits) | Page renderers, button logic | {false, true} | Toggled by user; reset to false on exit |
+| `largeDisplayIndex` | uint8_t | 1 B | Current value index | Button input (B/X cycle) | Page renderers, display helpers | 0–6 | Wraps via modulo; 7 values total |
+
+**Value Index Mapping (0–6, corresponds to 7 INA219 measurements):**
+
+| Index | Label (German) | Value | Unit | Color | Format |
+|-------|---|---|---|---|---|
+| 0 | Laufzeit | Runtime in seconds | s | Cyan | Integer |
+| 1 | Batterie | Bus voltage | V | Green | 3 decimals |
+| 2 | Versorgung | Shunt voltage | mV | Green | 3 decimals |
+| 3 | Strom | Current | mA | Orange | 3 decimals |
+| 4 | Ladung | Accumulated charge | mAh | Cyan | 3 decimals |
+| 5 | Shunt-Spannung | Load voltage (bus - shunt/1000) | V | Green | 3 decimals |
+| 6 | Power | Power | mW | Orange | 3 decimals |
+
+**State Transitions:**
+
+```
+Normal Page View
+       ↓ (Button B pressed on Page 2)
+       ↓
+Large Display Mode (index 0)
+       ↓ (Button B cycles forward)
+Large Display Mode (index 1–6)
+       ↓ (Button X cycles backward)
+Large Display Mode (index 0–5)
+       ↓ (Button Y pressed)
+       ↓
+Normal Page View (index = 0 on exit)
+```
+
+**Button Behavior in Large Display Mode:**
+- **Button B (Forward Cycle):** `largeDisplayIndex = (largeDisplayIndex + 1) % 7`; renders next value
+- **Button X (Reverse Cycle):** `largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7`; renders previous value
+- **Button Y (Exit):** `largeDisplayMode = false; largeDisplayIndex = 0`; return to normal page view
+- **Button A (Inactive):** No effect (reserved for future use; page navigation disabled during large display mode)
+- **Y/A Page Navigation:** **DISABLED** while `largeDisplayMode = true`; only re-enabled after mode exit
+
+**Critical Design Decision:**
+While in large display mode, **page navigation buttons (Y/A) are repurposed**:
+- Button Y: Interpreted as "exit large display mode" (NOT "previous page")
+- Button A: Completely inactive
+- Standard circular pagination **does not occur** until mode is exited via Button Y
+- This prevents accidental page changes while cycling through values
+
+**Data Access:**
+- All values read directly from global `ina219Values` struct
+- No caching; real-time updates every 500 ms (page native refresh cycle)
+- Values displayed with identical formatting as standard `pageIna219()` display
+
+**Display Layout (Large Display Mode):**
+```
+┌─────────────────────────────────────────┐
+│ [HEADER - empty space (no title)]       │
+│                                         │
+│ [LABEL - centered, Font 4]              │  e.g., "Laufzeit"
+│                                         │
+│ [VALUE - centered, Font 8]              │  e.g., "123456"
+│                                         │
+│ [UNIT - centered, Font 2]               │  e.g., "s"
+│                                         │
+│ [FOOTER - centered, Font 1]             │  "B:next X:prev Y:exit"
+└─────────────────────────────────────────┘
+```
+
+**Refresh Rate:** Inherits page native rate (500 ms for INA219 page).
+
+**Reboot Behavior:** Both `largeDisplayMode` and `largeDisplayIndex` reset to false/0.
+
+**Performance Profiling Note:** Render time for large display should be profiled to ensure 500 ms refresh cycle is maintained. Font 8 rendering is expensive; optimize if needed.
+
+---
+
 ## 3. Auxiliary Global Variables
 
 Beyond the main data structs, several global scalars track runtime state:
@@ -829,6 +921,82 @@ if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
 **I2C Protocol:** Sensor values deserialized from I2C bytes on read; never serialized on write (devices are read-only from firmware perspective).
 
 **Display Rendering:** In-memory floats converted to strings for TFT display; no persistent format.
+
+---
+
+### 2.12 Large Display Mode State (INA219 Page 2) — **NEW**
+
+**Purpose:** Global flags controlling INA219 large display mode activation and value selection (Feature FR-012).
+
+**Lifecycle:** Initialized at boot to false/0; modified by button handlers in main loop; reset to false/0 when page changes away from Page 2 or when Y button pressed.
+
+**Scope:** Global static, mutable.
+
+```cpp
+bool largeDisplayMode = false;        // 1 byte — Is large display mode active?
+uint8_t largeDisplayIndex = 0;        // 1 byte — Current displayed value (0-6)
+```
+
+**Field Details:**
+
+| Field | Type | Initial | Set By | Constraint | Read By |
+|-------|------|---------|--------|-----------|---------|
+| `largeDisplayMode` | bool | false | Button B (enter Page 2) / Button Y (exit) / Page change handler (safety reset) | Only true on Page 2 (INA219); never true on other pages | `pageIna219()` conditional logic |
+| `largeDisplayIndex` | uint8_t | 0 | Button B (increment) / Button X (decrement) / Page change handler (reset) | Range 0–6 (7 values); wraps with `(index ± 1) % 7` | `pageLargeDisplayIna219()` parameter |
+
+**State Machine:**
+
+```
+[Standard Page View on Page 2]
+         ↓
+    [Button B pressed]
+         ↓
+[Large Display Mode, Index 0]
+    ↓  ↓  ↓
+   [B] [X] [Y]
+    ↓  ↓  ↓
+[+1] [-1] [exit]
+    ↓  ↓  ↓
+  [±1 mod 7] [reset → Standard Page View]
+         ↓
+[Loop: Index 0-6, Real-time updates]
+```
+
+**Entry Condition:** `largeDisplayMode == false AND currentPage == 2 AND Button B pressed AND !(buttonsBefore & B)`
+
+**Exit Condition:** `largeDisplayMode == true AND Button Y pressed AND !(lastY)`
+
+**Safety Reset:** On page change away from Page 2 (in `loop()` around line 1026-1029):
+```cpp
+if (lastPage == 2 && currentPage != 2) {
+  largeDisplayMode = false;
+  largeDisplayIndex = 0;
+}
+```
+
+**Value Mapping (7 values total):**
+
+| Index | German Label | Field | Type | Unit | Refresh |
+|-------|------|-------|------|------|---------|
+| 0 | Laufzeit | `formatRuntime(micros() - ina219Values.startTimeUs)` | String (HH:MM:SS) | (none) | 500 ms |
+| 1 | Batterie | `ina219Values.load` | float | V | 500 ms |
+| 2 | Versorgung | `ina219Values.bus` | float | V | 500 ms |
+| 3 | Strom | `ina219Values.current` | float | mA | 500 ms |
+| 4 | Ladung | `ina219Values.chargeMah` | float | mAh | 500 ms |
+| 5 | Shunt-Spannung | `ina219Values.shunt` | float | mV | 500 ms |
+| 6 | Power | `ina219Values.power` | float | mW | 500 ms |
+
+**Refresh Rate:** Inherits from INA219 page native rate (500 ms for `readSensors()` cycle). No independent timer; renders on normal page refresh schedule.
+
+**Memory:** 2 bytes total (1 bool + 1 uint8_t); negligible for 320 KB heap.
+
+**Persistence:** Not persisted; lost on reboot. Reset to initial state on every power cycle.
+
+**Dependencies:**
+- Requires `available.ina219 == true` (sensor must be detected)
+- Requires `currentPage == 2` (can only activate on INA219 page)
+- Requires gamepad functionality (Button B, X, Y detection)
+- Reads from `ina219Values` global struct (populated by `readIna219At50Hz()`)
 
 ---
 

@@ -22,6 +22,249 @@ The sensor-pages-dashboard is a **bare-metal embedded firmware** running on ESP3
 
 ---
 
+## 0. Large Display Helper Functions (INA219 Page 2) — **NEW**
+
+### Overview
+
+The large display mode provides an alternate UI for the INA219 power monitor (Page 2) that displays individual sensor values in enlarged, centered format. Four helper functions support this feature and are designed generically for future extension to other sensor pages.
+
+### Helper Functions
+
+#### 1. `void pageLargeDisplayIna219(uint8_t valueIndex)`
+
+**Purpose:** Main render function for large display mode; displays one INA219 value in centered, enlarged format.
+
+**Signature:**
+```cpp
+void pageLargeDisplayIna219(uint8_t valueIndex);
+```
+
+**Parameters:**
+- `valueIndex` (uint8_t): Index 0–6, selects which INA219 value to display (see mapping table below)
+
+**Display Layout (Landscape 480×320):**
+```
+┌──────────────────────────────────────────────────────┐
+│ INA219 Large Display (y=18, Font 4, Cyan)           │
+├──────────────────────────────────────────────────────┤
+│ Separator line (y=48)                               │
+│                                                      │
+│ [LABEL - centered] (y=70, Font 4, Cyan)             │
+│                                                      │
+│ [VALUE - centered] (y=160, Font 8, Color-coded)     │
+│                                                      │
+│ [UNIT - centered] (y=240, Font 4, White)            │
+│                                                      │
+│ B:next X:prev Y:exit (y=295, Font 2, DarkGrey)     │
+└──────────────────────────────────────────────────────┘
+```
+
+**Behavior:**
+- Calls `fillScreen(TFT_BLACK)` to clear display atomically
+- Draws header "INA219 Large Display" in Font 4 at (x=240, y=18), TFT_CYAN
+- Draws separator line (TFT_DARKGREY) at y=48
+- Calls `getLargeDisplayLabel()`, `getLargeDisplayValue()`, `getLargeDisplayUnit()`, `getLargeDisplayColor()` to fetch display components
+- Renders label in Font 4 at (x=240, y=70), TFT_CYAN
+- Renders value in Font 8 at (x=240, y=160) using `getLargeDisplayColor()` for dynamic color
+- Renders unit in Font 4 at (x=240, y=240), TFT_WHITE
+- Renders footer with navigation instructions in Font 2 at (x=240, y=295), TFT_DARKGREY
+- All text centered using MC_DATUM (middle-center alignment)
+- Text datum reset to TL_DATUM after rendering
+
+**Refresh Rate:** Inherits page native rate (500 ms for INA219 page).
+
+**Side Effects:** Updates TFT display via SPI.
+
+**Performance:** Render time should be < 450 ms to maintain 500 ms refresh cycle.
+
+**Callers:** `pageIna219()` when `largeDisplayMode = true`.
+
+---
+
+#### 2. `const char* getLargeDisplayLabel(uint8_t valueIndex)`
+
+**Purpose:** Returns German label for a given value index.
+
+**Signature:**
+```cpp
+const char* getLargeDisplayLabel(uint8_t valueIndex);
+```
+
+**Parameters:**
+- `valueIndex` (uint8_t): Index 0–6
+
+**Returns:** Const pointer to German label string (null-terminated)
+
+**Label Mapping:**
+
+| Index | Label | Description |
+|-------|-------|-------------|
+| 0 | "Laufzeit" | Runtime (HH:MM:SS format) |
+| 1 | "Batterie" | Load Voltage (battery terminal voltage) |
+| 2 | "Versorgung" | Bus Voltage (supply voltage) |
+| 3 | "Strom" | Current (current draw) |
+| 4 | "Ladung" | Charge (accumulated mAh) |
+| 5 | "Shunt-Spannung" | Shunt Voltage (sensing voltage) |
+| 6 | "Power" | Power (instantaneous power) |
+
+**Out of Range:** If `valueIndex > 6`, return "???" (error indicator).
+
+**Callers:** `pageLargeDisplayIna219()`.
+
+---
+
+#### 3. `String getLargeDisplayValue(uint8_t valueIndex)`
+
+**Purpose:** Reads current value from global `ina219Values` struct and returns formatted string. No caching; always reflects latest measurement.
+
+**Signature:**
+```cpp
+String getLargeDisplayValue(uint8_t valueIndex);
+```
+
+**Parameters:**
+- `valueIndex` (uint8_t): Index 0–6
+
+**Returns:** String object with formatted value (numeric only, no units or labels)
+
+**Value Formatting & Source:**
+
+| Index | Label | Source | Format | Example | Unit |
+|-------|-------|--------|--------|---------|------|
+| 0 | Laufzeit | `formatRuntime(micros() - ina219Values.startTimeUs)` | HH:MM:SS | "01:23:45" | (none) |
+| 1 | Batterie | `ina219Values.load` | 3 decimals | "12.411" | V |
+| 2 | Versorgung | `ina219Values.bus` | 3 decimals | "12.456" | V |
+| 3 | Strom | `ina219Values.current` | 1 decimal | "1.2" | mA |
+| 4 | Ladung | `ina219Values.chargeMah` | 3 decimals | "123.456" | mAh |
+| 5 | Shunt-Spannung | `ina219Values.shunt` | 2 decimals | "0.05" | mV |
+| 6 | Power | `ina219Values.power` | 0 decimals (integer) | "15" | mW |
+
+**Special Case (Index 0 - Runtime):**
+- Calculated as elapsed time since `ina219Values.startTimeUs` (set at first INA219 read)
+- Formatted by `formatRuntime()` function as HH:MM:SS (e.g., "01:23:45")
+- Represents total runtime since first sensor measurement
+
+**Consistency Requirement:** Formatting must match standard `pageIna219()` display EXACTLY:
+- Decimal places per value: 3/3/1/3/2/0 (indices 1-6)
+- No scaling of values (values already in correct units from sensor)
+- Same color scheme: Cyan for computed (Laufzeit, Ladung), Green for primary (Batterie, Versorgung, Shunt-Spannung), Orange for secondary (Strom, Power)
+
+**Real-Time Updates:** Reads from `ina219Values` struct on every call; no caching.
+
+**Callers:** `pageLargeDisplayIna219()`.
+
+---
+
+#### 4. `const char* getLargeDisplayUnit(uint8_t valueIndex)`
+
+**Purpose:** Returns unit label for a given value index.
+
+**Signature:**
+```cpp
+const char* getLargeDisplayUnit(uint8_t valueIndex);
+```
+
+**Parameters:**
+- `valueIndex` (uint8_t): Index 0–6
+
+**Returns:** Const pointer to unit string (null-terminated) or empty string if no unit
+
+**Unit Mapping:**
+
+| Index | Label | Unit |
+|-------|-------|------|
+| 0 | Laufzeit | (empty string - time already formatted as HH:MM:SS) |
+| 1 | Batterie | "V" (volts) |
+| 2 | Versorgung | "V" (volts) |
+| 3 | Strom | "mA" (milliamps) |
+| 4 | Ladung | "mAh" (milliamp-hours) |
+| 5 | Shunt-Spannung | "mV" (millivolts) |
+| 6 | Power | "mW" (milliwatts) |
+
+**Out of Range:** If `valueIndex > 6`, return "" (empty string).
+
+**Callers:** `pageLargeDisplayIna219()`.
+
+---
+
+#### 5. `uint16_t getLargeDisplayColor(uint8_t valueIndex)`
+
+**Purpose:** Returns TFT_eSPI color constant for a given value index. Colors match standard `pageIna219()` display scheme.
+
+**Signature:**
+```cpp
+uint16_t getLargeDisplayColor(uint8_t valueIndex);
+```
+
+**Parameters:**
+- `valueIndex` (uint8_t): Index 0–6
+
+**Returns:** TFT_eSPI 16-bit RGB565 color constant
+
+**Color Mapping (Consistent with Standard Page Display):**
+
+| Index | Color | Hex | RGB |
+|-------|-------|-----|-----|
+| 0 | TFT_CYAN | 0x07FF | (0, 255, 255) |
+| 1 | TFT_GREEN | 0x07E0 | (0, 255, 0) |
+| 2 | TFT_GREEN | 0x07E0 | (0, 255, 0) |
+| 3 | TFT_ORANGE | 0xFD20 | (255, 165, 0) |
+| 4 | TFT_CYAN | 0x07FF | (0, 255, 255) |
+| 5 | TFT_GREEN | 0x07E0 | (0, 255, 0) |
+| 6 | TFT_ORANGE | 0xFD20 | (255, 165, 0) |
+
+**Rationale:** Color scheme indicates value category: Cyan (computed), Green (primary), Orange (secondary).
+
+**Out of Range:** If `valueIndex > 6`, return TFT_WHITE (0xFFFF) as error fallback.
+
+**Callers:** `pageLargeDisplayIna219()`.
+
+---
+
+### Function Composition Example
+
+```cpp
+// In pageIna219():
+if (largeDisplayMode) {
+  pageLargeDisplayIna219(largeDisplayIndex);
+}
+else {
+  // Normal page rendering ...
+}
+
+// In pageLargeDisplayIna219(valueIndex):
+const char* label = getLargeDisplayLabel(valueIndex);      // "Laufzeit"
+String value = getLargeDisplayValue(valueIndex);           // "12345"
+const char* unit = getLargeDisplayUnit(valueIndex);        // "s"
+uint16_t color = getLargeDisplayColor(valueIndex);         // TFT_CYAN
+
+tft.setTextDatum(MC_DATUM);  // Middle-center alignment
+tft.setTextColor(TFT_CYAN);
+tft.drawString(label, 160, 150, 4);         // Font 4
+
+tft.setTextColor(color);
+tft.drawString(value, 160, 200, 8);         // Font 8 (very large)
+
+tft.setTextColor(TFT_WHITE);
+tft.drawString(unit, 160, 280, 2);          // Font 2
+
+tft.setTextColor(TFT_DARKGREY);
+tft.drawString("B:next X:prev Y:exit", 160, 350, 1);  // Font 1, footer
+```
+
+---
+
+### Design for Future Extension
+
+These helper functions are designed generically to support extension to other sensor pages:
+
+1. **Parameterized by page:** Could add a `sensorPage` parameter to identify which sensor's large display mode is active
+2. **Value index ranges:** Different sensors may have different numbers of values; indexes could be page-specific
+3. **Reusable helpers:** `pageLargeDisplayXxx()` renderer function can be replicated for other sensors using same helper pattern
+4. **Consistent UI/UX:** Same layout, fonts, colors, refresh rate across all large display modes
+
+---
+
 ## 1. I2C Bus Protocol
 
 ### Overview

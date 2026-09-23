@@ -52,11 +52,16 @@
 
 constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
-constexpr uint32_t INPUT_REFRESH_MS = 20;
+constexpr uint32_t INPUT_REFRESH_MS = 10;    // 100 Hz for responsive buttons
 constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUTTON_Y) |
                                   (1UL << GAMEPAD_BUTTON_A) | (1UL << GAMEPAD_BUTTON_B) |
                                   (1UL << GAMEPAD_BUTTON_SELECT) | (1UL << GAMEPAD_BUTTON_START);
 
+// Display Configuration: FNK0114N 3.5" TFT with ILI9341 controller
+// Physical Resolution: 320×480 pixels
+// Display Mode: LANDSCAPE (rotation=3 via User_Setup.h)
+// Effective Coordinate System: x=0-480 (horizontal), y=0-320 (vertical)
+// Header: y=0-38, Content Area: y=40-320
 TFT_eSPI tft = TFT_eSPI(320, 480);
 Adafruit_INA219 ina219(0x40);
 Adafruit_TSL2591 tsl2591(2591);
@@ -121,6 +126,8 @@ uint32_t optionsMask = 0;
 float seesawTemperature = 0.0f;
 uint8_t currentPage = 2;  // Start with INA219 page (Page 2)
 uint8_t lastPage = 255;
+bool largeDisplayMode = false;        // INA219 large display mode active
+uint8_t largeDisplayIndex = 0;        // Current value index in large display (0-6)
 int32_t encoderLastPosition = 0;
 uint32_t encoderPressCount = 0;
 uint32_t encoderPressedSince = 0;
@@ -132,6 +139,9 @@ const uint32_t encoderColors[] = {
   seesaw_NeoPixel::Color(255, 48, 0), seesaw_NeoPixel::Color(180, 0, 255)
 };
 const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
+
+// Forward declarations
+String formatRuntime(uint32_t elapsedUs);
 
 void writeText(int x, int y, const String &text, uint16_t color, uint8_t font = 2)
 {
@@ -171,6 +181,133 @@ void unavailable(const char *name, const char *address, const char *addressLabel
   writeText(6, 166, "A: naechste Seite", TFT_WHITE);
   footer("Keine Daten verfuegbar");
 }
+
+// ==================== LARGE DISPLAY MODE HELPER FUNCTIONS (INA219 Page 2) ====================
+
+const char* getLargeDisplayLabel(uint8_t valueIndex)
+{
+  static const char* labels[] = {
+    "Laufzeit",          // 0 - Runtime
+    "Batterie",          // 1 - Bus voltage
+    "Versorgung",        // 2 - Shunt voltage
+    "Strom",             // 3 - Current
+    "Ladung",            // 4 - Charge
+    "Shunt-Spannung",    // 5 - Load voltage
+    "Power"              // 6 - Power
+  };
+  return valueIndex < 7 ? labels[valueIndex] : "???";
+}
+
+String getLargeDisplayValue(uint8_t valueIndex)
+{
+  // Must match standard pageIna219() formatting exactly per BR-033
+  switch (valueIndex) {
+    case 0:  // Runtime (Laufzeit) - use formatRuntime() for HH:MM:SS format
+      {
+        const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
+        return formatRuntime(runtimeUs);
+      }
+    case 1:  // Battery/Load voltage (Batterie) - MUST use ina219Values.load!
+      return String(ina219Values.load, 3);  // 3 decimals
+    case 2:  // Supply/Bus voltage (Versorgung) - MUST use ina219Values.bus!
+      return String(ina219Values.bus, 3);  // 3 decimals
+    case 3:  // Current (Strom) - 1 decimal to match standard page!
+      return String(ina219Values.current, 1);  // 1 decimal (not 3!)
+    case 4:  // Charge (Ladung)
+      return String(ina219Values.chargeMah, 3);  // 3 decimals
+    case 5:  // Load voltage / Shunt voltage (Shunt-Spannung) - MUST use ina219Values.shunt, 2 decimals!
+      return String(ina219Values.shunt, 2);  // 2 decimals (not 3!)
+    case 6:  // Power (Power) - 0 decimals (cast to uint16_t) to match standard page!
+      return String((uint16_t)ina219Values.power);  // 0 decimals (not 3!)
+    default:
+      return "???";
+  }
+}
+
+const char* getLargeDisplayUnit(uint8_t valueIndex)
+{
+  static const char* units[] = {
+    "",       // 0 - Runtime (no unit, already formatted as HH:MM:SS)
+    "V",      // 1 - Batterie (load voltage)
+    "V",      // 2 - Versorgung (bus voltage)
+    "mA",     // 3 - Strom (current)
+    "mAh",    // 4 - Ladung (charge)
+    "mV",     // 5 - Shunt-Spannung (shunt voltage)
+    "mW"      // 6 - Power
+  };
+  return valueIndex < 7 ? units[valueIndex] : "";
+}
+
+uint16_t getLargeDisplayColor(uint8_t valueIndex)
+{
+  switch (valueIndex) {
+    case 0:  // Laufzeit - Cyan (computed value)
+      return TFT_CYAN;
+    case 1:  // Batterie - Green (primary)
+      return TFT_GREEN;
+    case 2:  // Versorgung - Green (primary)
+      return TFT_GREEN;
+    case 3:  // Strom - Orange (secondary)
+      return TFT_ORANGE;
+    case 4:  // Ladung - Cyan (computed value)
+      return TFT_CYAN;
+    case 5:  // Shunt-Spannung - Green (primary)
+      return TFT_GREEN;
+    case 6:  // Power - Orange (secondary)
+      return TFT_ORANGE;
+    default:
+      return TFT_WHITE;  // Fallback error color
+  }
+}
+
+void pageLargeDisplayIna219(uint8_t valueIndex)
+{
+  // Main renderer for large display mode
+  // Display Resolution: 480px HORIZONTAL (x) × 320px VERTICAL (y) in landscape mode
+  // Optimized rendering: fillScreen once, then draw all elements in order (top to bottom)
+  // This reduces flicker compared to incremental drawing
+  
+  // Get display components first (before any drawing)
+  const char* label = getLargeDisplayLabel(valueIndex);
+  String value = getLargeDisplayValue(valueIndex);
+  const char* unit = getLargeDisplayUnit(valueIndex);
+  uint16_t color = getLargeDisplayColor(valueIndex);
+  
+  // Single screen clear
+  tft.fillScreen(TFT_BLACK);
+  
+  // Set middle-center alignment for all text (x is center at 240 for 480px width)
+  tft.setTextDatum(MC_DATUM);
+  
+  // Draw header section (Font 4 title + separator line)
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.drawString("INA219 Large Display", 240, 18, 4);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawFastHLine(6, 48, 468, TFT_DARKGREY);
+  
+  // Draw label (Font 4, centered at x=240, y=70) - below header with breathing room
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.drawString(label, 240, 70, 4);
+  
+  // Draw value (Font 8, centered at x=240, y=160, with color per value type)
+  // This is the focal point: large and centered in the display
+  tft.setTextColor(color, TFT_BLACK);
+  tft.drawString(value, 240, 160, 8);
+  
+  // Draw unit (Font 4, centered at x=240, y=240 - SAME SIZE AS LABEL, good spacing)
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(unit, 240, 240, 4);
+  
+  // Draw footer with navigation instructions (Font 2, centered at x=240, y=295)
+  // Must stay within 320px vertical boundary!
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString("B:next X:prev Y:exit", 240, 295, 2);
+  
+  // Reset text datum to default
+  tft.setTextDatum(TL_DATUM);
+}
+
+// ==================== END LARGE DISPLAY MODE HELPERS ====================
 
 bool readReg16(uint8_t address, uint8_t reg, uint16_t &value)
 {
@@ -532,6 +669,13 @@ void pageIna219()
 {
   if (!available.ina219) return unavailable("INA219", "0x40", "I2C address:");
   
+  // Check if in large display mode
+  if (largeDisplayMode) {
+    pageLargeDisplayIna219(largeDisplayIndex);
+    return;
+  }
+  
+  // Standard page layout (existing code)
   // Calculate runtime since measurement started
   const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
   String runtimeStr = formatRuntime(runtimeUs);
@@ -818,17 +962,73 @@ void loop()
   if (available.gamepad && (int32_t)(now - nextGamepadMs) >= 0) {
     const uint32_t buttonsBefore = gamepadValues.buttons;
     readGamepadAt40Hz();
+    const bool bPressed = !(gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_B));
+    const bool xPressed = !(gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_X));
     const bool yPressed = !(gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_Y));
     const bool aPressed = !(gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_A));
+    const bool lastB = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_B));
+    const bool lastX = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_X));
     const bool lastY = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_Y));
     const bool lastA = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_A));
-    if (yPressed && !lastY) currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
-    if (aPressed && !lastA) currentPage = (currentPage + 1) % PAGE_COUNT;
+    
+    // Large Display Mode Logic (INA219 Page 2)
+    if (currentPage == 2) {  // INA219 page
+      // Button B: Enter mode or cycle forward
+      if (bPressed && !lastB) {
+        if (!largeDisplayMode) {
+          // Enter large display mode
+          largeDisplayMode = true;
+          largeDisplayIndex = 0;
+        } else {
+          // Cycle forward in large display mode
+          largeDisplayIndex = (largeDisplayIndex + 1) % 7;
+        }
+      }
+      
+      // Button X: Cycle backward (only in large display mode)
+      if (xPressed && !lastX && largeDisplayMode) {
+        largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;
+      }
+      
+      // Button Y: Exit mode or navigate to previous page
+      if (yPressed && !lastY) {
+        if (largeDisplayMode) {
+          // Exit large display mode with immediate clean rendering
+          largeDisplayMode = false;
+          largeDisplayIndex = 0;
+          // Clear screen and render standard page for clean transition
+          drawHeader("INA219 (0x40)");  // fillScreen(TFT_BLACK) + header
+          pageIna219();  // Render standard page data
+        } else {
+          // Normal page navigation
+          currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+        }
+      }
+      
+      // Button A: Inactive in large display mode, or navigate to next page
+      if (aPressed && !lastA) {
+        if (!largeDisplayMode) {
+          // Normal page navigation
+          currentPage = (currentPage + 1) % PAGE_COUNT;
+        }
+        // else: Button A is inactive in large display mode (do nothing)
+      }
+    } else {
+      // Normal page navigation for all other pages
+      if (yPressed && !lastY) currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+      if (aPressed && !lastA) currentPage = (currentPage + 1) % PAGE_COUNT;
+    }
+    
     nextGamepadMs = now + INPUT_REFRESH_MS;
   }
 
   // PRIORITY 2: IMMEDIATE draw if page changed (no delay!)
   if (currentPage != lastPage) {
+    // Safety: Reset large display mode when leaving Page 2
+    if (lastPage == 2 && currentPage != 2) {
+      largeDisplayMode = false;
+      largeDisplayIndex = 0;
+    }
     drawCurrentPage(true);
     lastPage = currentPage;
     nextDisplayMs = now + SENSOR_REFRESH_MS;

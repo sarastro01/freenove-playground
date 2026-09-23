@@ -53,6 +53,223 @@ Based on reverse-engineered business rules (docs/06-business-rules.md), the foll
 | Encoder LED color cycles correctly | User feature | Unit |
 | DS2484 discovers and displays 1-Wire sensors | Multi-sensor support; discovery | Integration |
 | I2C address decoding (all 10 sensors) correct | Correct sensor read | Unit |
+| **Large Display Mode entry/exit (FR-012)** | **INA219 alternative UI; user feature** | **Integration** |
+| **Large Display Mode value cycling (FR-012)** | **Correct wrap-around on all 7 values** | **Integration** |
+| **Large Display Mode value formatting (FR-012)** | **Consistency with standard page** | **Unit** |
+
+### Test Cases: Large Display Mode (FR-012, INA219 Page 2) — **NEW**
+
+#### TEST-FR012-001: Entry Point
+
+**Setup:** Device on Page 2 (INA219), standard page layout displayed.
+
+**Action:** Press Button B.
+
+**Expected Result:**
+- Large display mode activates
+- Display shows "Laufzeit" value in Font 8, large format
+- Header "INA219 Large Display" appears (Font 4, Cyan)
+- Separator line visible
+- Footer "B:next X:prev Y:exit" appears (Font 2, DarkGrey)
+- No page change to other page
+
+**Verification:**
+```
+largeDisplayMode == true
+largeDisplayIndex == 0
+currentPage == 2 (unchanged)
+```
+
+**Note:** Prerequisite is `available.ina219 == true`.
+
+---
+
+#### TEST-FR012-002: Forward Cycle (Button B)
+
+**Setup:** In large display mode, viewing index 0 (Laufzeit).
+
+**Action:** Press Button B.
+
+**Expected Result:**
+- Display rotates to index 1 (Batterie)
+- Value updates to show Load Voltage
+- Unit shows "V"
+- Label and value refresh
+
+**Verification:**
+```
+largeDisplayIndex == 1
+Display shows load voltage value
+```
+
+**Repeat:** Press B five more times, verify indices cycle: 2→3→4→5→6.
+
+---
+
+#### TEST-FR012-003: Forward Cycle Wrap-Around
+
+**Setup:** In large display mode, viewing index 6 (Power).
+
+**Action:** Press Button B.
+
+**Expected Result:**
+- Display wraps back to index 0 (Laufzeit)
+- Cycling is unbroken (no artifacts)
+
+**Verification:**
+```
+largeDisplayIndex == 0
+Display shows runtime (Laufzeit)
+```
+
+---
+
+#### TEST-FR012-004: Reverse Cycle (Button X)
+
+**Setup:** In large display mode, viewing index 0 (Laufzeit).
+
+**Action:** Press Button X.
+
+**Expected Result:**
+- Display rotates to index 6 (Power)
+- Value updates to show power measurement
+- Unit shows "mW"
+
+**Verification:**
+```
+largeDisplayIndex == 6
+Display shows power value
+```
+
+**Repeat:** Press X five more times, verify indices cycle backward: 5→4→3→2→1→0.
+
+---
+
+#### TEST-FR012-005: Reverse Cycle Wrap-Around
+
+**Setup:** In large display mode, viewing index 0 (Laufzeit).
+
+**Action:** Press Button X.
+
+**Expected Result:**
+- Display wraps back to index 6 (Power)
+- Cycling is unbroken (no glitch)
+
+**Verification:**
+```
+largeDisplayIndex == 6
+Display shows power (Power)
+```
+
+---
+
+#### TEST-FR012-006: Exit Mode (Button Y) - Clean Transition
+
+**Setup:** In large display mode (any index).
+
+**Action:** Press Button Y.
+
+**Expected Result:**
+- Immediate return to standard page layout
+- All 7 INA219 values visible (label + value + unit rows)
+- No visual artifacts, glitches, or leftover text
+- Transition is clean and smooth
+
+**Verification:**
+```
+largeDisplayMode == false
+largeDisplayIndex == 0 (reset)
+currentPage == 2 (unchanged)
+Display shows standard 7-row layout
+```
+
+---
+
+#### TEST-FR012-007: Button A Inactivity
+
+**Setup:** In large display mode on Page 2.
+
+**Action:** Press Button A.
+
+**Expected Result:**
+- No page navigation occurs
+- Large display mode remains active
+- Display unchanged
+
+**Verification:**
+```
+currentPage == 2 (unchanged)
+largeDisplayMode == true (unchanged)
+largeDisplayIndex == [same as before] (unchanged)
+```
+
+---
+
+#### TEST-FR012-008: Real-Time Value Updates
+
+**Setup:** In large display mode, viewing index 1 (Batterie = Load Voltage).
+
+**Action:**
+1. Observe voltage value on display.
+2. Modify load (e.g., connect/disconnect device).
+3. Wait ~500 ms (page refresh cycle).
+4. Observe voltage value again.
+
+**Expected Result:**
+- Value updates every ~500 ms to reflect live `ina219Values.load`
+- Updates match standard page value (when toggled back to standard view)
+
+**Verification:**
+- Voltage changes between observations match actual circuit load change
+- Formatting remains consistent (3 decimals for load voltage)
+
+---
+
+#### TEST-FR012-009: Value Formatting Consistency
+
+**Setup:** Device cycles between large display and standard page for same value.
+
+**Action:**
+1. Navigate to Page 2, press B (enter large display, index 1: Batterie).
+2. Observe value format (decimal places, unit).
+3. Press Y (exit, back to standard page).
+4. Find the corresponding value row in standard layout.
+5. Compare formatting.
+
+**Expected Result:**
+- Decimal places match exactly (3 decimals for Batterie)
+- Unit matches exactly ("V")
+- Color may differ (Font 8 vs Font 2), but value numeric part is identical
+
+**Verification:**
+- Large display "12.456" matches standard page "12.456" exactly
+- No formatting discrepancy
+
+**Repeat** for indices 3 (Strom: 1 decimal) and 6 (Power: 0 decimals) to verify decimal consistency.
+
+---
+
+#### TEST-FR012-010: Page Change Safety Reset
+
+**Setup:** In large display mode on Page 2 (any index).
+
+**Action:** Press Button A (navigate to next page).
+
+**Expected Result:**
+- Page navigation occurs normally (currentPage increments)
+- Large display mode is forcibly reset: `largeDisplayMode = false`, `largeDisplayIndex = 0`
+- If user navigates back to Page 2 later, large display starts fresh
+
+**Verification:**
+```
+currentPage == 3 (or next page)
+largeDisplayMode == false (reset despite mode being active)
+largeDisplayIndex == 0 (reset)
+```
+
+**Note:** This test verifies safety mechanism BR-033.
+
+---
 
 ### TIER 3: Implementation-Specific (Should Be Monitored, Not Strictly Tested)
 
@@ -584,6 +801,230 @@ void test_gamepad_navigation_latency() {
    - Page 9 displays correct DS2484 data while other pages update normally
    - No deadlocks or data corruption
    - Display refresh rate maintained (20 ms live, 500 ms sensors)
+
+#### Test Suite: Large Display Mode (INA219 Page 2) — **NEW**
+
+**Purpose:** Verify alternate display mode for INA219 sensor showing individual values in enlarged format
+
+##### Unit Tests: Large Display Mode Logic
+
+```cpp
+// TEST: Large display value index cycling forward
+void test_large_display_index_forward() {
+  uint8_t index = 0;
+  index = (index + 1) % 7;
+  ASSERT_EQUAL(index, 1);
+  
+  index = 6;
+  index = (index + 1) % 7;
+  ASSERT_EQUAL(index, 0);  // Wraps around
+}
+
+// TEST: Large display value index cycling backward
+void test_large_display_index_backward() {
+  uint8_t index = 3;
+  index = (index - 1 + 7) % 7;
+  ASSERT_EQUAL(index, 2);
+  
+  index = 0;
+  index = (index - 1 + 7) % 7;
+  ASSERT_EQUAL(index, 6);  // Wraps around
+}
+
+// TEST: Large display mode state transitions
+void test_large_display_mode_state() {
+  bool largeDisplayMode = false;
+  
+  // Enter mode
+  largeDisplayMode = true;
+  ASSERT_TRUE(largeDisplayMode);
+  
+  // Exit mode
+  largeDisplayMode = false;
+  ASSERT_FALSE(largeDisplayMode);
+}
+```
+
+**Rationale:** Index cycling is pure modulo arithmetic; page navigation logic is boolean state.
+
+##### Integration Tests: Large Display Mode (Hardware-in-the-Loop)
+
+**Test Scenario:** INA219 sensor connected and functioning
+
+```cpp
+// TEST: Enter large display mode (Button B on Page 2)
+void test_large_display_entry() {
+  uint8_t currentPage = 2;  // INA219 page
+  bool bPressed = true;     // Button B pressed
+  bool lastB = false;       // Was not pressed last cycle
+  bool largeDisplayMode = false;
+  
+  if (currentPage == 2 && bPressed && !lastB) {
+    largeDisplayMode = true;
+  }
+  lastB = bPressed;
+  
+  ASSERT_TRUE(largeDisplayMode);
+}
+
+// TEST: Cycle through all 7 values in large display mode
+void test_large_display_all_values() {
+  bool largeDisplayMode = true;
+  uint8_t largeDisplayIndex = 0;
+  
+  // Simulate Button B presses (forward cycle)
+  for (int i = 0; i < 7; i++) {
+    // Each press cycles the index
+    largeDisplayIndex = (largeDisplayIndex + 1) % 7;
+  }
+  
+  // After 7 forward cycles, should be back at index 0
+  ASSERT_EQUAL(largeDisplayIndex, 0);
+}
+
+// TEST: Button X reverses cycle direction
+void test_large_display_reverse_cycle() {
+  bool largeDisplayMode = true;
+  uint8_t largeDisplayIndex = 3;
+  
+  bool xPressed = true;
+  bool lastX = false;
+  
+  if (largeDisplayMode && xPressed && !lastX) {
+    largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;  // 3 → 2
+  }
+  lastX = xPressed;
+  
+  ASSERT_EQUAL(largeDisplayIndex, 2);
+}
+
+// TEST: Button Y exits large display mode
+void test_large_display_exit() {
+  bool largeDisplayMode = true;
+  uint8_t largeDisplayIndex = 4;
+  
+  bool yPressed = true;
+  bool lastY = false;
+  
+  if (largeDisplayMode && yPressed && !lastY) {
+    largeDisplayMode = false;
+    largeDisplayIndex = 0;  // Reset index on exit
+  }
+  lastY = yPressed;
+  
+  ASSERT_FALSE(largeDisplayMode);
+  ASSERT_EQUAL(largeDisplayIndex, 0);
+}
+
+// TEST: Button A is inactive in large display mode
+void test_large_display_button_a_inactive() {
+  bool largeDisplayMode = true;
+  uint8_t currentPage = 2;
+  uint8_t nextPage = currentPage;
+  
+  bool aPressed = true;
+  bool lastA = false;
+  
+  if (largeDisplayMode) {
+    // Button A ignored; page does not change
+    if (aPressed && !lastA) {
+      // No action
+    }
+  }
+  lastA = aPressed;
+  
+  ASSERT_EQUAL(nextPage, currentPage);  // Page unchanged
+}
+
+// TEST: Page navigation disabled during large display mode
+void test_large_display_page_nav_disabled() {
+  bool largeDisplayMode = true;
+  uint8_t currentPage = 2;
+  
+  bool yPressed = true;
+  bool lastY = false;
+  
+  if (!largeDisplayMode) {  // Normal page navigation only when mode OFF
+    if (yPressed && !lastY) {
+      currentPage = (currentPage + 10 - 1) % 10;  // Would navigate
+      ASSERT_FAIL();  // Should not reach here
+    }
+  }
+  
+  ASSERT_EQUAL(currentPage, 2);  // Page unchanged
+}
+
+// TEST: Real-time value display (no caching)
+void test_large_display_real_time_update() {
+  // Simulate sensor read updating ina219Values
+  ina219Values.bus = 12.456;
+  ina219Values.current = 1.234;
+  
+  // Large display function reads directly
+  String value = getLargeDisplayValue(1);  // Batterie index
+  ASSERT_EQUAL(value, "12.456");  // Fresh data
+  
+  // Simulate second read
+  ina219Values.bus = 12.789;
+  value = getLargeDisplayValue(1);
+  ASSERT_EQUAL(value, "12.789");  // Updated data
+}
+
+// TEST: Formatting consistency between normal and large display
+void test_large_display_formatting_consistency() {
+  // Standard display format (3 decimals)
+  String standard_value = String(ina219Values.bus, 3);  // "12.456"
+  
+  // Large display format (should be identical)
+  String large_value = getLargeDisplayValue(1);  // Batterie index
+  
+  ASSERT_EQUAL(standard_value, large_value);
+}
+
+// TEST: Color scheme consistency
+void test_large_display_color_consistency() {
+  // Standard page Page 2 colors
+  // Index 1 (Batterie/Bus voltage) should be Green
+  uint16_t color = getLargeDisplayColor(1);
+  ASSERT_EQUAL(color, TFT_GREEN);
+  
+  // Index 0 (Laufzeit/Runtime) should be Cyan
+  color = getLargeDisplayColor(0);
+  ASSERT_EQUAL(color, TFT_CYAN);
+}
+
+// TEST: Helper functions return correct labels
+void test_large_display_labels() {
+  ASSERT_EQUAL(strcmp(getLargeDisplayLabel(0), "Laufzeit"), 0);
+  ASSERT_EQUAL(strcmp(getLargeDisplayLabel(1), "Batterie"), 0);
+  ASSERT_EQUAL(strcmp(getLargeDisplayLabel(6), "Power"), 0);
+}
+
+// TEST: Helper functions return correct units
+void test_large_display_units() {
+  ASSERT_EQUAL(strcmp(getLargeDisplayUnit(0), "s"), 0);         // Runtime
+  ASSERT_EQUAL(strcmp(getLargeDisplayUnit(1), "V"), 0);        // Batterie
+  ASSERT_EQUAL(strcmp(getLargeDisplayUnit(3), "mA"), 0);       // Strom
+  ASSERT_EQUAL(strcmp(getLargeDisplayUnit(6), "mW"), 0);       // Power
+}
+```
+
+**Expected Behavior:**
+- Mode entry triggered by Button B on Page 2 (INA219)
+- All 7 values display correctly with proper formatting and colors
+- Forward/reverse cycling wraps at boundaries (0↔6)
+- Mode exit via Button Y clears mode flag and resets index
+- Page navigation completely disabled during large display mode
+- Button A completely inactive (no side effects)
+- Values update in real-time from `ina219Values` struct
+- Formatting and colors identical to standard Page 2 display
+
+**Failure Cases to Test:**
+- Button press not detected (I2C error) → mode unchanged
+- Mode stuck (Y button fails) → requires reboot
+- Value formatting mismatch between modes → visual inconsistency
+- Page navigation accidentally enabled during mode → unexpected page changes
+- Color scheme incorrect → misleading value categorization
 
 ---
 

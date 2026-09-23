@@ -1061,6 +1061,81 @@ flowchart TD
 
 ---
 
+## 4. Large Display Mode Rendering (INA219 Page 2) — **NEW**
+
+### Overview
+
+The large display mode provides an alternate rendering path for the INA219 power monitor page (Page 2) that shows individual sensor values in enlarged, centered format. This is controlled by global mode flags (`largeDisplayMode`, `largeDisplayIndex`) and implemented through a conditional in the page dispatcher and dedicated rendering function.
+
+### 4.1 Integration Points
+
+**Mode Activation:**
+- Button B handler (Page 2 context) sets `largeDisplayMode = true` when not active
+- Button X handler cycles backward: `largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7` 
+- Button Y handler cycles forward OR exits: sets `largeDisplayMode = false` if in mode
+- Safety reset: On page change away from Page 2, reset `largeDisplayMode = false`, `largeDisplayIndex = 0`
+
+**Rendering Path:**
+```
+pageIna219() [dispatcher]
+  └─ if (largeDisplayMode) {
+       pageLargeDisplayIna219(largeDisplayIndex);
+       return;
+     }
+  └─ else { [standard rendering] }
+```
+
+### 4.2 Component: pageLargeDisplayIna219(uint8_t valueIndex) [Alternate Page Renderer]
+
+| Property | Value |
+|---|---|
+| **Responsibility** | Render single INA219 value in enlarged, centered format (Font 8 value, Font 4 label/unit). |
+| **Inputs** | `valueIndex` (0–6): which value to display; `ina219Values` global struct (read-only). |
+| **Outputs** | TFT display (SPI write-only). |
+| **Call Frequency** | Inherits from INA219 page native rate (500 ms). Called once per refresh cycle when `largeDisplayMode == true`. |
+| **Logic** | <pre>fillScreen(TFT_BLACK)  // Atomic clear<br>Set text datum MC_DATUM (middle-center for all)<br>Draw header "INA219 Large Display" (y=18, Font 4, Cyan)<br>Draw separator line (y=48, DarkGrey)<br>Draw label (y=70, Font 4, Cyan)<br>Draw value (y=160, Font 8, Color per index)<br>Draw unit (y=240, Font 4, White)<br>Draw footer "B:next X:prev Y:exit" (y=295, Font 2, DarkGrey)<br>Reset text datum TL_DATUM</pre> |
+| **State Dependencies** | Reads: `largeDisplayMode` (is mode active?), `largeDisplayIndex` (which value?), `ina219Values` (sensor data) |
+| **Real-Time Updates** | No caching; reads live `ina219Values` on every render cycle (500 ms). Values update in real-time. |
+| **Performance** | Render time < 450 ms (must fit within 500 ms refresh cycle). |
+| **Layout Coordinates** | x=240 (center of 480px width); y positions: header=18, separator=48, label=70, value=160, unit=240, footer=295. All fit within 320px height. |
+| **Constraints** | Only callable from `pageIna219()` when `largeDisplayMode == true`. Assumes `ina219Values` is populated by `readIna219At50Hz()`. |
+
+### 4.3 Helper Functions
+
+**`getLargeDisplayLabel(uint8_t valueIndex)` → const char***
+- Returns German label for value index (0–6)
+- Range check: return "???" if out of range
+- No I/O; pure lookup function
+
+**`getLargeDisplayValue(uint8_t valueIndex)` → String**
+- Reads live value from `ina219Values` struct
+- Applies formatting (decimals per value type; runtime formatted as HH:MM:SS)
+- Returns formatted string (no units)
+- Consistency: Must match standard `pageIna219()` formatting exactly
+
+**`getLargeDisplayUnit(uint8_t valueIndex)` → const char***
+- Returns unit string (e.g., "V", "mA", "") for value index
+- Empty string for index 0 (Laufzeit; time already formatted)
+- Range check: return "" if out of range
+
+**`getLargeDisplayColor(uint8_t valueIndex)` → uint16_t**
+- Returns TFT_eSPI color constant per value type
+- Cyan for computed values (Laufzeit, Ladung)
+- Green for primary voltages (Batterie, Versorgung, Shunt-Spannung)
+- Orange for secondary measurements (Strom, Power)
+- White fallback for invalid index
+
+### 4.4 Button Remapping (Page 2 Context)
+
+| Button | Standard Page | Large Display Mode |
+|--------|---------------|-------------------|
+| B | Previous (unused on Page 2) | Enter mode / Cycle forward |
+| X | Page-independent (unused on Page 2) | Cycle backward (active only in mode) |
+| Y | Previous page | Exit mode / Previous page (if not in mode) |
+| A | Next page | Next page (inactive in mode) |
+
+---
+
 ## Unknown / [UNKNOWN] Markers Summary
 
 | Item | Impact | Note |

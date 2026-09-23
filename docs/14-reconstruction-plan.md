@@ -831,6 +831,153 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-006
    - Source: [07-ui.md](docs/07-ui.md), Page 9 VEML6075
 
+#### Group 4: Large Display Mode for INA219 (Page 2) — **NEW**
+
+**Purpose:** Implement alternate display mode for INA219 showing individual sensor values in enlarged, centered format.
+
+**Scope:** INA219 Page 2 only; designed for future extension to other pages.
+
+**Implementation Steps:**
+
+1. **Define global state variables (at file scope)**
+   ```cpp
+   bool largeDisplayMode = false;        // Mode active flag
+   uint8_t largeDisplayIndex = 0;        // Current value index (0–6)
+   ```
+   - Initialize at declaration (before setup())
+   - Reset to false/0 on power-up
+
+2. **Implement helper functions (display-agnostic, reusable)**
+
+   - **`const char* getLargeDisplayLabel(uint8_t valueIndex)`**
+     - Returns German label for index 0–6 (Laufzeit, Batterie, Versorgung, Strom, Ladung, Shunt-Spannung, Power)
+     - Returns "???" for invalid index
+     - Source: [05-api.md](docs/05-api.md), Section 0
+     - Source: [04-data-model.md](docs/04-data-model.md), Section 2.9
+
+   - **`String getLargeDisplayValue(uint8_t valueIndex)`**
+     - Reads from global `ina219Values` struct (no caching)
+     - Formats with per-value decimal places (see table in [05-api.md](docs/05-api.md))
+     - Returns formatted String object
+     - Index 0: Runtime formatted as HH:MM:SS (special case, no decimals)
+     - Index 1–6: Variable decimals based on value type (1–3 decimals; see [05-api.md](docs/05-api.md) for mapping)
+     - Source: [05-api.md](docs/05-api.md), Section 3.2 (value formatting table)
+     - Source: [04-data-model.md](docs/04-data-model.md), Section 2.12
+
+   - **`const char* getLargeDisplayUnit(uint8_t valueIndex)`**
+     - Returns unit label: s, V, mV, mA, mAh, V, mW
+     - Returns empty string "" for out-of-range
+     - Source: [05-api.md](docs/05-api.md), Section 0
+
+   - **`uint16_t getLargeDisplayColor(uint8_t valueIndex)`**
+     - Returns TFT_eSPI color constant (Cyan, Green, or Orange)
+     - Match colors from standard `pageIna219()` display
+     - Cyan: indices 0, 4 (computed values)
+     - Green: indices 1, 2, 5 (primary measurements)
+     - Orange: indices 3, 6 (secondary measurements)
+     - Source: [05-api.md](docs/05-api.md), Section 0
+
+3. **Implement main render function**
+
+   - **`void pageLargeDisplayIna219(uint8_t valueIndex)`**
+     - Called conditionally from `pageIna219()` when `largeDisplayMode == true`
+     - Displays single value in large, centered format
+     - Atomic screen clear: `fillScreen(TFT_BLACK)` at start
+     - All text centered at x=240 (midpoint of 480 px width) using MC_DATUM alignment
+     - Layout (all text centered):
+       - Header "INA219 Large Display" (y=18, Font 4, Cyan)
+       - Separator line (y=48, DarkGrey)
+       - Label (y=70, Font 4, Cyan) — value name (e.g., "Batterie")
+       - Value (y=160, Font 8, Color-coded) — focal point of display
+       - Unit (y=240, Font 4, White) — measurement unit
+       - Footer "B:next X:prev Y:exit" (y=295, Font 2, DarkGrey) — navigation hint
+     - Calls helper functions: getLargeDisplayLabel(), getLargeDisplayValue(), getLargeDisplayUnit(), getLargeDisplayColor()
+     - Resets text datum to TL_DATUM after rendering
+     - Source: [05-api.md](docs/05-api.md), Section 3.1 (detailed layout table)
+     - Source: [07-ui.md](docs/07-ui.md), Section 7 (Large Display Mode)
+
+4. **Modify `pageIna219()` to support large display mode**
+   ```cpp
+   void pageIna219() {
+     if (!available.ina219) return unavailable("INA219", "0x40");
+     
+     if (largeDisplayMode) {
+       pageLargeDisplayIna219(largeDisplayIndex);  // Alternate layout
+     } else {
+       // ... standard page layout (existing implementation)
+     }
+   }
+   ```
+   - Conditional rendering based on `largeDisplayMode` flag
+   - Source: [04-data-model.md](docs/04-data-model.md), Section 2.9
+
+5. **Implement button handling in `loop()` for large display mode**
+   - **Button B in large display mode:**
+     - Cycle forward: `largeDisplayIndex = (largeDisplayIndex + 1) % 7`
+   - **Button X in large display mode:**
+     - Cycle backward: `largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7`
+   - **Button Y in large display mode:**
+     - Exit mode: `largeDisplayMode = false; largeDisplayIndex = 0;`
+   - **Button A in large display mode:**
+     - Inactive (no action)
+   - **Page navigation (Y/A for prev/next page):**
+     - **DISABLED** while `largeDisplayMode == true`
+     - Only re-enabled after mode exit via Button Y
+   - Source: [06-business-rules.md](docs/06-business-rules.md), BR-028 through BR-033
+
+6. **Update gamepad button logic structure**
+   ```cpp
+   // In loop(), after reading gamepad:
+   if (gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_B)) {
+     if (!lastB) {  // Falling edge
+       if (currentPage == 2 && !largeDisplayMode) {
+         // Page 2 standard view: enter large display mode
+         largeDisplayMode = true;
+         largeDisplayIndex = 0;
+       } else if (currentPage == 2 && largeDisplayMode) {
+         // Page 2 large display view: cycle forward
+         largeDisplayIndex = (largeDisplayIndex + 1) % 7;
+       }
+       // ... other buttons B behavior
+     }
+   }
+   
+   if (gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_X)) {
+     if (!lastX) {  // Falling edge
+       if (currentPage == 2 && largeDisplayMode) {
+         // Page 2 large display view: cycle backward
+         largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;
+       }
+       // ... other buttons X behavior
+     }
+   }
+   
+   if (gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_Y)) {
+     if (!lastY) {  // Falling edge
+       if (currentPage == 2 && largeDisplayMode) {
+         // Page 2 large display view: exit mode
+         largeDisplayMode = false;
+         largeDisplayIndex = 0;
+       } else if (!largeDisplayMode) {
+         // Normal page navigation
+         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+       }
+     }
+   }
+   
+   if (gamepadValues.buttons & (1UL << GAMEPAD_BUTTON_A)) {
+     if (!lastA) {  // Falling edge
+       if (currentPage == 2 && largeDisplayMode) {
+         // Page 2 large display view: Button A inactive (no action)
+       } else if (!largeDisplayMode) {
+         // Normal page navigation
+         currentPage = (currentPage + 1) % PAGE_COUNT;
+       }
+     }
+   }
+   ```
+   - Source: [06-business-rules.md](docs/06-business-rules.md), BR-028 through BR-033
+
 ### Acceptance Criteria
 
 - [ ] All 9 page renderers implemented with correct layout (pixel coordinates match [07-ui.md](docs/07-ui.md))
@@ -848,6 +995,14 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 - [ ] Gamepad button states show "PRESSED" or "released"
 - [ ] Data precision matches spec (2-3 decimals for floats)
 - [ ] Page redraw performance acceptable (no visible flicker)
+- [ ] **Large display mode:** Page 2 (INA219) enters large display on Button B
+- [ ] **Large display mode:** All 7 values display with correct formatting and colors
+- [ ] **Large display mode:** Button B cycles forward, Button X cycles backward, wrap at boundaries
+- [ ] **Large display mode:** Button Y exits mode and returns to standard view
+- [ ] **Large display mode:** Button A is inactive (no effect)
+- [ ] **Large display mode:** Page navigation (Y/A) is disabled during mode
+- [ ] **Large display mode:** Values update in real-time from `ina219Values` struct
+- [ ] **Large display mode:** Footer shows "B:next X:prev Y:exit" (context-specific help)
 
 ### Tests/Validation Before Proceeding
 

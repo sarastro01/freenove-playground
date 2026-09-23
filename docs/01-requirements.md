@@ -246,20 +246,43 @@ The system shall handle sensor failures and I2C errors without halting operation
 
 ---
 
+### FR-012: Large Value Display Mode (INA219 Page 2) — **NEW**
+
+**Requirement:**  
+The system shall provide an alternate display mode for INA219 sensor page that shows individual sensor values in enlarged format for improved readability.
+
+**Details:**
+- Entry point: Gamepad Button B pressed while on Page 2 (INA219)
+- Display mode cycles through 7 sensor values: Laufzeit → Batterie → Versorgung → Strom → Ladung → Shunt-Spannung → Power (wraps to Laufzeit)
+- Navigation controls in large display mode: Button B = next value, Button X = previous value, Button Y = exit mode, Button A = inactive
+- **Critical:** Page navigation (Y/A buttons) is disabled while in large display mode; only re-enabled upon exit to standard page view
+- Values update in real-time using global ina219Values struct (no caching)
+- Refresh rate: Inherit page native refresh rate (500 ms for INA219 page)
+- Display layout: Label (large font) + Value (very large font, Font 8) + Unit + Footer instructions (all centered)
+- Scope: INA219 page only (Page 2); future extension to other pages planned
+- Helper functions generic for future extension to other sensor pages
+
+**Evidence:** 
+- FEATURE-SPEC-004-INA219-LARGE-VALUE-DISPLAY.md
+- Global state: largeDisplayMode (bool), largeDisplayIndex (uint8_t, 0–6)
+- New functions: pageLargeDisplayIna219(), getLargeDisplayLabel(), getLargeDisplayValue(), getLargeDisplayColor(), getLargeDisplayUnit()
+
+---
+
 ## Non-Functional Requirements
 
 ### NFR-001: Real-Time Response
 
 **Requirement:**  
-User input (button press) shall result in visible page navigation within 25 ms.
+User input (button press) shall result in visible page navigation within 10 ms.
 
 **Details:**
-- Gamepad read frequency: 40 Hz (25 ms)
+- Gamepad read frequency: 100 Hz (10 ms) [Updated for improved button responsiveness]
 - Page rendering: Immediate (no animation delay)
 - LED update: Immediate (blocking I2C call)
 
 **Evidence:**
-- Timing gate: line 623, `INPUT_REFRESH_MS = 20` (ms)
+- Timing gate: line 55, `INPUT_REFRESH_MS = 10` (ms)
 
 ---
 

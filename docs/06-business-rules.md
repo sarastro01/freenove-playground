@@ -1375,6 +1375,501 @@ HIGH
 
 ---
 
+## Large Display Mode Rules (INA219 Page 2) — **NEW**
+
+### BR-028: Large Display Mode Entry (Button B on Page 2)
+
+**Description:**  
+User enters large display mode for INA219 power monitor by pressing Button B while on Page 2. Mode displays a single sensor value at a time in enlarged, centered format.
+
+**Trigger:**  
+Button B falling-edge (press) detected while `currentPage == 2` (INA219 page).
+
+**Conditions:**  
+- Page 2 (INA219) currently active
+- `largeDisplayMode == false` (not already in mode)
+- Button B transitions from released to pressed
+
+**Behavior:**  
+```cpp
+if (currentPage == 2 && bPressed && !lastB) {
+  largeDisplayMode = true;
+  largeDisplayIndex = 0;  // Start at first value (Laufzeit)
+  // Next render cycle calls pageLargeDisplayIna219(0)
+}
+lastB = bPressed;
+```
+
+**Display Effect:**  
+- Page 2 switches from standard data rows layout to large display (single value centered)
+- First value displayed: Index 0 (Laufzeit / Runtime)
+- Page title hidden (alternate layout, all space for large value)
+- All screen real estate used for large label + value + unit
+
+**Failure Behavior:**  
+- If button press not detected (I2C error on gamepad read), mode entry fails silently
+- Page remains in standard view
+
+**Evidence:**  
+- Global variables: `largeDisplayMode`, `largeDisplayIndex`, `largeDisplayButton` 
+- Loop logic: Button edge detection + mode state transition
+
+**Confidence:**  
+HIGH
+
+---
+
+### BR-029: Large Display Value Cycling Forward (Button B)
+
+**Description:**  
+While in large display mode, pressing Button B cycles to the next value in the 7-value list. Values wrap around: after index 6 (Power), cycling forward returns to index 0 (Laufzeit).
+
+**Trigger:**  
+Button B falling-edge (press) detected while `largeDisplayMode == true`.
+
+**Conditions:**  
+- Large display mode active (`largeDisplayMode == true`)
+- Button B transitions from released to pressed
+- Current index: 0–6
+
+**Behavior:**  
+```cpp
+if (largeDisplayMode && bPressed && !lastB) {
+  largeDisplayIndex = (largeDisplayIndex + 1) % 7;  // Modulo wrap
+  // Next render cycle displays new value via pageLargeDisplayIna219(largeDisplayIndex)
+}
+lastB = bPressed;
+```
+
+**Value Order (Cycle Index 0→1→2→3→4→5→6→0):**
+
+| Index | Value | Label |
+|-------|-------|-------|
+| 0 | Runtime | Laufzeit |
+| 1 | Bus Voltage | Batterie |
+| 2 | Shunt Voltage | Versorgung |
+| 3 | Current | Strom |
+| 4 | Charge | Ladung |
+| 5 | Load Voltage | Shunt-Spannung |
+| 6 | Power | Power |
+
+**Wrap-Around:**  
+- From index 6, next press advances to index 0 (via modulo 7 arithmetic)
+- No bounds checking needed; modulo ensures valid range
+
+**Failure Behavior:**  
+- If button press not detected, index unchanged; no cycle occurs
+
+**Evidence:**  
+- Modulo arithmetic: `(largeDisplayIndex + 1) % 7`
+- Value mapping table in BR-028 / Section 2.9 data model
+
+**Confidence:**  
+HIGH
+
+---
+
+### BR-030: Large Display Value Cycling Reverse (Button X)
+
+**Description:**  
+While in large display mode, pressing Button X cycles to the previous value in the 7-value list. Values wrap around: from index 0 (Laufzeit), cycling backward returns to index 6 (Power).
+
+**Trigger:**  
+Button X falling-edge (press) detected while `largeDisplayMode == true`.
+
+**Conditions:**  
+- Large display mode active (`largeDisplayMode == true`)
+- Button X transitions from released to pressed
+- Current index: 0–6
+
+**Behavior:**  
+```cpp
+if (largeDisplayMode && xPressed && !lastX) {
+  largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;  // Modulo wrap with offset
+  // Next render cycle displays new value via pageLargeDisplayIna219(largeDisplayIndex)
+}
+lastX = xPressed;
+```
+
+**Wrap-Around Logic:**  
+- `(0 - 1 + 7) % 7 = 6` (from index 0 → index 6)
+- `(6 - 1 + 7) % 7 = 5` (from index 6 → index 5)
+- Offset of 7 ensures non-negative value before modulo
+
+**Failure Behavior:**  
+- If button press not detected, index unchanged; no cycle occurs
+
+**Evidence:**  
+- Reverse modulo arithmetic: `(largeDisplayIndex - 1 + 7) % 7`
+- Value mapping: same 7-value list as BR-029
+
+**Confidence:**  
+HIGH
+
+---
+
+### BR-031: Large Display Mode Exit & Page Navigation Disable [CRITICAL]
+
+**Description:**  
+Pressing Button Y while in large display mode exits the mode, returning to standard Page 2 (INA219) view. **CRITICAL:** Page navigation (Y/A buttons) is completely disabled while in large display mode and only re-enabled upon exit. Button Y is interpreted as "exit mode" (NOT "previous page"), and Button A is completely inactive.
+
+**Trigger:**  
+Button Y falling-edge (press) detected while `largeDisplayMode == true`.
+
+**Conditions:**  
+- Large display mode active (`largeDisplayMode == true`)
+- Button Y transitions from released to pressed
+
+**Behavior - Mode Exit:**  
+```cpp
+if (largeDisplayMode && yPressed && !lastY) {
+  largeDisplayMode = false;
+  largeDisplayIndex = 0;  // Reset index
+  // Next render cycle calls pageIna219() in normal mode
+}
+lastY = yPressed;
+```
+
+**Behavior - Page Navigation Disable During Mode:**  
+```cpp
+if (largeDisplayMode) {
+  // Page navigation buttons are NOT processed
+  // yPressed and aPressed button presses are consumed by mode logic, not page nav
+  
+  // In Button Y handler:
+  if (yPressed && !lastY) {
+    // Interpreted as "exit mode", not "previous page"
+    largeDisplayMode = false;
+  }
+  
+  // In Button A handler:
+  if (aPressed && !lastA) {
+    // Button A completely inactive; no effect
+    // Do nothing
+  }
+}
+else {
+  // Normal page navigation (when NOT in large display mode)
+  if (yPressed && !lastY) {
+    currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;  // Previous page
+  }
+  if (aPressed && !lastA) {
+    currentPage = (currentPage + 1) % PAGE_COUNT;  // Next page
+  }
+}
+```
+
+**Critical Constraint:**  
+The page navigation mechanism is **functionally disabled** while `largeDisplayMode == true`. This means:
+- User CANNOT navigate to other pages while cycling through large display values
+- Only way to exit large display mode is Button Y (interpreted as "exit", not "prev page")
+- Button A has no effect (reserved for future use or standard page navigation only)
+- Prevents accidental page changes during value cycling
+- Re-enables normal circular pagination only after exit
+
+**Display Indicator:**  
+Footer instructions clarify button behavior: "B:next X:prev Y:exit" (not "Y: previous page" as in normal view).
+
+**Failure Behavior:**  
+- If Button Y press not detected, mode remains active; no exit possible
+- User must press Y button again on next cycle
+- Once in mode, cannot escape without working Button Y
+
+**Evidence:**  
+- Global state: `largeDisplayMode` flag used to conditionally skip page navigation logic
+- Button handler order: mode exit logic checked before normal page navigation
+- Loop conditional: `if (!largeDisplayMode) { /* page nav */ }`
+
+**Confidence:**  
+HIGH
+
+**Design Rationale:**  
+This constraint is intentional and by design:
+1. **Safety:** Prevents accidental page jumps while focused on cycling values
+2. **UX Clarity:** Button actions are context-sensitive and consistent within each mode
+3. **Scope Limitation:** Feature scoped to Page 2; page navigation not available during large display
+4. **Future Extension:** When feature extended to other pages, each page gets its own exit button behavior
+
+---
+
+### BR-032: Button A Inactive in Large Display Mode
+
+**Description:**  
+While in large display mode (Page 2 INA219), Button A (gamepad) is completely inactive and has no effect. This ensures only Buttons B (forward), X (reverse), and Y (exit) are available for large display control.
+
+**Trigger:**  
+Button A press (or release) while `largeDisplayMode == true`.
+
+**Conditions:**  
+- Large display mode active (`largeDisplayMode == true`)
+- Button A state changes (pressed or released)
+
+**Behavior:**  
+```cpp
+if (largeDisplayMode) {
+  if (aPressed && !lastA) {
+    // No action taken
+    // Do nothing; button press consumed by large display mode check
+  }
+}
+// Button A only affects page navigation when largeDisplayMode == false
+```
+
+**Rationale:**  
+- Button A would normally navigate to next page (BR-012)
+- In large display mode, page navigation is disabled (BR-031)
+- Button A must remain inactive to avoid confusion
+- Button action clearly documented in UI footer
+
+**Failure Behavior:**  
+- No unintended side effects; button is safely ignored
+- User may press Button A thinking it will navigate; no effect (by design)
+
+**Evidence:**  
+- Loop logic: Button A press ignored when `largeDisplayMode == true`
+- No page navigation triggered by Button A in large display mode
+
+**Confidence:**  
+HIGH
+
+---
+
+### BR-033: Large Display Real-Time Updates & Value Formatting
+
+**Description:**  
+Values displayed in large display mode are read directly from global `ina219Values` struct on every render cycle with no caching. All formatting (decimal places, units, colors) must match standard `pageIna219()` display exactly to ensure visual consistency between modes.
+
+**Trigger:**  
+Every render cycle (500 ms for INA219 page) while `largeDisplayMode == true`.
+
+**Conditions:**  
+- Large display mode active
+- Render cycle fires
+- `pageLargeDisplayIna219(largeDisplayIndex)` called
+
+**Behavior - Real-Time Read:**  
+```cpp
+// In getLargeDisplayValue(valueIndex):
+switch (valueIndex) {
+  case 0:  // Laufzeit
+    return String(millis() / 1000);  // Integer seconds, no decimals
+  case 1:  // Batterie
+    return String(ina219Values.bus, 3);  // 3 decimals from current struct
+  case 2:  // Versorgung
+    return String(ina219Values.shunt, 3);  // 3 decimals from current struct
+  case 3:  // Strom
+    return String(ina219Values.current, 3);  // 3 decimals from current struct
+  case 4:  // Ladung
+    return String(ina219Values.chargeMah, 3);  // 3 decimals from current struct
+  case 5:  // Shunt-Spannung (Load)
+    return String(ina219Values.load, 3);  // 3 decimals from current struct
+  case 6:  // Power
+    return String(ina219Values.power, 3);  // 3 decimals from current struct
+}
+```
+
+**No Caching:**  
+- Values fetched from struct on every render
+- Reflects latest measurement (within 500 ms)
+- If sensor reading failed, stale value from last successful read is displayed (consistent with BR-002)
+
+**Formatting Consistency:**  
+All values formatted identically to standard `pageIna219()` display:
+- Runtime: Integer (no decimals)
+- Voltage values: 3 decimals
+- Current/Power: 3 decimals
+- Charge: 3 decimals
+- Units and colors match exactly
+
+**Color Application:**  
+Colors applied per `getLargeDisplayColor(valueIndex)`:
+- Cyan (Laufzeit, Ladung): Derived/computed values
+- Green (Batterie, Versorgung, Shunt-Spannung): Primary measurements
+- Orange (Strom, Power): Secondary measurements
+
+**Failure Behavior:**  
+- If INA219 sensor read fails in previous cycle, stale value persists (per BR-002)
+- Stale value displayed in large format same as normal display
+- No error indication in large display mode (no "STALE" warning)
+
+**Evidence:**  
+- Helper functions: `getLargeDisplayValue()`, `getLargeDisplayColor()`, `getLargeDisplayUnit()`
+- Struct access: all read from global `ina219Values` without buffering
+- Refresh cycle: page native 500 ms rate, inherited from standard Page 2 behavior
+
+**Confidence:**  
+HIGH
+
+---
+
+## 2.10 Large Display Mode Business Rules (INA219 Page 2) — **NEW**
+
+### BR-028: Large Display Mode Entry
+
+**Rule:**  
+When Button B is pressed AND currently on Page 2 (INA219) AND NOT already in large display mode, enter large display mode with initial index 0 (Laufzeit).
+
+**Condition:**
+```cpp
+if (currentPage == 2 && bPressed && !lastB && !largeDisplayMode)
+```
+
+**Action:**
+```cpp
+largeDisplayMode = true;
+largeDisplayIndex = 0;
+```
+
+**Effect:**  
+- Next `pageIna219()` call renders `pageLargeDisplayIna219(0)` instead of standard page
+- Display shows "Laufzeit" (runtime) in large format
+- Navigation buttons Y/A become inactive; B/X become cycle buttons
+
+**Scope:** Page 2 (INA219) only. Does not apply to other pages.
+
+**Constraint:** Only applies if `available.ina219 == true`.
+
+**Evidence:** Lines 973–978 in src/main.cpp
+
+---
+
+### BR-029: Large Display Mode Forward Cycle
+
+**Rule:**  
+When Button B is pressed AND currently in large display mode, cycle to the next value index (forward with wrap-around).
+
+**Condition:**
+```cpp
+if (largeDisplayMode && bPressed && !lastB)
+```
+
+**Action:**
+```cpp
+largeDisplayIndex = (largeDisplayIndex + 1) % 7;
+```
+
+**Effect:**  
+- Index increments: 0→1→2→3→4→5→6→0 (wrap-around at 7)
+- Next render displays new value in large format
+- All 7 values (Laufzeit, Batterie, Versorgung, Strom, Ladung, Shunt-Spannung, Power) are cycled
+
+**Scope:** Only active while `largeDisplayMode == true`.
+
+**Evidence:** Lines 979–982 in src/main.cpp
+
+---
+
+### BR-030: Large Display Mode Reverse Cycle
+
+**Rule:**  
+When Button X is pressed AND currently in large display mode, cycle to the previous value index (backward with wrap-around).
+
+**Condition:**
+```cpp
+if (largeDisplayMode && xPressed && !lastX)
+```
+
+**Action:**
+```cpp
+largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;  // Wrap safely to 0-6
+```
+
+**Effect:**  
+- Index decrements: 6→5→4→3→2→1→0→6 (wrap-around at -1)
+- Next render displays new value in large format
+- Exact inverse of BR-029; pressing X then B returns to same value
+
+**Scope:** Only active while `largeDisplayMode == true`. Button X is inactive outside this mode.
+
+**Evidence:** Lines 985–987 in src/main.cpp
+
+---
+
+### BR-031: Large Display Mode Exit
+
+**Rule:**  
+When Button Y is pressed AND currently in large display mode, exit large display mode and immediately render standard INA219 page.
+
+**Condition:**
+```cpp
+if (largeDisplayMode && yPressed && !lastY)
+```
+
+**Action:**
+```cpp
+largeDisplayMode = false;
+largeDisplayIndex = 0;
+drawHeader("INA219 (0x40)");  // Clears screen atomically with fillScreen(TFT_BLACK)
+pageIna219();  // Renders standard page data
+```
+
+**Effect:**  
+- Transition is immediate (not deferred to next refresh cycle)
+- Standard page with all 7 values displayed cleanly (no artifacts)
+- Navigation buttons Y/A restored to normal functions
+- Mode state reset for safety
+
+**Scope:** Only active while `largeDisplayMode == true`.
+
+**Rendering Strategy:** Immediate rendering (within button handler) ensures atomic clear (`fillScreen`) before new content, preventing visual artifacts.
+
+**Evidence:** Lines 1000–1005 in src/main.cpp
+
+---
+
+### BR-032: Button A Inactivity in Large Display Mode
+
+**Rule:**  
+When Button A is pressed AND currently in large display mode, the button is ignored (no action taken).
+
+**Condition:**
+```cpp
+if (largeDisplayMode && aPressed && !lastA)
+  // Do nothing; no branch taken
+```
+
+**Effect:**  
+- No page navigation occurs
+- Large display mode remains active
+- User cannot accidentally navigate away from Page 2 while in large display mode
+
+**Rationale:** Prevents accidental page navigation while viewing single value. User must explicitly press Y to exit mode before navigating.
+
+**Scope:** Only active while `largeDisplayMode == true`. Button A works normally outside this mode (BR-005).
+
+**Evidence:** Lines 1008–1011 in src/main.cpp
+
+---
+
+### BR-033: Large Display Mode Safety Reset on Page Change
+
+**Rule:**  
+When leaving Page 2 (INA219) while in large display mode, forcibly reset large display state to prevent state leak to other pages.
+
+**Condition:**
+```cpp
+if (lastPage == 2 && currentPage != 2 && largeDisplayMode)
+```
+
+**Action:**
+```cpp
+largeDisplayMode = false;
+largeDisplayIndex = 0;
+```
+
+**Effect:**  
+- Large display mode is deactivated
+- If user navigates back to Page 2 later, large display mode starts fresh from index 0
+- No stale state persists across page boundaries
+
+**Scope:** Automatic safety mechanism. Always active during page change handling (line 1026–1029).
+
+**Rationale:** Multi-page navigation requires clean state; large display flags must not leak to other page renderers.
+
+**Evidence:** Lines 1026–1029 in src/main.cpp
+
+---
+
 ## Ambiguities & [UNKNOWN] Items
 
 | Item | Impact | Note |
