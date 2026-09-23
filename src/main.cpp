@@ -23,6 +23,13 @@
 #define ENCODER_BUTTON_PIN 24
 #define ENCODER_NEOPIXEL_PIN 6
 
+// SD card pins for VSPI (same as Freenove sketches)
+#define SD_SCK   18
+#define SD_MISO  19
+#define SD_MOSI  23
+#define SD_CS    5
+#define AUDIO_EN 4
+
 #define VEML6075_ADDR 0x10
 #define VEML6070_ADDR_LSB 0x38
 #define VEML6070_ADDR_MSB 0x39
@@ -69,7 +76,7 @@ struct SensorStatus {
 };
 SensorStatus available{};
 
-struct Ina219Values { float shunt; float bus; float load; float current; float power; float chargeMah; bool initialized; uint32_t lastSampleUs; };
+struct Ina219Values { float shunt; float bus; float load; float current; float power; float chargeMah; bool initialized; uint32_t lastSampleUs; uint32_t startTimeUs; };
 struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t comp2; float uvaComp; float uvbComp; float index; };
 struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
 struct Scd30Values { float co2; float temp; float humidity; };
@@ -85,7 +92,7 @@ GamepadValues gamepadValues{};
 uint32_t fwVersion = 0;
 uint32_t optionsMask = 0;
 float seesawTemperature = 0.0f;
-uint8_t currentPage = 0;
+uint8_t currentPage = 2;  // Start with INA219 page (Page 2)
 uint8_t lastPage = 255;
 int32_t encoderLastPosition = 0;
 uint32_t encoderPressCount = 0;
@@ -293,6 +300,8 @@ void readIna219At50Hz()
       ina219Values.chargeMah += ina219Values.current * (float)elapsedUs / 3600000000.0f;
     }
   } else {
+    // Store start time when first initialized
+    ina219Values.startTimeUs = nowUs;
     ina219Values.initialized = true;
   }
 
@@ -304,15 +313,37 @@ void readIna219At50Hz()
   ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
 }
 
+// Format runtime as HH:MM:SS
+String formatRuntime(uint32_t elapsedUs) {
+  uint32_t seconds = elapsedUs / 1000000;
+  uint16_t hours = seconds / 3600;
+  uint16_t minutes = (seconds % 3600) / 60;
+  uint16_t secs = seconds % 60;
+  char buffer[12];
+  sprintf(buffer, "%02d:%02d:%02d", hours, minutes, secs);
+  return String(buffer);
+}
+
 void pageIna219()
 {
   if (!available.ina219) return unavailable("INA219", "0x40", "I2C address:");
-  row(56, "Bus voltage:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
-  row(80, "Shunt voltage:", String(ina219Values.shunt, 3) + " mV", TFT_GREEN);
-  row(104, "Load voltage:", String(ina219Values.load, 3) + " V", TFT_GREEN);
-  row(128, "Current:", String(ina219Values.current, 3) + " mA", TFT_ORANGE);
-  row(152, "Power:", String(ina219Values.power, 3) + " mW", TFT_ORANGE);
-  row(152, "Charge:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
+  
+  // Calculate runtime since measurement started
+  const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
+  String runtimeStr = formatRuntime(runtimeUs);
+  
+  // Determine charging status based on current polarity
+  const char *statusLabel = ina219Values.current > 0 ? "Charging" : "Discharging";
+  
+  // Display all values
+  row(56, "Laufzeit:", runtimeStr, TFT_CYAN);
+  row(80, "Batterie:", String(ina219Values.load, 3) + " V", TFT_GREEN);
+  row(104, "Versorgung:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
+  row(128, "Strom:", String(ina219Values.current, 1) + " mA [" + statusLabel + "]", TFT_ORANGE);
+  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_MAGENTA);
+  row(176, "Shunt-Spannung:", String(ina219Values.shunt, 2) + " mV", TFT_GREEN);
+  row(200, "Power:", String((uint16_t)ina219Values.power) + " mW", TFT_ORANGE);
+  
   footer("Y/A: Seite wechseln | INA219");
 }
 
@@ -492,6 +523,7 @@ void detectSensors()
   if (available.gamepad) gamepad.pinModeBulk(BUTTON_MASK, INPUT_PULLUP);
   if (available.gamepad) gamepad.setGPIOInterrupts(BUTTON_MASK, true);
 }
+
 
 
 
