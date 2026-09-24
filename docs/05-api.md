@@ -22,7 +22,166 @@ The sensor-pages-dashboard is a **bare-metal embedded firmware** running on ESP3
 
 ---
 
-## 0. Large Display Helper Functions (INA219 Page 2) — **NEW**
+## 0. Sensor Data Reading Functions (Unified Caching Architecture) — **NEW (FEATURE-SPEC-005)**
+
+### Overview
+
+Three new sensor read functions implement unified caching architecture. Each function reads from I2C sensor, updates global cache struct, and logs performance timing to Serial.
+
+---
+
+### `void readBme280(Bme280Values &values)`
+
+**Purpose:** Read temperature, humidity, pressure, altitude from BME280 sensor; compute dew point using Alduchov & Eskridge formula.
+
+**Signature:**
+```cpp
+void readBme280(Bme280Values &values);
+```
+
+**Parameters:**
+- `values` (Bme280Values&): Reference to global cache struct to update
+
+**Return:** void
+
+**Behavior:**
+1. Guard: Return immediately if `available.bme280 = false`
+2. Record start time: `startTime = micros()`
+3. Read sensor values:
+   - `temperature = bme280.readTemperature()` (°C)
+   - `humidity = bme280.readHumidity()` (%RH)
+   - `pressure = bme280.readPressure() / 100.0f` (Pa → hPa)
+   - `altitude = bme280.readAltitude(1013.25f)` (m, using 1013.25 hPa reference)
+4. Error check: Verify values in valid ranges:
+   - Temperature: -40 to +85°C
+   - Humidity: 0 to 100%
+   - Pressure: 300 to 1100 hPa
+   - If any value out of range: Log "ERROR: BME280 read returned invalid values" to Serial and **RETURN without updating cache**
+5. Compute dew point (Alduchov & Eskridge formula, ±0.35°C accuracy):
+   ```cpp
+   a = 17.62, b = 243.12
+   alpha = ((a * T) / (b + T)) + ln(RH% / 100)
+   dewPoint = (b * alpha) / (a - alpha)
+   ```
+6. Record end time and log to Serial: `"BME280 read time: XXX µs"`
+7. **Update cache struct** (only on success)
+
+**I2C Address:** 0x77
+
+**Timing Expectation:** 5–50 ms (includes I2C I/O + computation)
+
+**Serial Output Example:**
+```
+BME280 read time: 12345 µs
+```
+
+**Callers:** `readSensors()` (every 500 ms via SENSOR_REFRESH_MS)
+
+**Failure Behavior:** Cache not updated; last known values persist; error logged to Serial.
+
+**Note:** Requires `#include <math.h>` for `log()` function.
+
+---
+
+### `void readTsl2591(Tsl2591Values &values)`
+
+**Purpose:** Read light sensor full spectrum and infrared channels; compute visible light; calculate lux.
+
+**Signature:**
+```cpp
+void readTsl2591(Tsl2591Values &values);
+```
+
+**Parameters:**
+- `values` (Tsl2591Values&): Reference to global cache struct to update
+
+**Return:** void
+
+**Behavior:**
+1. Guard: Return immediately if `available.tsl2591 = false`
+2. Record start time: `startTime = micros()`
+3. Read sensor values using Adafruit_TSL2591 API:
+   - `fullLum = tsl2591.getFullLuminosity()` (uint32_t with [IR(16-31) | FullSpec(0-15)])
+   - `fullSpectrum = fullLum & 0xFFFF` (Lower 16 bits, CHAN0)
+   - `infrared = fullLum >> 16` (Upper 16 bits, CHAN1)
+   - `visible = fullSpectrum - infrared` (Computed)
+   - `lux = tsl2591.calculateLux(fullSpectrum, infrared)` (Manufacturer formula)
+   - `gain = tsl2591.getGain()` (Sensor setting, for reference)
+   - `integrationTime = tsl2591.getIntegrationTime()` (Sensor setting, for reference)
+4. Error check: If both fullSpectrum and infrared are 0:
+   - Log "ERROR: TSL2591 read returned zero values" to Serial
+   - **RETURN without updating cache**
+5. Record end time and log to Serial: `"TSL2591 read time: XXX µs"`
+6. **Update cache struct** (only on success)
+
+**I2C Address:** 0x29
+
+**Timing Expectation:** 5–20 ms (includes I2C reads + lux calculation)
+
+**Serial Output Example:**
+```
+TSL2591 read time: 8234 µs
+```
+
+**Callers:** `readSensors()` (every 500 ms via SENSOR_REFRESH_MS)
+
+**Failure Behavior:** Cache not updated; last known values persist; error logged to Serial.
+
+**API Details (Adafruit_TSL2591):**
+- `getFullLuminosity()` returns uint32_t packed as: `(CHAN1 << 16) | CHAN0`
+- CHAN0 = Full spectrum (visible + infrared)
+- CHAN1 = Infrared only
+- `calculateLux(ch0, ch1)` applies manufacturer algorithm
+
+---
+
+### `void readSi1145(Si1145Values &values)`
+
+**Purpose:** Read visible light, infrared, and UV channels from SI1145 multi-spectrum sensor.
+
+**Signature:**
+```cpp
+void readSi1145(Si1145Values &values);
+```
+
+**Parameters:**
+- `values` (Si1145Values&): Reference to global cache struct to update
+
+**Return:** void
+
+**Behavior:**
+1. Guard: Return immediately if `available.si1145 = false`
+2. Record start time: `startTime = micros()`
+3. Read sensor values using Adafruit_SI1145 API:
+   - `visible = si1145.readVisible()` (uint16_t, 0–65535)
+   - `infrared = si1145.readIR()` (uint16_t, 0–65535)
+   - `uv = si1145.readUV()` (uint16_t raw from register 0x2C, typically 0–500)
+4. Error check: If all three values are 0:
+   - Log "ERROR: SI1145 read returned all zeros" to Serial
+   - **RETURN without updating cache**
+5. Compute UV index using standard Adafruit formula:
+   - `uvIndex = uv / 100.0f` (Typical range 0–5; dangerous if > 11)
+6. Record end time and log to Serial: `"SI1145 read time: XXX µs"`
+7. **Update cache struct** (only on success)
+
+**I2C Address:** 0x60
+
+**Timing Expectation:** 5–15 ms (includes I2C reads only)
+
+**Serial Output Example:**
+```
+SI1145 read time: 6789 µs
+```
+
+**Callers:** `readSensors()` (every 500 ms via SENSOR_REFRESH_MS)
+
+**Failure Behavior:** Cache not updated; last known values persist; error logged to Serial.
+
+**UV Index Calculation:** Raw UV register contains index × 100; divide by 100 to get actual UV index.
+
+---
+
+## 1. Large Display Helper Functions (INA219 Page 2) — **NEW**
 
 ### Overview
 

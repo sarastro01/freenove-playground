@@ -138,45 +138,140 @@ Ina219Values ina219Values{};  // 29 bytes, zero-initialized
 
 ---
 
-### 2.3 Bme280Values
+### 2.3 Bme280Values — **NEW (FEATURE-SPEC-005)**
 
-> **Documentation note:** This structure was missing from the original documentation and is added to resolve **ISSUE-002**.
+> **Documentation note:** Structure added to implement unified sensor caching architecture.
 
-**Purpose:** Cache of BME280 climate sensor readings.
+**Purpose:** Cache of BME280 climate sensor readings updated every 500 ms.
 
-**Lifecycle:** Initialized with default values from the BME280 sensor at boot; updated every 500 ms by `readBme280()` in the sensor polling loop.
+**Lifecycle:** Initialized with NaN at boot; updated every 500 ms by `readBme280()` in `readSensors()`.
+
+**Scope:** Global static, mutable.
 
 ```cpp
 struct Bme280Values {
-  float temperature;  // °C
-  float humidity;     // %RH
-  float pressure;     // hPa
-  float altitude;     // m
-  float dewPoint;     // °C
+  float temperature;      // 4 bytes — °C (range: -40 to +85)
+  float humidity;         // 4 bytes — %RH (range: 0 to 100)
+  float pressure;         // 4 bytes — hPa (range: 300 to 1100)
+  float altitude;         // 4 bytes — m (calculated from pressure @ 1013.25 hPa reference)
+  float dewPoint;         // 4 bytes — °C (calculated via Alduchov & Eskridge formula)
 };
-Bme280Values bme280Values{};
+Bme280Values bme280Values{};  // 20 bytes, initialized to NaN
 ```
 
-**Fields:** `temperature` (float), `humidity` (float), `pressure` (float), `altitude` (float), and `dewPoint` (float).
+**Field Details:**
 
-**Dew point calculation:** The simplified approximation is:
+| Field | Type | Source | Set By | Constraint | Accuracy |
+|-------|------|--------|--------|-----------|----------|
+| `temperature` | float | BME280 reg | `readBme280()` every 500ms | Range -40 to +85°C | ±1°C (sensor spec) |
+| `humidity` | float | BME280 reg | `readBme280()` every 500ms | Range 0 to 100%RH | ±3%RH (sensor spec) |
+| `pressure` | float | BME280 reg (Pa→hPa) | `readBme280()` every 500ms | Range 300 to 1100 hPa | ±1 hPa (sensor spec) |
+| `altitude` | float | Computed from pressure | `readBme280()` every 500ms | Computed vs. 1013.25 hPa reference | ±10 m |
+| `dewPoint` | float | Computed | `readBme280()` every 500ms | Calculated via formula | **±0.35°C (Alduchov & Eskridge)** |
 
+**Dew Point Calculation (Alduchov & Eskridge Formula):**
 ```cpp
-dewPoint = temperature - ((100.0f - humidity) / 5.0f);
+// Higher accuracy than simplified formula (valid 0-50°C, 1-100%RH, ±0.35°C)
+const float a = 17.62;
+const float b = 243.12;
+float alpha = ((a * temperature) / (b + temperature)) + log(humidity / 100.0f);
+dewPoint = (b * alpha) / (a - alpha);
 ```
 
-**Source attribution and accuracy:** The simplified approximation is used for the cached value. For better accuracy (recommended for approximately ±0.5 °C accuracy), use the Magnus formula:
+**Error Handling:** If I2C read fails (detected via plausibility checks on temperature/humidity/pressure), struct not updated and error logged to Serial.
 
-```text
-(b * (a*T/(b+T) + ln(RH/100))) /
-(a - (a*T/(b+T) + ln(RH/100)))
-```
-
-where `a = 17.62`, `b = 243.12 °C`, `T` is temperature in °C, and `RH` is relative humidity in percent.
+**Failure Behavior:** Cache persists last known values until next successful read (stale data).
 
 ---
 
-### 2.3 Veml6075Values
+### 2.4 Tsl2591Values — **NEW (FEATURE-SPEC-005)**
+
+> **Documentation note:** Structure added to implement unified sensor caching architecture.
+
+**Purpose:** Cache of TSL2591 light sensor readings updated every 500 ms.
+
+**Lifecycle:** Initialized with NaN at boot; updated every 500 ms by `readTsl2591()` in `readSensors()`.
+
+**Scope:** Global static, mutable.
+
+```cpp
+struct Tsl2591Values {
+  uint32_t fullSpectrum;       // 4 bytes — Full spectrum (CHAN0, 16-bit raw)
+  uint32_t infrared;           // 4 bytes — Infrared (CHAN1, 16-bit raw)
+  uint32_t visible;            // 4 bytes — Visible light (computed: full - IR)
+  float lux;                   // 4 bytes — Illuminance (lux)
+  uint16_t gain;               // 2 bytes — Sensor gain setting (1x, 25x, 428x, 9876x)
+  uint16_t integrationTime;    // 2 bytes — Integration time (ms: 100, 200, 300, 400, 500, 600)
+};
+Tsl2591Values tsl2591Values{};  // 20 bytes, initialized to NaN
+```
+
+**Field Details:**
+
+| Field | Type | Source | Set By | Constraint | Notes |
+|-------|------|--------|--------|-----------|-------|
+| `fullSpectrum` | uint32_t | `getFullLuminosity() & 0xFFFF` | `readTsl2591()` every 500ms | 0–65535 (16-bit) | CHAN0 (visible + infrared) |
+| `infrared` | uint32_t | `getFullLuminosity() >> 16` | `readTsl2591()` every 500ms | 0–65535 (16-bit) | CHAN1 (infrared only) |
+| `visible` | uint32_t | Computed | `readTsl2591()` every 500ms | fullSpectrum - infrared | Derived value |
+| `lux` | float | `calculateLux(full, ir)` | `readTsl2591()` every 500ms | 0–88000 (typical) | Brightness in lux |
+| `gain` | uint16_t | `getGain()` | `readTsl2591()` every 500ms | Enum value | Read-only, for info only |
+| `integrationTime` | uint16_t | `getIntegrationTime()` | `readTsl2591()` every 500ms | 100–600 ms | Read-only, for info only |
+
+**API Details (Adafruit_TSL2591 Library):**
+- `getFullLuminosity()` returns uint32_t encoding: `[CHAN1(16-31) | CHAN0(0-15)]`
+- Lower 16 bits: CHAN0 (fullSpectrum = visible + infrared)
+- Upper 16 bits: CHAN1 (infrared)
+- `calculateLux(ch0, ch1)` applies manufacturer formula for lux conversion
+
+**Error Handling:** If I2C read returns all zeros (I2C failure), struct not updated and error logged to Serial.
+
+**Failure Behavior:** Cache persists last known values until next successful read (stale data).
+
+---
+
+### 2.5 Si1145Values — **NEW (FEATURE-SPEC-005)**
+
+> **Documentation note:** Structure added to implement unified sensor caching architecture.
+
+**Purpose:** Cache of SI1145 multi-spectrum sensor readings updated every 500 ms.
+
+**Lifecycle:** Initialized with NaN at boot; updated every 500 ms by `readSi1145()` in `readSensors()`.
+
+**Scope:** Global static, mutable.
+
+```cpp
+struct Si1145Values {
+  uint16_t visible;       // 2 bytes — Visible light raw ADC (0–65535)
+  uint16_t infrared;      // 2 bytes — Infrared raw ADC (0–65535)
+  uint16_t uv;            // 2 bytes — UV raw (register 0x2C, 0–500 typical)
+  float uvIndex;          // 4 bytes — Computed UV index (uv / 100.0f)
+};
+Si1145Values si1145Values{};  // 12 bytes, initialized to NaN
+```
+
+**Field Details:**
+
+| Field | Type | Source | Set By | Constraint | Calculation |
+|-------|------|--------|--------|-----------|-------------|
+| `visible` | uint16_t | `readVisible()` | `readSi1145()` every 500ms | 0–65535 | Raw ADC count |
+| `infrared` | uint16_t | `readIR()` | `readSi1145()` every 500ms | 0–65535 | Raw ADC count |
+| `uv` | uint16_t | `readUV()` (reg 0x2C) | `readSi1145()` every 500ms | 0–500 typical | Raw UV index × 100 |
+| `uvIndex` | float | Computed | `readSi1145()` every 500ms | 0–5.0 typical | **uv / 100.0f** |
+
+**UV Index Calculation (Adafruit Standard):**
+```cpp
+// Raw UV register (0x2C) returns index × 100
+// Divide by 100 to get actual UV index
+uvIndex = uv / 100.0f;   // Range typically 0–5 (dangerous if > 11)
+```
+
+**Error Handling:** If I2C read returns all zeros (I2C failure), struct not updated and error logged to Serial.
+
+**Failure Behavior:** Cache persists last known values until next successful read (stale data).
+
+---
+
+### 2.6 Veml6075Values
 
 **Purpose:** Cache of raw + compensated UV readings from VEML6075 sensor (500 ms cycle).
 

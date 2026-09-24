@@ -53,6 +53,214 @@ Based on reverse-engineered business rules (docs/06-business-rules.md), the foll
 | Encoder LED color cycles correctly | User feature | Unit |
 | DS2484 discovers and displays 1-Wire sensors | Multi-sensor support; discovery | Integration |
 | I2C address decoding (all 10 sensors) correct | Correct sensor read | Unit |
+| **BME280 caching & dew point accuracy (FR-013, BR-SC-001)** | **Cache architecture correctness; ±0.35°C Alduchov & Eskridge** | **Integration** |
+| **TSL2591 caching & bitwise extraction (FR-013, BR-SC-001)** | **Correct CHAN0/CHAN1 decoding from getFullLuminosity()** | **Integration** |
+| **SI1145 caching & UV index (FR-013, BR-SC-001)** | **Correct raw/100 UV formula** | **Integration** |
+| **Sensor error detection via plausibility checks (BR-SC-003)** | **Invalid data rejected; cache not updated** | **Integration** |
+| **Sensor timing measurement & logging (BR-SC-004)** | **Serial output for performance debugging** | **Integration** |
+| **Large Display Mode entry/exit (FR-012)** | **INA219 alternative UI; user feature** | **Integration** |
+| **Large Display Mode value cycling (FR-012)** | **Correct wrap-around on all 7 values** | **Integration** |
+| **Large Display Mode value formatting (FR-012)** | **Consistency with standard page** | **Unit** |
+
+---
+
+## Test Cases: Sensor Caching Architecture (FEATURE-SPEC-005, FR-013) — **NEW**
+
+### TC-001: BME280 Caching & Plausibility Checks
+
+**Setup:** Device with BME280 detected at boot (`available.bme280 = true`). Device on Page 0 (BME280 page).
+
+**Action:**
+1. Power on device and allow system to stabilize.
+2. Observe Serial Monitor for timing output.
+3. Ensure BME280 is connected and functional.
+4. Monitor for 3-5 sensor read cycles (≈1.5–2.5 seconds).
+
+**Expected Result:**
+- Serial output shows: `BME280 read time: XXXX µs` (5–50 ms expected)
+- Page 0 displays valid temperature, humidity, pressure, altitude, dew point values
+- Values update every 500 ms (SENSOR_REFRESH_MS)
+- Dew point calculation correct: `Td ≈ T - (RH%-compensated value)` via Alduchov & Eskridge formula
+- No direct I2C operations during page rendering (no slowdown when page drawn)
+
+**Verification:**
+- Manual inspection of Serial output for timing
+- Temperature in valid range: -40 to +85°C
+- Humidity in valid range: 0 to 100%
+- Pressure in valid range: 300 to 1100 hPa
+- Dew point = f(T, RH) via formula (verify calculation manually or via calculator)
+- Page render completes in < 100 ms (no visible lag)
+
+**Error Condition:**
+If I2C read fails (sensor disconnected/faulty):
+- Serial shows: `ERROR: BME280 read returned invalid values: T=XX, RH=YY, P=ZZ`
+- Page displays last known values (stale)
+- No crash; page remains responsive
+
+---
+
+### TC-002: TSL2591 Caching & Bitwise Extraction
+
+**Setup:** Device with TSL2591 detected at boot (`available.tsl2591 = true`). Device on Page 6 (TSL2591 page).
+
+**Action:**
+1. Power on device and allow system to stabilize.
+2. Observe Serial Monitor for timing output.
+3. Ensure TSL2591 is connected and receiving light.
+4. Shine bright light on sensor (e.g., phone flashlight).
+5. Monitor for 3 read cycles while varying light.
+
+**Expected Result:**
+- Serial output shows: `TSL2591 read time: XXXX µs` (5–20 ms expected)
+- Page 6 displays:
+  - fullSpectrum (uint16_t): ADC raw count
+  - infrared (uint16_t): IR raw count
+  - visible (calculated): fullSpectrum - infrared
+  - lux (float): Calculated via manufacturer formula
+  - gain and integrationTime (for reference)
+- Values respond to light changes within 500 ms (next refresh)
+- `visible` always = `fullSpectrum - infrared` (verify calculation)
+
+**Verification:**
+- Serial timing logged consistently
+- Bitwise extraction correct: lower 16 bits = fullSpectrum, upper 16 bits = infrared
+- Lux value increases when light increases (proportional relationship)
+- Page updates every 500 ms without lag
+
+**Error Condition:**
+If I2C read returns all zeros (sensor disconnected/I2C error):
+- Serial shows: `ERROR: TSL2591 read returned zero values`
+- Page displays last known values (stale)
+- No crash
+
+---
+
+### TC-003: SI1145 Caching & UV Index Calculation
+
+**Setup:** Device with SI1145 detected at boot (`available.si1145 = true`). Device on Page 5 (SI1145 page).
+
+**Action:**
+1. Power on device and allow system to stabilize.
+2. Observe Serial Monitor for timing output.
+3. Ensure SI1145 is connected and exposed to UV light (sunlight or UV lamp).
+4. Monitor for 3-5 read cycles.
+5. Vary light exposure (e.g., move indoors/outdoors or cover sensor).
+
+**Expected Result:**
+- Serial output shows: `SI1145 read time: XXXX µs` (5–15 ms expected)
+- Page 5 displays:
+  - visible (uint16_t): Light ADC count (0–65535)
+  - infrared (uint16_t): IR ADC count (0–65535)
+  - uv (uint16_t): Raw UV value from register 0x2C
+  - uvIndex (float): `uv / 100.0f` (calculated)
+- UV index increases in bright/direct sunlight, decreases indoors (physically correct)
+- All values non-negative (no invalid data)
+- Page updates every 500 ms
+
+**Verification:**
+- Serial timing logged consistently
+- UV index formula correct: uvIndex = uv / 100.0f (verify spot-checks)
+- UV index physically reasonable:
+  - Indoor (typical): 0.5–2.0
+  - Outdoor (cloudy): 2–5
+  - Outdoor (sunny): 5–11 (can be higher at high altitude/equator)
+- Page updates smoothly every 500 ms
+
+**Error Condition:**
+If I2C read returns all zeros (sensor disconnected/I2C error):
+- Serial shows: `ERROR: SI1145 read returned all zeros`
+- Page displays last known values (stale)
+- No crash
+
+---
+
+### TC-004: Error Detection via Plausibility Checks (BME280 Out-of-Range)
+
+**Setup:** Device with BME280 in normal operation. Device on Page 0 (BME280).
+
+**Action:**
+1. Run normally for 3–5 read cycles to establish baseline values.
+2. (Simulated failure) Trigger I2C bus error by:
+   - Disconnecting BME280 SCL/SDA line briefly, or
+   - Introducing electromagnetic interference near I2C bus
+3. Observe Serial Monitor for error message.
+4. Observe page for stale vs. new values.
+5. Reconnect sensor and allow recovery.
+
+**Expected Result:**
+- When error occurs: Serial shows `ERROR: BME280 read returned invalid values: T=XX, RH=YY, P=ZZ`
+- Page does NOT update to invalid values; continues to show last valid measurement
+- After sensor reconnected: Serial shows `BME280 read time: XXXX µs` (error cleared)
+- Page updates to new valid values
+
+**Verification:**
+- Cache not updated on failed reads (stale data confirms cache logic)
+- Error message appears in Serial log (timing and I2C error coincide)
+- Recovery automatic after sensor restored (no manual reset required)
+- No display corruption or crashes
+
+---
+
+### TC-005: Sensor Initialization with NaN
+
+**Setup:** Device powered on for first time (fresh flash). Device on Page 0 (BME280).
+
+**Action:**
+1. Power on device.
+2. Observe Serial Monitor output for first 500 ms (before first sensor read).
+3. Observe Page 0 display during this initial period.
+4. Wait for first refresh at 500 ms mark.
+
+**Expected Result:**
+- During first 0–500 ms: Page 0 displays "---" or similar for temperature, humidity, pressure, altitude, dew point (indicating NaN values, not 0.0)
+- Serial output shows no sensor timing yet (first read hasn't fired)
+- At ~500 ms: Serial shows `BME280 read time: XXXX µs`
+- Page updates to show real values (e.g., temperature = 24.5°C, not 0.0°C)
+
+**Verification:**
+- NaN values correctly initialized (not 0.0f)
+- UI correctly displays "---" for NaN (distinguish from valid zero measurement)
+- First successful read updates cache and page
+- Display shows valid values after first read
+
+**Note:** Requires page rendering code to check `isnan()` and display "---" for uninitialized values.
+
+---
+
+### TC-006: Sensor Timing Under I2C Load
+
+**Setup:** All available sensors connected and detected at boot. Device running normal polling cycle.
+
+**Action:**
+1. Monitor Serial output for all sensor read times over 10–20 read cycles (5–10 seconds).
+2. Record min/max/average timing for each sensor.
+3. Verify total sensor read time < 400 ms (leaving headroom for 500 ms SENSOR_REFRESH_MS).
+
+**Expected Result:**
+- Individual sensor timings:
+  - BME280: 5–50 ms
+  - TSL2591: 5–20 ms
+  - SI1145: 5–15 ms
+  - (Other sensors: historical baseline)
+- Total combined read time for all sensors: < 400 ms
+- No timing anomalies or exceptions
+- Page refresh maintains 500 ms cycle (data updates consistently)
+
+**Verification:**
+- Serial log shows timings within expected ranges
+- No read exceeds 100 ms (would indicate I2C bus hang)
+- Combined load leaves headroom for UI rendering
+
+**Note:** Useful for detecting I2C bus issues (slow pulls, high capacitance, signal integrity).
+
+---
+
+## Test Cases: Large Display Mode (FR-012, INA219 Page 2)
+| Sensor missing → error screen (no crash) | Graceful degradation | Integration |
+| Gamepad falling-edge detection works | Correct page navigation | Integration |
+| Encoder LED color cycles correctly | User feature | Unit |
+| DS2484 discovers and displays 1-Wire sensors | Multi-sensor support; discovery | Integration |
+| I2C address decoding (all 10 sensors) correct | Correct sensor read | Unit |
 | **Large Display Mode entry/exit (FR-012)** | **INA219 alternative UI; user feature** | **Integration** |
 | **Large Display Mode value cycling (FR-012)** | **Correct wrap-around on all 7 values** | **Integration** |
 | **Large Display Mode value formatting (FR-012)** | **Consistency with standard page** | **Unit** |

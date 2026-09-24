@@ -269,6 +269,35 @@ The system shall provide an alternate display mode for INA219 sensor page that s
 
 ---
 
+### FR-013: Unified Sensor Data Caching Architecture — **NEW**
+
+**Requirement:**  
+BME280, TSL2591, and SI1145 sensors shall use the same caching architecture as other sensors (VEML6075, VEML6070, SCD30, DS2484).
+
+**Details:**
+- Sensor data read in `readSensors()` function at 500 ms interval (via `SENSOR_REFRESH_MS`)
+- Each sensor type has dedicated struct to cache latest readings: `Bme280Values`, `Tsl2591Values`, `Si1145Values`
+- Global instances: `bme280Values`, `tsl2591Values`, `si1145Values` initialized to NaN (not valid) at startup
+- Read functions: `readBme280()`, `readTsl2591()`, `readSi1145()` with error logging and timing measurement
+- Page display functions read **only** from cached structs (no direct I2C operations during rendering)
+- Error handling: If I2C read fails (detected via plausibility checks), cache **not updated** and error logged to Serial
+- Performance: Reduces I2C load during display refresh, improves UI responsiveness
+
+**Sensor-Specific Details:**
+- **BME280:** Cache contains temperature, humidity, pressure, altitude, dewPoint (calculated via Alduchov & Eskridge formula, ±0.35°C accuracy)
+- **TSL2591:** Cache contains fullSpectrum (uint16_t), infrared (uint16_t), visible (calculated), lux (float), gain, integrationTime
+  - API: `getFullLuminosity()` returns uint32_t with [IR(16-23 bits) | FullSpec(0-15 bits)]
+  - Breakdown: fullSpectrum = lower 16 bits; infrared = upper 16 bits; visible = fullSpectrum - infrared
+- **SI1145:** Cache contains visible (uint16_t), infrared (uint16_t), uv (uint16_t raw), uvIndex (float = uv / 100.0f)
+
+**Evidence:**
+- FEATURE-SPEC-005-SENSOR-CACHING-ARCHITECTURE.md
+- Struct definitions: lines TBD in main.cpp (post-implementation)
+- New functions: readBme280(), readTsl2591(), readSi1145() with serial timing output
+- Modified function: readSensors() includes calls to new read functions with availability guards
+
+---
+
 ## Non-Functional Requirements
 
 ### NFR-001: Real-Time Response
