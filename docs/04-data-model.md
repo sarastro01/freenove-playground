@@ -381,7 +381,7 @@ Scd30Values scd30Values{};  // 12 bytes, zero-initialized
 
 ### 2.6 EncoderValues
 
-**Purpose:** Cache of rotary encoder position, button state, and LED control (50 Hz read when page==4 or page-changing).
+**Purpose:** Cache of rotary encoder position, button state, and LED control (50 Hz read CONTINUOUSLY, not page-conditional — required for LED updates and stats aggregation).
 
 **Lifecycle:** Initialized at boot; updated every 20 ms when page==4 or on page change.
 
@@ -1092,6 +1092,182 @@ if (lastPage == 2 && currentPage != 2) {
 - Requires `currentPage == 2` (can only activate on INA219 page)
 - Requires gamepad functionality (Button B, X, Y detection)
 - Reads from `ina219Values` global struct (populated by `readIna219At50Hz()`)
+
+---
+
+## 10. Tsl2591State and Ds18b20State — Non-Blocking Async (FEATURE-SPEC-006) — **NEW**
+
+### 10.1 Tsl2591State Enum
+
+**Purpose:** State machine for TSL2591 asynchronous measurement (two-phase: start → wait → read).
+
+**Enumeration:**
+```cpp
+enum Tsl2591State {
+  IDLE,       // 0: Not measuring; ready to start
+  MEASURING,  // 1: Measurement in progress (ADC integrating)
+  READY       // 2: Measurement complete; result ready to read
+};
+static Tsl2591State tsl2591State = IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;  // Measurement start timestamp
+```
+
+**Lifecycle:**
+```
+Boot:    IDLE
+        ↓
+Slot 1: IDLE → MEASURING (startTsl2591Measurement)
+        ↓
+ wait ~200 ms...
+        ↓
+Slot 7: MEASURING → IDLE (readTsl2591Async if ready, else wait)
+        ↓
+ repeat...
+```
+
+**State Transitions:**
+
+| From | To | Trigger | Action | Condition |
+|------|-----|---------|--------|-----------|
+| IDLE | MEASURING | `startTsl2591Measurement()` called (Slot 1) | Record start time, initiate ADC | `available.tsl2591 == true` |
+| MEASURING | IDLE | `readTsl2591Async()` called (Slot 7) | Read result, update cache | `elapsed >= TSL2591_INTEGRATION_TIME_MS` |
+| MEASURING | MEASURING | `readTsl2591Async()` called early | No-op, return | `elapsed < TSL2591_INTEGRATION_TIME_MS` |
+
+**Configuration:**
+```cpp
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Typical: 100–400 ms
+```
+
+**Memory:** 4 bytes + enum (1 byte) = 5 bytes
+
+**Persistence:** Lost on reboot; initialized to IDLE.
+
+**Error Handling:** If state stuck in MEASURING (readiness check never succeeds), next cycle will wait again; no deadlock (graceful degradation).
+
+---
+
+### 10.2 Ds18b20State Enum
+
+**Purpose:** State machine for DS18B20 asynchronous temperature conversion (two-phase: start → wait → read).
+
+**Enumeration:**
+```cpp
+enum Ds18b20State {
+  IDLE,       // 0: Not converting; ready to start
+  CONVERTING, // 1: Conversion in progress (1-Wire measuring)
+  READY       // 2: Conversion complete; result ready to read
+};
+static Ds18b20State ds18b20State = IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;  // Conversion start timestamp
+```
+
+**Lifecycle:**
+```
+Boot:    IDLE
+        ↓
+Slot 6: IDLE → CONVERTING (startDs18b20Conversion)
+        ↓
+ wait ~750 ms...
+        ↓
+Next cycle, Slot 7: CONVERTING → IDLE (readDs18b20Async if ready, else wait)
+        ↓
+ repeat...
+```
+
+**State Transitions:**
+
+| From | To | Trigger | Action | Condition |
+|------|-----|---------|--------|-----------|
+| IDLE | CONVERTING | `startDs18b20Conversion()` called (Slot 6) | Record start time, send 1-Wire conversion command | `available.ds2484 == true` |
+| CONVERTING | IDLE | `readDs18b20Async()` called (Slot 7+) | Read results, update cache | `elapsed >= DS18B20_CONVERSION_TIME_MS` |
+| CONVERTING | CONVERTING | `readDs18b20Async()` called early | No-op, return | `elapsed < DS18B20_CONVERSION_TIME_MS` |
+
+**Configuration:**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit: 750ms (8-bit=95ms, 10-bit=375ms)
+```
+
+**Memory:** 4 bytes + enum (1 byte) = 5 bytes
+
+**Persistence:** Lost on reboot; initialized to IDLE.
+
+**Error Handling:** If state stuck in CONVERTING, next cycle will wait again; no deadlock (graceful degradation).
+
+---
+
+### 10.3 SensorSlotIndex and SensorSlotState
+
+**Purpose:** Track current rotation slot and dispatch sensor reads correctly.
+
+**State:**
+```cpp
+static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Previous slot number (init to invalid)
+static uint32_t currentSensorSlot;            // Current slot (0-6)
+
+// Calculation (in main loop):
+currentSensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % 7;
+```
+
+**Memory:** 8 bytes (2 × uint32_t)
+
+**Persistence:** Lost on reboot; initialized to invalid.
+
+**Usage:**
+```cpp
+if (currentSensorSlot != lastSensorSlot) {
+  rotatedReadSensor(currentSensorSlot);  // Call dispatcher once per slot
+  lastSensorSlot = currentSensorSlot;
+}
+```
+
+---
+
+## 11. Sensor Statistics (FEATURE-SPEC-006) — **NEW**
+
+**Purpose:** Optional aggregated timing statistics for per-sensor read performance.
+
+**Configuration:**
+```cpp
+#define ENABLE_STATS_REPORTING 1  // 1 = on (default), 0 = off
+```
+
+**When ENABLED:** Aggregation struct (per sensor):
+```cpp
+struct SensorReadStats {
+  uint32_t minTime;   // Minimum read time (µs)
+  uint32_t maxTime;   // Maximum read time (µs)
+  uint32_t totalTime; // Cumulative time (µs)
+  uint16_t readCount; // Number of reads in this interval
+  // Derived: avgTime = totalTime / readCount
+};
+
+// Global array (one per sensor type):
+SensorReadStats bme280Stats, tsl2591Stats, si1145Stats, veml6075Stats, veml6070Stats, scd30Stats, ds18b20Stats;
+```
+
+**Per-Interval Aggregation (every 1 second via `updateInputStats()`):**
+```cpp
+void updateInputStats() {
+  if (!ENABLE_STATS_REPORTING) return;
+  
+  // Print aggregated stats to Serial
+  if (bme280Stats.readCount > 0) {
+    Serial.printf("BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      bme280Stats.minTime, bme280Stats.maxTime,
+      bme280Stats.totalTime / bme280Stats.readCount,
+      bme280Stats.readCount);
+  }
+  // ... repeat for other sensors
+  
+  // Reset counters
+  bme280Stats = {};
+  // ... reset all others
+}
+```
+
+**Memory Impact (when enabled):** ~56 bytes (7 sensors × 8 bytes per struct)
+
+**When DISABLED:** No aggregation structs allocated; per-sensor timing still logged to Serial (always on).
 
 ---
 

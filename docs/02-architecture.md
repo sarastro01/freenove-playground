@@ -165,7 +165,7 @@ struct EncoderValues {
 };
 ```
 - **Unique:** Stateful LED color cycling and brightness tracking (not just display output).
-- **Read by:** `readEncoderAt50Hz()` every 20 ms (only when page==4 or on page change).
+- **Read by:** `readEncoderAt50Hz()` every 20 ms (CONTINUOUSLY, not page-conditional — required for LED updates and stats aggregation).
 - **Displayed by:** `pageEncoder()` on page 4.
 
 #### **GamepadValues**
@@ -234,7 +234,7 @@ struct GamepadValues {
 | **Inputs** | None (reads seesaw I2C device @ 0x36). |
 | **Outputs** | Updates `encoderValues` (position, delta, presses, brightness, color); controls LED via `updateEncoderLed()`. |
 | **Dependencies** | Adafruit seesaw library, seesaw_NeoPixel, Wire (I2C). |
-| **Call Frequency** | Every 20 ms when `available.encoder && (currentPage==4 || pageChanged)`. |
+| **Call Frequency** | Every 20 ms when `available.encoder` (CONTINUOUSLY, always reads for LED updates and stats aggregation). |
 | **Constraints** | LED updates are immediate (on press or dial turn); button press increments color index (wraps 0–3). Dial delta multiplied by 8 for brightness control. |
 | **State Tracking** | `encoderLastPosition`, `encoderColorIndex`, `encoderBrightness` (static globals); `encoderPressCount` incremented on each press. |
 
@@ -773,7 +773,7 @@ if ((int32_t)(now - deadline) >= 0)
 | Component | Interval | Precision | Gate | Call Sites |
 |---|---|---|---|---|
 | **Gamepad reads** | 25 ms | `millis()` | `(int32_t)(millis() - nextGamepadMs) >= 0` | `readGamepadAt40Hz()` @ 40 Hz |
-| **Encoder reads** | 20 ms | `millis()` | `(int32_t)(millis() - nextEncoderMs) >= 0` | `readEncoderAt50Hz()` @ 50 Hz (only page==4) |
+| **Encoder reads** | 20 ms | `millis()` | `(int32_t)(millis() - nextEncoderMs) >= 0` | `readEncoderAt50Hz()` @ 50 Hz (CONTINUOUSLY, not page-conditional) |
 | **INA219 samples** | 20 µs | `micros()` | `(int32_t)(micros() - nextInaSampleUs) >= 0` | `readIna219At50Hz()` @ 50 Hz via µs precision |
 | **Sensor reads** | 500 ms | `millis()` | `(int32_t)(millis() - nextSensorMs) >= 0` | `readSensors()` @ 2 Hz |
 | **Live page refresh** | 20 ms | `millis()` | `(int32_t)(millis() - nextSelectedDisplayMs) >= 0` | `drawCurrentPage(false)` for pages 2 & 4 @ 50 Hz |
@@ -793,7 +793,155 @@ if ((int32_t)(now - deadline) >= 0) {
 
 ---
 
-## Component Dependency Graph
+## 15.1 Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006) — **NEW**
+
+### Problem: Blocking Sensor Reads
+
+**Previous Architecture (FEATURE-SPEC-005):** All slow sensors read together in a single 500 ms window:
+```
+readSensors():
+  readBme280()     → 2.2 ms
+  readTsl2591()    → 200+ ms ← BLOCKS ENTIRE LOOP
+  readSi1145()     → 0.7 ms
+  readVeml6075()   → ? ms
+  readVeml6070()   → ? ms
+  readScd30()      → ? ms
+  readDs2484Temp() → 750+ ms ← BLOCKS ENTIRE LOOP
+```
+
+**Issue:** Long sensor reads (TSL2591 integration + DS18B20 conversion) blocked the main loop for 500+ ms, preventing responsive input.
+
+**Solution: Rotated Polling Schedule**
+
+Split all slow I2C sensor reads into a 7-slot rotation with one sensor per 200 ms slot:
+
+```
+Slot  Time   Sensor         Operation             Duration   Max Latency
+───────────────────────────────────────────────────────────────────────────
+ 0    0 ms   BME280         Read temp/humidity    ~2.2 ms    2.2 ms
+ 1    200    TSL2591        START async measure   ~0 ms      0 ms
+ 2    400    SI1145         Read visible/IR       ~0.7 ms    0.7 ms
+ 3    600    VEML6075       Read UV A/B           ~? ms      ? ms
+ 4    800    VEML6070       Read UV level         ~? ms      ? ms
+ 5    1000   SCD30          Read CO2 (CRC8)       ~? ms      ? ms
+ 6    1200   DS18B20        START 1-Wire conv     ~0 ms      0 ms
+ 7    1400   Async check    READ TSL2591 + DS18  ~? ms      ? ms
+                             (if ready)
+```
+
+**Cycle Time:** 7 slots × 200 ms = 1.4 seconds (vs 500 ms prior)
+
+### Async Measurement Patterns
+
+**TSL2591 (200 ms integration time):**
+```
+Timeline (ms):
+0 ────────── Start measurement (Slot 1)
+200 ──────── Measurement complete, result available
+1400 ─────── Read result (Slot 7, ~1200 ms later)
+
+Non-blocking: Start → Wait in background → Read when ready
+```
+
+**DS18B20 (750 ms conversion time):**
+```
+Timeline (ms):
+1200 ────── Start 1-Wire conversion (Slot 6)
+1950 ────── Conversion complete (~750 ms later)
+2800 ────── Read result (Slot 7 in next cycle, ~1600 ms later)
+
+Non-blocking: Start → Wait in background → Read when ready
+```
+
+### Guaranteed Performance
+
+| Metric | Value | Guarantee |
+|--------|-------|-----------|
+| **Max blocked time per slot** | 200 ms | ≤ 1 sensor read per slot |
+| **Input response latency** | < 200 ms | Gamepad/Encoder independent of sensors |
+| **Sensor freshness** | ≤ 1.4 s | Each sensor read once per cycle |
+| **Display refresh** | Event-driven | Only when values change |
+
+### State Machines for Async Sensors
+
+**TSL2591State:**
+```cpp
+enum Tsl2591State { IDLE, MEASURING, READY };
+static Tsl2591State tsl2591State = IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+Slot 1: startTsl2591Measurement()
+  → tsl2591State = MEASURING
+  → tsl2591MeasureStartMs = millis()
+  → Return (no blocking)
+
+Slot 7: readTsl2591Async()
+  → if (millis() - tsl2591MeasureStartMs >= TSL2591_INTEGRATION_TIME_MS)
+      → readTsl2591(tsl2591Values)  // Cache result
+      → tsl2591State = IDLE
+    else
+      → Return (not ready, retry next cycle)
+```
+
+**Ds18b20State:**
+```cpp
+enum Ds18b20State { IDLE, CONVERTING, READY };
+static Ds18b20State ds18b20State = IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+
+Slot 6: startDs18b20Conversion()
+  → ds18b20State = CONVERTING
+  → ds18b20ConvertStartMs = millis()
+  → Return (no blocking)
+
+Slot 7+ : readDs18b20Async()
+  → if (millis() - ds18b20ConvertStartMs >= DS18B20_CONVERSION_TIME_MS)
+      → readDs2484Temperatures(ds2484Values)  // Cache result
+      → ds18b20State = IDLE
+    else
+      → Return (not ready, retry next cycle)
+```
+
+### Display Update Optimization (On-Change Only)
+
+**Previous:** Display refreshed every 500 ms regardless of changes (wasteful).
+
+**New:** Display only redrawn when:
+1. Page changed (full redraw with header)
+2. Sensor values actually changed (partial redraw, data only)
+3. Timer event fired (INA219 seconds counter incremented)
+
+```cpp
+if (currentPage != lastPage) {
+  drawCurrentPage(true);  // Full redraw
+} else if (valuesChanged()) {
+  drawCurrentPage(false);  // Partial redraw
+} else if (timerEventFired()) {
+  drawCurrentPage(false);  // Partial redraw
+}
+// Otherwise: no redraw (save CPU)
+```
+
+**Benefit:** Eliminates flicker, reduces SPI load, responsive UI.
+
+### Configuration
+
+```cpp
+// Timing constraints (immutable)
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;
+
+// Sensor-specific (adjustable)
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit (can use 95/375 for faster)
+
+// Feature toggles
+#define ENABLE_STATS_REPORTING 1  // 1 = enabled, 0 = disabled
+```
+
+---
+
+
 
 ```mermaid
 graph TD
@@ -894,7 +1042,7 @@ sequenceDiagram
     end
     
     Loop->>GateMgr: Check if 20ms encoder gate expired
-    alt Encoder gate ready (only if page==4)
+    alt Encoder gate ready (continuous read)
         Loop->>Gamepad: readEncoderAt50Hz()
         Gamepad->>Gamepad: Read position, button; update LED
         Gamepad-->>Loop: Update encoderValues struct

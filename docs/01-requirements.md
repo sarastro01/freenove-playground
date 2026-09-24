@@ -107,16 +107,19 @@ The system shall process gamepad button and rotary encoder input in real-time.
 
 **Details:**
 - Gamepad buttons read at 40 Hz (25 ms)
-- Encoder read at 50 Hz (20 ms) when on encoder page or page changing
+- Encoder read at 50 Hz (20 ms) CONTINUOUSLY (not page-conditional)
+  - Enables LED updates and stats aggregation even when encoder page not displayed
 - Button presses detected via falling-edge (0→1 transition)
 - Encoder dial rotation tracked as delta (ticks per cycle)
 - LED brightness updated immediately on dial rotation
 - LED color cycled immediately on button press
+- Encoder read timing aggregated into `EncoderStats` for performance monitoring
 
 **Evidence:**
-- Gamepad read: `readGamepadAt40Hz()` lines 239–253
-- Encoder read: `readEncoderAt50Hz()` lines 263–289
-- LED update: `updateEncoderLed()` lines 257–262
+- Gamepad read: `readGamepadAt40Hz()` with timing aggregation
+- Encoder read: `readEncoderAt50Hz()` called every 20 ms (not conditional on page)
+- LED update: `updateEncoderLed()` executed on every encoder read
+- Stats logging: `printEncoderStats()` prints aggregated stats every 1000 ms
 
 ---
 
@@ -286,8 +289,10 @@ BME280, TSL2591, and SI1145 sensors shall use the same caching architecture as o
 **Sensor-Specific Details:**
 - **BME280:** Cache contains temperature, humidity, pressure, altitude, dewPoint (calculated via Alduchov & Eskridge formula, ±0.35°C accuracy)
 - **TSL2591:** Cache contains fullSpectrum (uint16_t), infrared (uint16_t), visible (calculated), lux (float), gain, integrationTime
-  - API: `getFullLuminosity()` returns uint32_t with [IR(16-23 bits) | FullSpec(0-15 bits)]
-  - Breakdown: fullSpectrum = lower 16 bits; infrared = upper 16 bits; visible = fullSpectrum - infrared
+  - Implemented via direct I2C register read (DATA0, DATA1 at addresses 0x14-0x17)
+  - Actual I2C read time: ~295 µs (not including 200 ms integration wait)
+  - Bitwise extraction: DATA0 = CHAN0 (visible + IR), DATA1 = CHAN1 (IR only), visible = DATA0 - DATA1
+  - Replaces Adafruit library `getFullLuminosity()` to avoid blocking on integration time
 - **SI1145:** Cache contains visible (uint16_t), infrared (uint16_t), uv (uint16_t raw), uvIndex (float = uv / 100.0f)
 
 **Evidence:**
@@ -295,6 +300,94 @@ BME280, TSL2591, and SI1145 sensors shall use the same caching architecture as o
 - Struct definitions: lines TBD in main.cpp (post-implementation)
 - New functions: readBme280(), readTsl2591(), readSi1145() with serial timing output
 - Modified function: readSensors() includes calls to new read functions with availability guards
+
+---
+
+### FR-014: Non-Blocking Rotated Sensor Polling Architecture — **NEW (FEATURE-SPEC-006)**
+
+**Requirement:**  
+All slow I2C sensors (BME280, TSL2591, SI1145, VEML6075, VEML6070, SCD30, DS18B20) shall be polled in a rotating schedule to eliminate blocking on the main loop and guarantee responsive user input.
+
+**Details:**
+- **Rotation cycle:** 7 slots × 200 ms = 1.4 seconds per full cycle
+- **Slot allocation:**
+  - Slot 0 (0 ms): BME280 read (~2.2 ms)
+  - Slot 1 (200 ms): TSL2591 async START (~0 ms, integration continues in background)
+  - Slot 2 (400 ms): SI1145 read (~0.7 ms)
+  - Slot 3 (600 ms): VEML6075 read (~? ms)
+  - Slot 4 (800 ms): VEML6070 read (~? ms)
+  - Slot 5 (1000 ms): SCD30 read (~? ms with CRC validation)
+  - Slot 6 (1200 ms): DS18B20 1-Wire async START (~0 ms, conversion continues in background)
+  - Slot 7 (1400 ms): Check async results (TSL2591, DS18B20) and read when ready
+
+- **Async Measurement Patterns:**
+  - **TSL2591:** `startTsl2591Measurement()` in Slot 1 → `readTsl2591Async()` checks readiness in Slot 7+ (~200 ms later)
+  - **DS18B20:** `startDs18b20Conversion()` in Slot 6 → `readDs18b20Async()` checks readiness (~750 ms later, handles 12-bit conversion time)
+
+- **Guaranteed Performance:**
+  - Maximum blocked time per loop: 200 ms (≤ 1 sensor read per slot)
+  - Input response: Always < 200 ms (gamepad/encoder read independent of sensor rotation)
+  - Sensor freshness: Each sensor read at least once per 1.4 seconds (acceptable for slow sensors)
+
+- **High-Frequency Inputs (Independent):**
+  - Gamepad: 40 Hz polling (25 ms gate), unaffected by sensor schedule
+  - Encoder: 50 Hz polling (20 ms gate, CONTINUOUSLY — not page-conditional), unaffected by sensor schedule
+  - INA219: 50 Hz polling (20 µs via micros), unaffected by sensor schedule
+
+- **Display Update Behavior:**
+  - Full redraw: On page change only (< 20 ms)
+  - Partial redraw: Only when sensor values actually change (≤ 200 ms after sensor read)
+  - Timer update: Every 1 second for INA219 page (timer field must refresh)
+  - No-op redraw: If values unchanged since last read (saves CPU, eliminates flicker)
+
+**Configuration:**
+```cpp
+#define ENABLE_STATS_REPORTING 1              // 1 = aggregated stats, 0 = off (compile-time)
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // Slot interval (do not change)
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // Stats reporting interval
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Async measurement wait time
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // 12-bit 1-Wire conversion time
+```
+
+**Performance Benefits:**
+- Eliminates 250 ms blocking on TSL2591 integration time (FEATURE-SPEC-005 issue)
+- Guarantees < 200 ms input latency (hardware-bound)
+- Reduces unnecessary display redraws (saves power)
+- Maintains sensor accuracy with acceptable freshness
+
+**Evidence:**
+- FEATURE-SPEC-006.md (full specification document)
+- Async state machines: `Tsl2591State`, `Ds18b20State` enums
+- Rotation logic: `rotatedReadSensor()` function dispatches to slot handler
+- Display change detection: Value comparison before `drawCurrentPage()` call
+
+---
+
+### FR-015: Display Rate Limiting (Anti-Flicker)
+
+**Requirement:**  
+The display shall enforce maximum refresh rate of 5 Hz (200 ms minimum between updates) to prevent flickering when sensor values change rapidly.
+
+**Details:**
+- **Rate limit:** 200 ms minimum interval between display redraws (5 Hz maximum)
+- **Applies to:** Both full redraws (page change) and partial redraws (value change)
+- **Trigger:** Display updates only on:
+  1. Page change (immediate full redraw)
+  2. Sensor value change (detected via `valuesChanged()` or `largeDisplayValueChanged()`)
+  3. Timer event (e.g., INA219 runtime seconds counter increments)
+- **Rate limiter implementation:** `nextLargeDisplayRefreshMs` gate tracking (200 ms interval)
+- **Benefit:** Eliminates visual flicker on INA219 large display mode when runtime value updates rapidly
+- **Trade-off:** Display response latency ≤ 200 ms (acceptable for embedded UI)
+
+**Configuration:**
+```cpp
+static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limit timer
+```
+
+**Evidence:**
+- Display update logic in `loop()`: lines ~1894-1903 (rate limit check)
+- Runtime counter changes every second, triggering display update (guarded by rate limit)
+- Prevents excessive TFT_eSPI SPI traffic and CPU load
 
 ---
 

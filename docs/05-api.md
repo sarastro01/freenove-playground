@@ -646,7 +646,7 @@ for (size_t i = 0; i < length; i++) {
 
 #### Device 8: Encoder Seesaw (Adafruit QT Rotary Encoder) @ 0x36
 
-**Purpose:** Read rotary encoder position, button state; control NeoPixel RGB LED (50 Hz when page==4).
+**Purpose:** Read rotary encoder position, button state; control NeoPixel RGB LED (50 Hz CONTINUOUSLY, not page-conditional).
 
 **Protocol:** Adafruit seesaw library (ARM Cortex-M0 co-processor on device).
 
@@ -1400,6 +1400,249 @@ All communication is synchronous, blocking, non-concurrent. No multitasking at a
 ### Display Output
 - Floats converted to strings via `String(float, precision)`.
 - Strings rendered as pixels on TFT via SPI.
+
+---
+
+## 2. Non-Blocking Rotated Sensor Reading (FEATURE-SPEC-006) — **NEW**
+
+### Overview
+
+Five new functions implement the non-blocking rotated sensor architecture. Sensors are read in a 7-slot rotation (200 ms per slot = 1.4 s full cycle), with async measurement patterns for long-duration sensors (TSL2591, DS18B20).
+
+---
+
+### `void rotatedReadSensor(uint32_t slot)`
+
+**Purpose:** Dispatcher function that handles the current sensor rotation slot.
+
+**Signature:**
+```cpp
+void rotatedReadSensor(uint32_t slot);
+```
+
+**Parameters:**
+- `slot` (uint32_t): Slot number 0–6, derived from `(millis() / SENSOR_SLOT_INTERVAL_MS) % 7`
+
+**Returns:** void
+
+**Behavior:**
+```cpp
+switch (slot) {
+  case 0: readBme280(bme280Values); break;           // 0 ms
+  case 1: startTsl2591Measurement(); break;          // 200 ms (async start)
+  case 2: readSi1145(si1145Values); break;           // 400 ms
+  case 3: readVeml6075(veml6075Values); break;       // 600 ms
+  case 4: readVeml6070(veml6070Values); break;       // 800 ms
+  case 5: readScd30(scd30Values); break;             // 1000 ms
+  case 6: startDs18b20Conversion(); break;           // 1200 ms (async start)
+           checkTsl2591Async();                       // Check TSL2591 readiness
+           checkDs18b20Async(); break;                // Check DS18B20 readiness
+}
+```
+
+**Side Effects:** Updates global sensor cache structs; may log to Serial.
+
+**Calling Pattern:**
+```cpp
+// In main loop:
+static uint32_t lastSlot = 0xFFFFFFFF;
+uint32_t currentSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % 7;
+if (currentSlot != lastSlot) {
+  rotatedReadSensor(currentSlot);
+  lastSlot = currentSlot;
+}
+```
+
+**Performance:** Maximum blocking per slot: 200 ms (1 sensor read duration).
+
+---
+
+### `void startTsl2591Measurement()`
+
+**Purpose:** Initiate TSL2591 asynchronous measurement (start ADC integration, return immediately).
+
+**Signature:**
+```cpp
+void startTsl2591Measurement();
+```
+
+**Parameters:** None
+
+**Returns:** void
+
+**Behavior:**
+1. Guard: Return if `available.tsl2591 = false`
+2. Set `tsl2591State = MEASURING`
+3. Record measurement start time: `tsl2591MeasureStartMs = millis()`
+4. Call Adafruit_TSL2591 setup function to start integration timer (implementation-specific)
+5. Log to Serial: `"TSL2591 async START time: XXX µs"` (duration of setup call)
+6. Return immediately (non-blocking)
+
+**State Machine:**
+```cpp
+static enum Tsl2591State { IDLE, MEASURING, READY } tsl2591State = IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+```
+
+**Next Step:** `checkTsl2591Async()` called ~200+ ms later to read result.
+
+**Called by:** `rotatedReadSensor()` Slot 1 (200 ms).
+
+**Note:** Do not call `getFullLuminosity()` here; only initialize measurement.
+
+---
+
+### `void checkTsl2591Async()`
+
+**Purpose:** Check if TSL2591 measurement is complete; read result if ready.
+
+**Signature:**
+```cpp
+void checkTsl2591Async();
+```
+
+**Parameters:** None
+
+**Returns:** void
+
+**Behavior:**
+1. Guard: Return if `tsl2591State != MEASURING`
+2. Calculate elapsed time: `elapsedMs = millis() - tsl2591MeasureStartMs`
+3. If `elapsedMs < TSL2591_INTEGRATION_TIME_MS`:
+   - Return without reading (not ready, will retry next cycle)
+4. If `elapsedMs >= TSL2591_INTEGRATION_TIME_MS`:
+   - Call `readTsl2591(tsl2591Values)` to fetch result and cache it
+   - Set `tsl2591State = IDLE`
+   - Return
+
+**Configuration:**
+```cpp
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Typical 200 ms (adjustable)
+```
+
+**Called by:** `rotatedReadSensor()` Slot 6 or 7 (after 200+ ms elapsed).
+
+**Benefit:** Eliminates 200 ms blocking; measurement happens in background.
+
+---
+
+### `void startDs18b20Conversion()`
+
+**Purpose:** Initiate 1-Wire asynchronous temperature conversion for all DS18B20 sensors.
+
+**Signature:**
+```cpp
+void startDs18b20Conversion();
+```
+
+**Parameters:** None
+
+**Returns:** void
+
+**Behavior:**
+1. Guard: Return if `available.ds2484 = false`
+2. Set `ds18b20State = CONVERTING`
+3. Record conversion start time: `ds18b20ConvertStartMs = millis()`
+4. Send 1-Wire conversion command to all DS18B20 sensors on bus
+   - Implementation: Use Adafruit_DS248x API (e.g., `ds2484.wireWriteBytes([0xCC, 0x44])`)
+5. Log to Serial: `"DS18B20 async START time: XXX µs"` (duration of command send)
+6. Return immediately (non-blocking)
+
+**State Machine:**
+```cpp
+static enum Ds18b20State { IDLE, CONVERTING, READY } ds18b20State = IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+```
+
+**Next Step:** `checkDs18b20Async()` called ~750+ ms later (after conversion completes).
+
+**Called by:** `rotatedReadSensor()` Slot 6 (1200 ms).
+
+**Configuration:**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit (adjustable; 8-bit=95ms, 10-bit=375ms)
+```
+
+**Note:** Do not read sensor values here; only send conversion command.
+
+---
+
+### `void checkDs18b20Async()`
+
+**Purpose:** Check if DS18B20 conversion is complete; read results if ready.
+
+**Signature:**
+```cpp
+void checkDs18b20Async();
+```
+
+**Parameters:** None
+
+**Returns:** void
+
+**Behavior:**
+1. Guard: Return if `ds18b20State != CONVERTING`
+2. Calculate elapsed time: `elapsedMs = millis() - ds18b20ConvertStartMs`
+3. If `elapsedMs < DS18B20_CONVERSION_TIME_MS`:
+   - Return without reading (not ready, will retry next cycle)
+4. If `elapsedMs >= DS18B20_CONVERSION_TIME_MS`:
+   - Call `readDs2484Temperatures(ds2484Values)` to fetch results and cache them
+   - Set `ds18b20State = IDLE`
+   - Return
+
+**Configuration:**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit standard (adjustable)
+```
+
+**Called by:** `rotatedReadSensor()` Slot 6 or next cycle Slot 7+ (after 750+ ms elapsed).
+
+**Benefit:** Eliminates 750 ms blocking; 1-Wire conversion happens in background.
+
+---
+
+### `void updateInputStats()`
+
+**Purpose:** Aggregate per-sensor timing statistics and prepare for serial reporting.
+
+**Signature:**
+```cpp
+void updateInputStats();
+```
+
+**Parameters:** None
+
+**Returns:** void
+
+**Behavior:**
+1. Called every `INPUT_STATS_INTERVAL_MS` (1000 ms, 1 Hz)
+2. If `ENABLE_STATS_REPORTING = 0` (disabled):
+   - Return immediately (no-op)
+3. If `ENABLE_STATS_REPORTING = 1` (enabled):
+   - Aggregate min/max/avg timing for each sensor read
+   - Count number of successful reads per sensor
+   - Print formatted stats table to Serial:
+   ```
+   === Sensor Stats (1000 ms) ===
+   BME280:       min=2100 µs, max=2300 µs, avg=2156 µs, reads=5
+   TSL2591:      async_starts=1, async_ready=1, avg_wait=205 ms
+   SI1145:       min=650 µs, max=750 µs, avg=689 µs, reads=5
+   ...
+   ===================================
+   ```
+   - Reset all counters to zero for next interval
+
+**Configuration:**
+```cpp
+#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;  // 1 second
+```
+
+**Called by:** Main loop, every 1000 ms.
+
+**Side Effects:** Logs to Serial (potentially verbose).
+
+**Performance Impact:** Minimal (only computation, no I/O except Serial write).
 
 ---
 

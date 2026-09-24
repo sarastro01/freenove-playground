@@ -242,7 +242,7 @@ All timing intervals are compile-time constants (no runtime reconfiguration).
 | **Encoder input** | 20 ms | `ENCODER_REFRESH_MS` | Timing gate (loop) | 50 Hz = 1000ms/50 = 20 ms ✓ |
 | **INA219 sampling** | 20 µs | `INA219_SAMPLE_US` | Timing gate (micros) | 50 kHz = 1e6µs/50 = 20 µs ✓ |
 | **INA219 time-gap sanity** | 200 ms | `INA219_GAP_SANITY_MS` | Coulomb check | Max acceptable gap before discarding |
-| **Page redraw (live)** | 20 ms | `PAGE_REDRAW_LIVE_MS` | Timing gate (loop) | Gamepad (page 1), Encoder (page 3) pages |
+| **Page redraw (live)** | 20 ms | `PAGE_REDRAW_LIVE_MS` | Timing gate (loop) | Gamepad (page 1), Encoder (page 3) pages (but encoder reads CONTINUOUSLY regardless of page) |
 | **Page redraw (slow)** | 500 ms | `PAGE_REDRAW_SLOW_MS` | Timing gate (loop) | All sensor pages (0, 2, 4–8) |
 
 ### Timing Constants (Compilation Reference)
@@ -274,7 +274,128 @@ This handles ESP32 timer wrap-around correctly (millis wraps every ~49 days, mic
 
 ---
 
-## Display Rendering Configuration
+## Non-Blocking Rotated Sensor Architecture Configuration (FEATURE-SPEC-006) — **NEW**
+
+### Rotation Timing
+
+**Immutable Constraint:**
+```cpp
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (do not change)
+```
+
+**Rotation Cycle:** 7 slots × 200 ms = 1.4 seconds per full cycle (vs 500 ms prior)
+
+**Slot Allocation:**
+
+| Slot | Time | Sensor | Max Duration |  State |
+|------|------|--------|--------------|---------|
+| 0 | 0 ms | BME280 | ~2.2 ms | Read |
+| 1 | 200 ms | TSL2591 | ~0 ms | Async START |
+| 2 | 400 ms | SI1145 | ~0.7 ms | Read |
+| 3 | 600 ms | VEML6075 | ~? ms | Read |
+| 4 | 800 ms | VEML6070 | ~? ms | Read |
+| 5 | 1000 ms | SCD30 | ~? ms | Read (CRC8) |
+| 6 | 1200 ms | DS18B20 | ~0 ms | Async START |
+| 7 | 1400 ms | Async Check | ~? ms | TSL2591 + DS18B20 |
+
+### Sensor-Specific Timing
+
+**TSL2591 Integration Time (Measurement Duration):**
+```cpp
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Adjustable at compile or runtime
+```
+
+**Typical values:**
+- 100 ms (faster, less sensitivity)
+- 200 ms (standard, balanced)
+- 400 ms (slower, higher sensitivity)
+
+**Effect:** Measurement starts in Slot 1 (200 ms); must complete before Slot 7 (1400 ms) reads result (~1200 ms delay).
+
+**Configuration:** Edit value in src/main.cpp, rebuild, upload.
+
+**DS18B20 Conversion Time (1-Wire Temperature):**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit resolution (adjustable)
+```
+
+**Resolution options:**
+- 8-bit: 95 ms (fastest, ±0.5°C)
+- 10-bit: 375 ms (medium, ±0.25°C)
+- 12-bit: 750 ms (slowest, ±0.0625°C, default)
+
+**Effect:** Conversion starts in Slot 6 (1200 ms); must complete before next cycle Slot 7 (~2100 ms, ~900 ms delay).
+
+**Configuration:** Edit value in src/main.cpp for different precision/speed trade-off.
+
+### Input Statistics & Reporting
+
+**Stats Aggregation Interval:**
+```cpp
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;  // 1 second (immutable)
+```
+
+**Feature Toggle:**
+```cpp
+#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled (compile-time)
+```
+
+**When ENABLED (default):**
+- Per-sensor timing always logged to Serial (format: `"SensorName read time: XXX µs"`)
+- Aggregated statistics printed every 1 second (format shown below)
+- Example output:
+```
+BME280 read time: 2156 µs
+TSL2591 async START time: 45 µs
+SI1145 read time: 689 µs
+...
+=== Sensor Stats (1000 ms) ===
+BME280:       min=2100 µs, max=2300 µs, avg=2156 µs, reads=5
+TSL2591:      async_starts=1, async_ready=1, avg_wait=205 ms
+SI1145:       min=650 µs, max=750 µs, avg=689 µs, reads=5
+VEML6075:     min=550 µs, max=650 µs, avg=600 µs, reads=5
+VEML6070:     min=450 µs, max=550 µs, avg=500 µs, reads=5
+SCD30:        min=300 µs, max=400 µs, avg=350 µs, reads=1
+DS18B20:      async_starts=1, async_ready=0 (pending)
+===================================
+```
+
+**When DISABLED (#define ENABLE_STATS_REPORTING 0):**
+- Per-sensor timing still logged (always on)
+- Aggregated stats section suppressed (cleaner serial output)
+- Suitable for production/field use
+
+**Configuration:** Edit `#define` in src/main.cpp, rebuild, upload.
+
+**Memory Impact:** Negligible (stats counters only, ~100 bytes).
+
+### Display Update Behavior
+
+**Display Refresh Strategy:**
+- **Page changed:** Full redraw (header + data) immediately
+- **Sensor values changed:** Partial redraw (data only, skips header clear)
+- **Timer event:** Partial redraw (INA219 seconds counter updated)
+- **No change:** No redraw (skip drawing, save CPU/power)
+
+**Implementation:**
+```cpp
+if (currentPage != lastPage) {
+  drawCurrentPage(true);   // Full redraw
+} else if (valuesChanged()) {
+  drawCurrentPage(false);  // Partial redraw
+} else if (timerEventFired()) {
+  drawCurrentPage(false);  // Partial redraw
+}
+// Otherwise: no call to drawCurrentPage() (no redraw)
+```
+
+**Benefit:** Eliminates flicker, reduces display SPI load, responsive UI, potential power savings.
+
+**Performance Impact:** Display updates only when necessary; typical loop iteration < 1 ms (vs 20+ ms if redrawing every cycle).
+
+---
+
+
 
 ### Colors (TFT RGB565 16-bit)
 
@@ -568,6 +689,62 @@ Large Display Mode value formatting is inherited from the standard INA219 page v
 4. Verify timing on hardware
 
 **Performance Constraint:** Render time must fit within refresh window (~450 ms out of 500 ms available).
+
+---
+
+## Embedded Compilation Constants (src/main.cpp)
+
+All timing and behavioral constants are defined at compile-time in `src/main.cpp` lines 50-190. These are immutable at runtime and control performance, feature availability, and logging behavior.
+
+| Constant | Value | Type | Configurable | Purpose |
+|----------|-------|------|--------------|---------|
+| **ENABLE_STATS_REPORTING** | 1 | #define | Yes | Enable per-second aggregated input device stats (Gamepad, Encoder, INA219); 0=disable |
+| **SENSOR_REFRESH_MS** | 500 | constexpr | Yes | Sensor polling cycle interval (milliseconds) |
+| **INPUT_REFRESH_MS** | 10 | constexpr | Yes | Gamepad/Encoder/INA219 polling frequency (milliseconds); 10ms = 100Hz |
+| **SENSOR_SLOT_INTERVAL_MS** | 200 | constexpr | No | Rotated sensor slot width (FEATURE-SPEC-006); do not change |
+| **TSL2591_INTEGRATION_TIME_MS** | 200 | static | Yes | TSL2591 measurement wait time (100/200/400 ms options) |
+| **DS18B20_CONVERSION_TIME_MS** | 750 | static | Yes | 1-Wire temperature conversion time (95/375/750 ms for 8/10/12-bit) |
+| **INPUT_STATS_INTERVAL_MS** | 1000 | constexpr | No | Input stats reporting interval (1 second; immutable) |
+
+### Modification Guide
+
+**To Enable/Disable Stats Reporting:**
+```cpp
+#define ENABLE_STATS_REPORTING 1  // Line 184: Change to 0 for silent mode
+```
+
+**To Change Sensor Polling Rate (Trade-off: freshness vs power):**
+```cpp
+constexpr uint32_t SENSOR_REFRESH_MS = 500;  // Line 54: Slower = less power, less responsive
+```
+
+**To Change Input Polling Rate (Game controllers, buttons):**
+```cpp
+constexpr uint32_t INPUT_REFRESH_MS = 10;    // Line 55: Faster = more responsive (lower ms = higher Hz)
+// Practical range: 5-25 ms (200-20 Hz)
+```
+
+**To Change TSL2591 Integration Time (for different light conditions):**
+```cpp
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Line ~180: Change to 100/200/400
+// 100 ms = faster, less light sensitivity
+// 200 ms = balanced (default)
+// 400 ms = slower, more light sensitivity
+```
+
+**To Change DS18B20 Resolution (Temperature precision vs speed):**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;   // Line ~181: Change to 95/375/750
+// 95 ms = 8-bit, ±0.5°C
+// 375 ms = 10-bit, ±0.25°C
+// 750 ms = 12-bit, ±0.0625°C (default, most accurate)
+```
+
+**After modifying any constant:**
+1. Edit `src/main.cpp` at the specified line
+2. Recompile: `pio run --environment freenove-fnk0114n-sensor-pages`
+3. Upload: `pio run --environment freenove-fnk0114n-sensor-pages --target upload`
+4. Verify on hardware: `pio run --environment freenove-fnk0114n-sensor-pages --target monitor`
 
 ---
 

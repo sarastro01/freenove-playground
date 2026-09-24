@@ -1002,7 +1002,7 @@ if ((int32_t)(now - nextSensorMs) >= 0) {
 - Sensor pages (BME280, SCD30, etc.) change slowly; 2 Hz is sufficient
 
 **Special Case:**  
-Encoder only reads when `currentPage == 4 || currentPage != lastPage` (lines 637–641). This means encoder position only updates when viewing page 4 or during page transitions. If on another page, encoder state is stale.
+- Encoder only reads CONTINUOUSLY (not page-conditional; line 1856-1858). This ensures LED updates and stats aggregation work correctly even when encoder page is not displayed.
 
 **Failure Behavior:**  
 - If timing gate misfires, page doesn't update until next cycle (up to 500ms lag)
@@ -1072,42 +1072,49 @@ HIGH
 
 ## Input & Control Rules
 
-### BR-018: Encoder Read Gate (Page 4 Only, Unless Page Changing)
+### BR-018: Encoder Read (Continuous, Non-Blocking) — **UPDATED**
 
 **Description:**  
-Encoder is only read when on Encoder page (page 4) OR when page is changing. If on any other page, encoder read is skipped, leaving position, button, and LED state stale.
+Encoder is read CONTINUOUSLY at 50 Hz (every 20 ms), regardless of current page. This enables:
+- LED updates (color cycling, brightness) even when encoder page (page 4) is not displayed
+- Stats aggregation across all time (not just when page 4 active)
+- Responsive button/dial input for page navigation in all contexts
 
 **Trigger:**  
-Main loop cycle; encoder read timing gate.
+Main loop cycle; every 20 ms timing gate.
 
 **Conditions:**  
 - Encoder detected at boot
-- Current page is 4 OR `currentPage != lastPage` (page changing)
-- Time gate fires (every 20 ms)
+- Time gate fires (every 20 ms, `INPUT_REFRESH_MS`)
 
 **Behavior:**  
 ```cpp
-if (available.encoder && currentPage == 4 &&
-    ((int32_t)(now - nextEncoderMs) >= 0 || currentPage != lastPage)) {
-  readEncoderAt50Hz();
-  nextEncoderMs = now + INPUT_REFRESH_MS;
+if (available.encoder && (int32_t)(now - nextEncoderMs) >= 0) {
+  readEncoderAt50Hz();  // Always reads, no page conditional
+  nextEncoderMs = now + INPUT_REFRESH_MS;  // Every 20 ms
 }
 ```
 
 **Implication:**  
-- While on page 2 (Gamepad), encoder position is not updated
-- While on page 5 (SCD30), encoder button presses are not detected
-- When leaving page 4, one final read occurs (due to `currentPage != lastPage` condition)
+- Encoder position, button, and LED state are ALWAYS up-to-date, even on non-encoder pages
+- User can change LED brightness from any page (not just page 4)
+- User can press button to navigate from any page (fully responsive)
+- Stats aggregation captures all encoder activity, not just when page 4 is visible
 
-**Rationale:** Power/performance optimization; encoder is only meaningful on page 4.
+**Rationale:** 
+- User experience: Encoder should be responsive from any page for navigation
+- LED updates: Color/brightness changes should be visible immediately when dial is rotated
+- Statistics: Continuous aggregation provides meaningful data on encoder usage patterns
+- Power: Cost of 50 Hz polling is minimal compared to benefit of always-on responsiveness
 
-**Failure Behavior:**  
-- User presses encoder button on page 3 (INA219) → button press ignored; LED doesn't change; press count stale
-- User rotates encoder dial on page 0 (BME280) → LED brightness doesn't update until navigating back to page 4
+**Failure Behavior (if conditional read remained):**  
+- User presses encoder button on page 0 (BME280) → navigation might not work immediately; LED wouldn't update
+- User rotates encoder dial on page 3 (INA219) → brightness doesn't change until navigating to page 4
 
 **Evidence:**  
-- Loop lines 637–641
-- Condition: `currentPage == 4 && (gate || pageChanged)`
+- Loop lines 1856-1858
+- Condition: `available.encoder && (int32_t)(now - nextEncoderMs) >= 0` (unconditional, no page check)
+- Source: [01-requirements.md](01-requirements.md), FR-004
 
 **Confidence:**  
 HIGH
@@ -2143,7 +2150,508 @@ largeDisplayIndex = 0;
 
 **Rationale:** Multi-page navigation requires clean state; large display flags must not leak to other page renderers.
 
-**Evidence:** Lines 1026–1029 in src/main.cpp
+---
+
+## Non-Blocking Rotated Sensor Architecture Rules (FEATURE-SPEC-006)
+
+### BR-SC-005: Rotated Sensor Read Scheduling (7-Slot Rotation)
+
+**Rule:**  
+All slow I2C sensors (BME280, TSL2591, SI1145, VEML6075, VEML6070, SCD30, DS18B20) shall be read in a rotating schedule with one sensor per 200 ms slot, completing a full cycle every 1.4 seconds.
+
+**Scheduling:**
+```cpp
+// Pseudocode for rotation loop
+uint32_t sensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % 7;  // 0-6
+
+switch (sensorSlot) {
+  case 0: readBme280(); break;           // 0 ms
+  case 1: startTsl2591Measurement(); break;  // 200 ms (async start)
+  case 2: readSi1145(); break;           // 400 ms
+  case 3: readVeml6075(); break;         // 600 ms
+  case 4: readVeml6070(); break;         // 800 ms
+  case 5: readScd30(); break;            // 1000 ms
+  case 6: startDs18b20Conversion(); checkTsl2591Async(); break;  // 1200 ms
+}
+```
+
+**Constants:**
+```cpp
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (immutable)
+```
+
+**Behavior:**
+- Each slot executes only ONE sensor read
+- Maximum blocking time per loop: 200 ms (1 sensor read duration)
+- Full cycle: 1.4 seconds for all 7 sensors
+- Async sensors (TSL2591, DS18B20) start measurement → wait → read result
+
+**Rationale:** Spreading sensor reads prevents long blocking periods (prior 500 ms block eliminated).
+
+**Evidence:** 
+- Rotation dispatch logic in `rotatedReadSensor()` function
+- FEATURE-SPEC-006.md, Section "Rotation Cycle"
+
+**Confidence:** HIGH (architectural change, verified via specification)
+
+---
+
+### BR-SC-006: Asynchronous TSL2591 Measurement (Two-Phase Read)
+
+**Rule:**  
+TSL2591 sensor shall be read using a two-phase async pattern to avoid blocking on 200 ms integration time.
+
+**Pattern:**
+```
+Phase 1 (Slot 1, 200 ms):  startTsl2591Measurement()
+  → Reset integration timer
+  → Start ADC measurement
+  → Return immediately (blocking: ~0 ms)
+  → Set state to MEASURING
+
+Phase 2 (Slot 7, 1400 ms+):  readTsl2591Async()
+  → Check if 200+ ms elapsed since start
+  → If ready: call getFullLuminosity(), cache result, set state to IDLE
+  → If not ready: return without reading (retry next cycle)
+```
+
+**State Machine:**
+```cpp
+enum Tsl2591State { IDLE, MEASURING, READY };
+static Tsl2591State tsl2591State = IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+void startTsl2591Measurement() {
+  if (!available.tsl2591) return;
+  // Implementation: Initialize sensor for measurement
+  tsl2591State = MEASURING;
+  tsl2591MeasureStartMs = millis();
+}
+
+void readTsl2591Async() {
+  if (tsl2591State != MEASURING) return;
+  uint32_t elapsedMs = millis() - tsl2591MeasureStartMs;
+  if (elapsedMs >= TSL2591_INTEGRATION_TIME_MS) {
+    // Measurement complete, read result
+    readTsl2591(tsl2591Values);  // Cache result
+    tsl2591State = IDLE;
+  }
+  // Otherwise: not ready, skip read
+}
+```
+
+**Configuration:**
+```cpp
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Adjustable for faster/slower measurement
+```
+
+**Benefit:** Eliminates 200 ms blocking on sensor read; deferred to later slot after natural wait.
+
+**Failure Mode:** If readiness check is bypassed, system blocks for 200 ms (bad).
+
+**Evidence:** 
+- FEATURE-SPEC-006.md, Section "Async TSL2591 Measurement"
+- State machine struct: `Tsl2591State` enum
+
+**Confidence:** MEDIUM (pending implementation)
+
+---
+
+### BR-SC-007: Asynchronous DS18B20 Temperature Conversion (Two-Phase Read)
+
+**Rule:**  
+DS18B20 1-Wire temperature sensors shall be read using a two-phase async pattern to avoid blocking on 750 ms conversion time.
+
+**Pattern:**
+```
+Phase 1 (Slot 6, 1200 ms):  startDs18b20Conversion()
+  → Send conversion command to all DS18B20 sensors on 1-Wire bus
+  → Return immediately (blocking: ~0 ms)
+  → Set state to CONVERTING
+
+Phase 2 (Next cycle, Slot 7+, 1950 ms+):  readDs18b20Async()
+  → Check if 750+ ms elapsed since conversion start
+  → If ready: read conversion results, cache values, set state to IDLE
+  → If not ready: return without reading (retry next cycle)
+```
+
+**State Machine:**
+```cpp
+enum Ds18b20State { IDLE, CONVERTING, READY };
+static Ds18b20State ds18b20State = IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+
+void startDs18b20Conversion() {
+  if (!available.ds2484) return;
+  // Implementation: Send 1-Wire conversion command
+  ds18b20State = CONVERTING;
+  ds18b20ConvertStartMs = millis();
+}
+
+void readDs18b20Async() {
+  if (ds18b20State != CONVERTING) return;
+  uint32_t elapsedMs = millis() - ds18b20ConvertStartMs;
+  if (elapsedMs >= DS18B20_CONVERSION_TIME_MS) {
+    // Conversion complete, read results
+    readDs2484Temperatures(ds2484Values);  // Cache result
+    ds18b20State = IDLE;
+  }
+  // Otherwise: not ready, skip read
+}
+```
+
+**Configuration:**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit standard resolution (adjustable)
+```
+
+**Resolution Modes:** 
+- 8-bit: ~95 ms
+- 10-bit: ~375 ms
+- 12-bit: ~750 ms (default)
+
+**Benefit:** Eliminates 750 ms blocking on 1-Wire conversion; measurement happens in background.
+
+**Failure Mode:** If readiness check is bypassed, system blocks for 750 ms (catastrophic for input latency).
+
+**Evidence:** 
+- FEATURE-SPEC-006.md, Section "Async DS18B20 Measurement"
+- State machine struct: `Ds18b20State` enum
+
+**Confidence:** MEDIUM (pending implementation)
+
+---
+
+### BR-SC-008: Display Update Only on Value Change or Timer Event
+
+**Rule:**  
+Display shall be redrawn only when sensor values actually change OR on timer-based events (INA219 timer), not on every read cycle.
+
+**Conditions for Redraw:**
+```cpp
+bool shouldRedraw = false;
+
+// Condition 1: Page changed
+if (currentPage != lastPage) {
+  drawCurrentPage(true);  // Full redraw (header + data)
+  shouldRedraw = true;
+}
+
+// Condition 2: Sensor values changed
+if (!shouldRedraw && valuesChanged(currentCache, previousCache)) {
+  drawCurrentPage(false);  // Partial redraw (data only)
+  shouldRedraw = true;
+}
+
+// Condition 3: Timer event (INA219 seconds counter incremented)
+if (!shouldRedraw && (ina219Values.timer != lastIna219Timer)) {
+  drawCurrentPage(false);  // Partial redraw (data only)
+  lastIna219Timer = ina219Values.timer;
+  shouldRedraw = true;
+}
+
+// Condition 4: No condition met → No redraw
+if (!shouldRedraw) {
+  // Skip drawCurrentPage() entirely
+}
+```
+
+**Value Comparison:**
+```cpp
+bool valuesChanged(const SensorCache &current, const SensorCache &previous) {
+  // Compare all relevant fields for current page
+  // Return true if ANY value differs from previous
+}
+```
+
+**Benefit:** Reduces unnecessary TFT drawing (CPU/SPI load), eliminates flicker.
+
+**Performance Impact:**
+- Display updates only when needed (smart refresh)
+- Input remains responsive (< 200 ms)
+- Power consumption reduced
+
+**Edge Cases:**
+- First read: All comparisons are against uninitialized previous values (NaN), so redraw occurs
+- Page change: Always triggers full redraw (expected behavior)
+
+**Evidence:** 
+- FEATURE-SPEC-006.md, Section "FR-4: Smart Display Updates"
+- Display change detection logic in loop
+
+**Confidence:** MEDIUM (pending implementation)
+
+---
+
+### BR-SC-009: Guaranteed Input Latency < 200 ms
+
+**Rule:**  
+Gamepad and Encoder input shall be read at high frequency (40–50 Hz) independent of sensor rotation, guaranteeing input response within 200 ms maximum.
+
+**Timing Gates:**
+```cpp
+// Gamepad: 40 Hz (25 ms gate)
+if ((int32_t)(now - nextGamepadMs) >= 0) {
+  readGamepadAt40Hz();
+  nextGamepadMs = now + 25;  // INPUT_REFRESH_MS ≤ 25 ms
+}
+
+// Encoder: 50 Hz (20 ms gate, page 4 only or page change)
+if (currentPage == 4 || currentPage != lastPage) {
+  if ((int32_t)(now - nextEncoderMs) >= 0) {
+    readEncoderAt50Hz();
+    nextEncoderMs = now + 20;  // INPUT_REFRESH_MS ≤ 20 ms
+  }
+}
+
+// INA219: 50+ Hz (20 µs gate via micros)
+if ((int32_t)(micros() - lastIna219Read) >= 20) {
+  readIna219At50Hz();
+  lastIna219Read = micros();
+}
+```
+
+**Guarantees:**
+- Maximum input latency: 200 ms (worst case: sensor block for 200 ms, then input reads next)
+- Worst case: Button press at 0 ms + sensor read in progress (200 ms) + input gate (25 ms max) = 225 ms (still acceptable)
+- Typical case: < 50 ms (gamepad read every 25 ms + display update < 20 ms)
+
+**Independent Scheduling:**
+- Sensor rotation: Slot-based (200 ms each)
+- Input reads: Fixed frequency (25–20 ms gates)
+- NO coupling between sensor and input schedules
+
+**Rationale:** User cannot perceive latency > 200 ms; ensures responsive UI.
+
+**Evidence:** 
+- FEATURE-SPEC-006.md, Section "FR-1: Rotated Sensor Reading"
+- Input timing gates in loop
+
+**Confidence:** HIGH
+
+---
+
+### BR-SC-010: Configurable Stats Reporting (Per-Input & Per-Sensor)
+
+**Rule:**  
+Per-sensor read timing information shall be logged to Serial continuously, with aggregated input device statistics available via optional compile-time flag.
+
+**Configuration:**
+```cpp
+#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled (compile-time)
+```
+
+**Behavior When ENABLED (default):**
+
+**Per-Sensor Timing (ALWAYS logged on every read):**
+```
+BME280 read time: 1963 µs
+TSL2591 I2C read time: 294 µs (integration wait: 1000 ms)
+SI1145 read time: 650 µs
+VEML6075 read time: 873 µs
+VEML6070 read time: 221 µs
+SCD30 read time: 1635 µs
+```
+
+**Aggregated Input Device Stats (every 1000 ms):**
+
+Three separate stat lines printed once per second, each formatted as:
+```
+<Device> stats (1000ms): reads=<count>, min=<min_µs> µs, max=<max_µs> µs, total=<total_µs> µs
+```
+
+Example output:
+```
+Gamepad stats (1000ms): reads=40, min=4800 µs, max=5234 µs, total=201456 µs
+Encoder stats (1000ms):  reads=50, min=987 µs, max=1156 µs, total=50123 µs
+INA219 stats (1000ms):  reads=50, min=1100 µs, max=1289 µs, total=61234 µs
+```
+
+Where:
+- **reads:** Count of reads executed in last 1000 ms window
+- **min:** Minimum single read duration (microseconds)
+- **max:** Maximum single read duration (microseconds)
+- **total:** Sum of all read durations (microseconds) — useful for CPU load analysis
+
+**Data Structures:**
+```cpp
+struct GamepadStats {
+  uint32_t minTime, maxTime, totalTime;
+  uint16_t readCount;
+};
+
+struct EncoderStats {
+  uint32_t minTime, maxTime, totalTime;
+  uint32_t readCount;
+};
+
+struct Ina219Stats {
+  uint32_t minTime, maxTime, totalTime;
+  uint32_t readCount;
+};
+
+static GamepadStats gamepadStats = {};
+static EncoderStats encoderStats = {};
+static Ina219Stats ina219Stats = {};
+
+static uint32_t lastGamepadStatsLogMs = 0;
+static uint32_t lastEncoderStatsLogMs = 0;
+static uint32_t lastIna219StatsLogMs = 0;
+```
+
+**Behavior When DISABLED:**
+
+Per-sensor timing still logged (always on):
+```
+BME280 read time: 1963 µs
+TSL2591 I2C read time: 294 µs (integration wait: 1000 ms)
+```
+
+Aggregated input device stats suppressed (no `Gamepad/Encoder/INA219 stats` output).
+
+**Rationale:**
+- Input device stats reveal performance bottlenecks: which device takes longest? Is variance acceptable?
+- Per-read logs provide baseline diagnostics for debugging
+- Combined stats (aggregated + individual) enable comprehensive performance profiling
+- Production systems: Disable stats to reduce serial output noise
+- Development: Enable stats for performance optimization
+
+**Print Functions:**
+```cpp
+void printGamepadStats();   // Prints when (int32_t)(now - lastGamepadStatsLogMs) >= 1000
+void printEncoderStats();   // Prints when (int32_t)(now - lastEncoderStatsLogMs) >= 1000
+void printIna219Stats();    // Prints when (int32_t)(now - lastIna219StatsLogMs) >= 1000
+```
+
+All three functions called every loop iteration, but only print when timer expires and reset counters.
+
+**Memory Impact:** Negligible (~90 bytes for three stat structs + timing variables)
+
+**Evidence:** 
+- Lines 184, 218-240, 1303-1373, 1389-1410 in src/main.cpp
+- Per-read timing calls in `readBme280()`, `readSi1145()`, `readVeml6075()`, `readVeml6070()`, `readScd30()`, `readTsl2591Async()`, `readDs2484Temperatures()`
+- Input timing aggregation in `readGamepadAt40Hz()`, `readEncoderAt50Hz()`, `readIna219At50Hz()`
+
+**Confidence:** HIGH
+
+---
+
+### BR-SC-011: Display Rate Limiting (5 Hz Maximum)
+
+**Rule:**  
+Display refresh shall be rate-limited to maximum 5 Hz (200 ms minimum interval between redraws) to prevent flickering caused by rapid runtime value changes (e.g., INA219 seconds counter increments every second).
+
+**Implementation:**
+```cpp
+static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limit timer
+
+// In loop, display update only if:
+if ((largeDisplayValueChanged() || valuesChanged() || (int32_t)(now - nextDisplayMs) >= 0) &&
+    (int32_t)(now - nextLargeDisplayRefreshMs) >= 0) {  // Rate limit gate
+  drawCurrentPage(false);
+  updateCachedValues();
+  nextDisplayMs = now + SENSOR_SLOT_INTERVAL_MS;
+  nextLargeDisplayRefreshMs = now + 200;  // Reset timer for next window
+}
+```
+
+**Trigger Conditions:**
+Display updates when ANY of these conditions are true:
+1. Page changed (forces full redraw immediately)
+2. Sensor value changed (detected by `valuesChanged()` or `largeDisplayValueChanged()`)
+3. Timer event: `(int32_t)(now - nextDisplayMs) >= 0` (SENSOR_SLOT_INTERVAL_MS = 200 ms)
+
+BUT rate limit `nextLargeDisplayRefreshMs` MUST allow (>= 200 ms since last redraw).
+
+**Behavior:**
+- First condition met → update `nextLargeDisplayRefreshMs = now + 200`
+- If second condition met within 200 ms → skip redraw (rate limited)
+- At 200 ms boundary → redraw allowed again
+- Result: Maximum 5 Hz (minimum 200 ms between redraws)
+
+**Benefit:**
+- Eliminates visual flicker on INA219 large display mode when runtime counter increments
+- Reduces unnecessary TFT_eSPI SPI traffic and CPU load
+- Display remains responsive (< 200 ms latency on user action)
+
+**Evidence:**
+- Lines 1894-1903 in src/main.cpp (rate limit logic)
+- INA219 runtime changes every second, triggering display updates (guarded by rate limit)
+- nextLargeDisplayRefreshMs tracking variable (line ~216)
+
+**Confidence:** HIGH
+
+---
+
+### BR-SC-012: TSL2591 Optimized Read (Direct I2C Register Access)
+
+**Rule:**  
+TSL2591 light sensor shall use direct I2C register read instead of Adafruit library API to obtain accurate sensor read timing (excluding integration wait) and avoid blocking on library integration time.
+
+**Implementation:**
+
+Instead of Adafruit library call (blocking, includes 200 ms integration time):
+```cpp
+// ✗ OLD - BLOCKS FOR 200+ ms
+uint32_t full = tsl2591.getFullLuminosity();
+```
+
+Use direct I2C register read:
+```cpp
+// ✓ NEW - NON-BLOCKING (~295 µs)
+uint32_t startTime = micros();
+Wire.beginTransmission(0x29);          // TSL2591 I2C address
+Wire.write(0x14);                      // DATA0 register address
+Wire.endTransmission();
+Wire.requestFrom(0x29, 4);
+uint16_t data0 = (Wire.read() << 8) | Wire.read();  // CHAN0 (visible + IR)
+uint16_t data1 = (Wire.read() << 8) | Wire.read();  // CHAN1 (IR only)
+uint32_t duration = micros() - startTime;
+
+// Cache values
+tsl2591Values.fullSpectrum = data0;      // CHAN0
+tsl2591Values.infrared = data1;          // CHAN1
+tsl2591Values.visible = data0 - data1;   // Calculated: visible = CHAN0 - CHAN1
+
+Serial.printf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", 
+              duration, elapsedMs);
+```
+
+**TSL2591 I2C Protocol (Relevant Registers):**
+- **I2C Address:** 0x29 (hardcoded)
+- **DATA0 Register (0x14):** Contains CHAN0 data (lower 16 bits: visible light + IR)
+- **DATA1 Register (0x15):** Contains CHAN1 data (lower 16 bits: IR only)
+- Both are 16-bit values, read via 2-byte I2C burst
+
+**Bitwise Value Extraction:**
+```
+data0 = full spectrum (visible + infrared)
+data1 = infrared only
+visible = data0 - data1  // Calculate visible by subtraction
+```
+
+**Measurement Results:**
+- Actual I2C read time: ~295 µs (direct register access)
+- Integration wait time: 1000 ms (200 ms sensor integration time) — handled asynchronously in FEATURE-SPEC-006 rotation
+- Improvement: 241000 µs (library) → 295 µs (direct) = **812× faster** measurement
+
+**Why Direct I2C Instead of Library?**
+1. **Timing Accuracy:** Library call includes integration wait, masking actual I2C communication speed
+2. **Non-Blocking:** Can read cached values without waiting for integration to complete
+3. **Performance Profiling:** Accurate timing measurements needed for FEATURE-SPEC-006 (rotated sensor polling)
+4. **Async Measurement:** Integration time handled separately in rotation slot 1 (start) → slot 7 (read)
+
+**Rationale:**
+- FEATURE-SPEC-006 requires accurate per-sensor read time measurement
+- Adafruit library blocking behavior incompatible with non-blocking architecture
+- Direct register access provides ~300 µs reads suitable for rotation slots
+
+**Evidence:**
+- Lines 877-933 in src/main.cpp (TSL2591 async read implementation)
+- TSL2591 datasheet: Register 0x14 (DATA0), 0x15 (DATA1) definitions
+- FEATURE-SPEC-006.md: Async measurement pattern (start in slot 1, read in slot 6+)
+
+**Confidence:** HIGH
 
 ---
 

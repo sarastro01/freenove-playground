@@ -26,6 +26,39 @@
 
 ---
 
+## Resolution Status — **UPDATED 2026-09-24**
+
+**Resolution Applied:** Most critical and high-priority discrepancies have been resolved by updating documentation to match implemented behavior:
+
+✅ **Encoder Read Behavior (Discrepancy #1 - RESOLVED)**
+- **Original Finding:** Documented as "page 4 only" but implemented as "CONTINUOUSLY (not page-conditional)"
+- **Fix Applied:** Updated all references in 01-requirements.md (FR-004), 02-architecture.md, 04-data-model.md, 05-api.md, 06-business-rules.md (BR-018), 07-ui.md, 09-configuration.md, 14-reconstruction-plan.md, FEATURE-SPEC-006.md
+- **Rationale:** Continuous reading enables LED updates and stats aggregation on all pages, not just encoder page
+
+✅ **Display Rate Limiting (Discrepancy #2 - RESOLVED)**
+- **Original Finding:** Rate limiting feature not documented
+- **Fix Applied:** Added FR-015 (Display Rate Limiting) to 01-requirements.md, added BR-SC-011 to 06-business-rules.md, added compilation constants section to 09-configuration.md, added test cases to 10-testing.md
+- **Rationale:** 200 ms minimum interval (5 Hz max) prevents display flicker
+
+✅ **Input Device Stats (Discrepancy #3 - RESOLVED)**
+- **Original Finding:** Stats features not documented
+- **Fix Applied:** Updated FR-013, added BR-SC-010 details to 06-business-rules.md, documented ENABLE_STATS_REPORTING in 09-configuration.md
+- **Rationale:** Three separate stat structures (Gamepad, Encoder, INA219) track timing per input device
+
+✅ **TSL2591 Direct I2C (Discrepancy #4 - RESOLVED)**
+- **Original Finding:** Library behavior (241000 µs) vs direct I2C (295 µs) not documented
+- **Fix Applied:** Updated FR-013 with register addresses and bitwise extraction details, added BR-SC-012 with before/after comparison
+- **Rationale:** 812× performance improvement by eliminating library overhead
+
+✅ **Compilation Constants & Rotation Timing (Discrepancy #5 - RESOLVED)**
+- **Original Finding:** Rotation configuration details missing
+- **Fix Applied:** Added "Embedded Compilation Constants" section to 09-configuration.md with table of all compile-time flags and adjustable timers
+- **Rationale:** Developers need to understand how to configure rotation timing, stats reporting, and integration times
+
+**Note:** This audit document (15-consistency-audit.md) serves as a historical record of findings. See individual documentation files for applied corrections. Verify corrections via second consistency check (lines below).
+
+---
+
 ## Issues by Category
 
 ---

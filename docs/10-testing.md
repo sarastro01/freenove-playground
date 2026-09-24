@@ -479,6 +479,107 @@ largeDisplayIndex == 0 (reset)
 
 ---
 
+## Test Cases: Display Rate Limiting (FR-015, BR-SC-011) — **NEW**
+
+### TC-DISPLAY-001: Display Rate Limiting (5 Hz Max, 200 ms Minimum)
+
+**Setup:** Device on Page 2 (INA219), enter large display mode (Button B). Serial monitor open to capture timing.
+
+**Action:**
+1. Enter large display mode on INA219 page (Button B)
+2. Watch display and measure time between redraws (use oscilloscope on TFT DC line, or log timing via Serial)
+3. Observe for 10+ seconds while sensor values update
+
+**Expected Result:**
+- Display updates never faster than 200 ms apart (5 Hz maximum)
+- All redraw events have ≥ 200 ms gap between them
+- Display remains responsive but not flickering
+- Value changes visible immediately but respecting rate limit
+
+**Verification:**
+- Measure timestamps of display update calls (add debug timing to Serial output if needed)
+- Confirm minimum 200 ms between consecutive `drawCurrentPage()` calls
+- No redraw at rates faster than 5 Hz (e.g., not 10 Hz, not 20 Hz)
+- No visual flicker observed on display when INA219 runtime counter increments
+
+**Test Data (Expected Timing Sequence):**
+```
+Time (ms)  Event
+0          Display update (page change)
+200+       INA219 runtime increments (1 second later)
+200-400    Display update (if rate limit allows)
+600        Runtime increments (2 seconds)
+600-800    Display update allowed
+1000       Runtime increments (3 seconds)
+1000-1200  Display update allowed
+```
+
+**Rationale:** Rate limiting prevents flicker caused by rapid runtime value changes (INA219 seconds counter increments every second). Without rate limit, display would redraw excessively, causing CPU/SPI load and visual flicker.
+
+**Related Business Rule:** BR-SC-011 (Display Rate Limiting)
+
+---
+
+### TC-DISPLAY-002: Rate Limit Disabled (Performance Benchmark)
+
+**Setup:** Temporarily modify code to disable rate limiting:
+```cpp
+// Disable rate limit for testing (comment out nextLargeDisplayRefreshMs check)
+// if ((int32_t)(now - nextLargeDisplayRefreshMs) >= 0) {
+//     ... redraw allowed
+// }
+```
+
+**Action:**
+1. Recompile with rate limit disabled
+2. Upload modified firmware
+3. Enter large display mode on Page 2
+4. Measure display update frequency over 10 seconds
+5. Observe CPU load and visual flicker
+
+**Expected Result (WITH Rate Limit Disabled):**
+- Display updates faster than 200 ms interval (measured ≥ 10 Hz or more)
+- Visual flicker observable when INA219 runtime changes
+- Excessive TFT_eSPI SPI traffic (measurable via oscilloscope on SCLK)
+- Potential UI lag if rendering takes too long per cycle
+
+**Comparison:**
+| Condition | Update Frequency | Flicker | CPU Load |
+|-----------|------------------|---------|----------|
+| **WITH rate limit (BR-SC-011)** | ≤ 5 Hz (≥ 200 ms) | None | Low |
+| **WITHOUT rate limit** | > 5 Hz (< 200 ms) | Visible | Higher |
+
+**Rationale:** Proves rate limiting is necessary and functioning correctly.
+
+---
+
+### TC-DISPLAY-003: Rate Limit Across Page Changes
+
+**Setup:** Device on Page 2 (INA219), large display mode active. Press Y to exit and navigate to another page.
+
+**Action:**
+1. In large display mode on Page 2
+2. Press Y to exit (returns to standard page view)
+3. Press A to navigate to Page 3
+4. Measure time between display updates during navigation
+
+**Expected Result:**
+- Page 2 → Page 3 transition: Display updates immediately (no rate limit delay)
+- Page 3 data appears within < 50 ms (no 200 ms wait)
+- Rate limit does NOT block page navigation (page change triggers full redraw immediately)
+- Rate limit only applies WITHIN a page when values change, not during page transitions
+
+**Verification:**
+- Timestamp display updates during page navigation
+- Confirm no unnecessary 200 ms delay on page change
+- Display responsive and feels immediate when changing pages
+
+**Related Code:** Lines 1884-1888 in src/main.cpp (page change bypasses rate limit)
+
+**Rationale:** Rate limit should NOT impede page navigation responsiveness. Only value changes within a page are rate-limited.
+
+---
+
 ### TIER 3: Implementation-Specific (Should Be Monitored, Not Strictly Tested)
 
 | Behavior | Why It Matters | Test Category |
@@ -1575,6 +1676,242 @@ Run these tests before every release:
 - Property-based testing (QuickCheck-style)
 
 **Effort:** 1 week
+
+---
+
+## Test Cases: Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006) — **NEW**
+
+### TC-Rotated-001: Sensor Rotation Scheduling (7-Slot Cycle)
+
+**Setup:** Device powered on, all sensors detected at boot. Monitor main loop execution via Serial output and timing measurements.
+
+**Action:**
+1. Power on device.
+2. Observe Serial output for 5 full cycles (~7 seconds = 7 slots × 1 second per cycle).
+3. Note timestamps for each sensor read operation.
+4. Verify timing gates and slot transitions.
+
+**Expected Result:**
+- Serial output shows sensor reads in rotation:
+  ```
+  [0 ms] BME280 read time: 2156 µs
+  [200 ms] TSL2591 async START time: 45 µs
+  [400 ms] SI1145 read time: 689 µs
+  [600 ms] VEML6075 read time: XXX µs
+  [800 ms] VEML6070 read time: XXX µs
+  [1000 ms] SCD30 read time: XXX µs
+  [1200 ms] DS18B20 async START time: 50 µs
+  [1400 ms] (Async check for TSL2591/DS18B20)
+  [2000 ms] <- New cycle starts
+  ```
+- Each slot executes within 200 ms interval
+- No blocking > 200 ms observed (no stalled output)
+- Full cycle completes every 1.4 seconds
+
+**Verification:**
+- Capture Serial output for 10 seconds
+- Calculate slot timing: `(timestamp2 - timestamp1) % 1400 should ≈ expected slot time`
+- Verify rotation order matches schedule (0→2→4→..., then 1→3→5→6→...)
+- No skipped slots or double executions
+
+**Error Condition:**
+- If slot timing exceeds 200 ms: Sensor read is too slow (timing violation)
+- If cycle time ≠ 1.4 s: Slot counter may be miscalculated
+- If Serial output stalls: Main loop may be blocked (critical failure)
+
+---
+
+### TC-Rotated-002: TSL2591 Async Measurement (Two-Phase Read)
+
+**Setup:** Device with TSL2591 detected at boot (`available.tsl2591 = true`). Monitor TSL2591 page and Serial output.
+
+**Action:**
+1. Power on device and navigate to TSL2591 page (page 6).
+2. Observe Serial output for 3-4 full rotation cycles (~5 seconds).
+3. Note TSL2591 async START and async READ operations.
+4. Verify lux values update after async completion.
+
+**Expected Result:**
+- Serial output shows async pattern:
+  ```
+  Slot 1 (200 ms):  TSL2591 async START time: 45 µs
+  Slot 7 (1400 ms): TSL2591 read time: 12345 µs
+  (Next cycle)
+  Slot 1 (2200 ms): TSL2591 async START time: 45 µs
+  Slot 7 (3400 ms): TSL2591 read time: 12345 µs
+  ```
+- Start timestamp ~1200 ms before read timestamp
+- Lux value on page updates only when async read completes (~1200+ ms after START)
+- No blocking observed (display remains responsive)
+- User can change pages while TSL2591 measurement in progress
+
+**Verification:**
+- Measure time difference: `read_timestamp - start_timestamp ≈ 1200 ms`
+- Verify `tsl2591State` transitions: `IDLE → MEASURING (Slot 1) → IDLE (Slot 7)`
+- Check lux value in `tsl2591Values` cache after async read
+- Ensure page navigation not blocked during async measurement
+
+**Error Condition:**
+- If async read called before measurement complete: Garbage lux value
+- If state machine stuck in MEASURING: Next measurement cannot start (deadlock)
+- If readiness check bypassed: 200 ms blocking (violates non-blocking requirement)
+
+---
+
+### TC-Rotated-003: DS18B20 Async Conversion (Two-Phase Read)
+
+**Setup:** Device with DS2484 detected at boot (`available.ds2484 = true`) and at least 1 DS18B20 sensor discovered. Monitor DS18B20 page and Serial output.
+
+**Action:**
+1. Power on device and navigate to DS18B20 page (page 9).
+2. Observe Serial output for 2-3 full rotation cycles (~3 seconds).
+3. Note DS18B20 async START and async READ operations.
+4. Verify temperature values update after async completion.
+5. Disconnect one DS18B20 sensor mid-measurement to test error handling.
+
+**Expected Result:**
+- Serial output shows async pattern:
+  ```
+  Slot 6 (1200 ms):  DS18B20 async START time: 50 µs
+  Next cycle:
+  Slot 7 (2100 ms): DS18B20 read time: 2345 µs
+  (Next cycle)
+  Slot 6 (2200 ms): DS18B20 async START time: 50 µs
+  Slot 7 (3100 ms): DS18B20 read time: 2345 µs
+  ```
+- Start timestamp ~900 ms before read timestamp (750 ms conversion + margin)
+- Temperature values on page update only after async read completes
+- Disconnected sensor shows "Disconnected" status after read attempt
+- No blocking observed (display remains responsive)
+
+**Verification:**
+- Measure time difference: `read_timestamp - start_timestamp ≈ 900+ ms`
+- Verify `ds18b20State` transitions: `IDLE → CONVERTING (Slot 6) → IDLE (Slot 7+)`
+- Check temperature values in `ds2484Values.sensors[].temperature` after async read
+- Verify error handling for missing sensors
+
+**Error Condition:**
+- If async read called before conversion complete: Stale temperature value
+- If state machine stuck in CONVERTING: Next conversion cannot start (deadlock)
+- If readiness check bypassed: 750 ms blocking (critical, violates latency requirement)
+
+---
+
+### TC-Rotated-004: Display Update Only on Value Change
+
+**Setup:** Device powered on. Navigate to sensor page (e.g., BME280, page 0). Monitor display updates and serial timing.
+
+**Action:**
+1. Power on device and go to sensor page.
+2. Observe page for 5 seconds (multiple sensor read cycles).
+3. Count number of display redraws (visual flicker/refresh).
+4. Check Serial output to verify if values changed.
+5. Leave page unchanged and observe redraw count.
+
+**Expected Result:**
+- Display redraws only when values change (few redraws per minute if data stable)
+- No continuous flicker (which would indicate constant redraws)
+- Serial output shows sensor read times; page renders only if values differ
+- If sensor returns same values for 10 read cycles, page redraws ≤ 2 times (page change + 1 data update)
+
+**Verification:**
+- Manually count display flickers (visual inspection)
+- Compare to expected: With stable sensor values, redraw frequency < 1/second
+- Confirm no "pageChanged" false positives (page not changing but redrawing anyway)
+- Check that INA219 timer update (every 1 second) triggers redraw even if other values unchanged
+
+**Error Condition:**
+- If page redraws every cycle: Always-redraw logic not implemented (wastes CPU/power)
+- If page never redraws after first display: Value comparison broken (stale display)
+- If INA219 timer doesn't trigger redraw: Display stuck (timer updates invisible)
+
+---
+
+### TC-Rotated-005: Input Latency < 200 ms (Guaranteed Response)
+
+**Setup:** Device powered on. Gamepad joystick connected. Monitor page response timing.
+
+**Action:**
+1. Power on device and go to page 1 (Gamepad page).
+2. Press Gamepad button (Y or A) to navigate.
+3. Measure time from button press to visible page change.
+4. Repeat 10 times, varying timing of button press (before sensor read, during, after).
+5. Intentionally press button while TSL2591/DS18B20 measurements in progress.
+
+**Expected Result:**
+- Page change visible within 200 ms of button press (worst case)
+- Typical response: < 50 ms (responsive feel)
+- Even if button pressed mid-sensor-read: Response within 200 ms maximum
+- No input loss or dropped button presses
+
+**Verification:**
+- Oscilloscope or video slow-motion to measure latency accurately
+- Test at least 5 button presses per scenario (before/during/after sensor read)
+- Measure frame update time on display (typical TFT refresh ~40 ms per frame)
+- Verify no input queuing (button press should NOT delay next press response)
+
+**Error Condition:**
+- If page change takes > 200 ms: Input latency too high (fails specification)
+- If button press missed or queued: Input handling broken (user experience poor)
+- If input latency increases over time: Memory leak or state corruption (critical)
+
+---
+
+### TC-Rotated-006: Configurable Stats Reporting
+
+**Setup:** Device with `#define ENABLE_STATS_REPORTING 1` (enabled, default).
+
+**Action:**
+1. Power on device with stats enabled.
+2. Observe Serial output for 2 seconds.
+3. Verify aggregated stats printed every 1 second.
+4. Rebuild firmware with `#define ENABLE_STATS_REPORTING 0` (disabled).
+5. Flash and observe Serial output for 2 seconds.
+
+**Expected Result:**
+
+*With ENABLED (default):*
+```
+BME280 read time: 2156 µs
+TSL2591 async START time: 45 µs
+SI1145 read time: 689 µs
+VEML6075 read time: 587 µs
+VEML6070 read time: 498 µs
+SCD30 read time: 356 µs
+DS18B20 async START time: 50 µs
+=== Sensor Stats (1000 ms) ===
+BME280:       min=2100 µs, max=2300 µs, avg=2156 µs, reads=5
+TSL2591:      async_starts=1, async_ready=1, avg_wait=205 ms
+SI1145:       min=650 µs, max=750 µs, avg=689 µs, reads=5
+VEML6075:     min=550 µs, max=650 µs, avg=600 µs, reads=1
+VEML6070:     min=450 µs, max=550 µs, avg=500 µs, reads=1
+SCD30:        min=300 µs, max=400 µs, avg=350 µs, reads=1
+DS18B20:      async_starts=1, async_ready=1, avg_wait=925 ms
+===================================
+```
+
+*With DISABLED:*
+```
+BME280 read time: 2156 µs
+TSL2591 async START time: 45 µs
+SI1145 read time: 689 µs
+VEML6075 read time: 587 µs
+VEML6070 read time: 498 µs
+SCD30 read time: 356 µs
+DS18B20 async START time: 50 µs
+(No "=== Sensor Stats ===" section)
+```
+
+**Verification:**
+- Count lines in Serial output: Enabled ≈ 15 lines/sec, Disabled ≈ 7 lines/sec
+- Verify aggregated stats section present when enabled, absent when disabled
+- Confirm per-sensor timing always logged regardless of flag
+- Check that disabled mode is cleaner for production use
+
+**Error Condition:**
+- If stats printed even when disabled: Flag not respected (bug)
+- If stats not printed when enabled: Aggregation logic missing (bug)
+- If per-sensor timing missing: Always-log requirement not met (bug)
 
 ---
 

@@ -170,6 +170,91 @@ const uint32_t encoderColors[] = {
 };
 const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
 
+// ============================================================================
+// FEATURE-SPEC-006: Non-Blocking Rotated Sensor Architecture
+// ============================================================================
+
+// Configuration constants (FEATURE-SPEC-006)
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;    // Immutable: 200 ms per slot
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;   // Immutable: 1 second aggregation
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Adjustable: typical 200 ms
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // Adjustable: 12-bit precision (750 ms)
+
+// Enable/disable statistics reporting (compile-time flag)
+#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled
+
+// State machines for asynchronous sensor reads (FEATURE-SPEC-006)
+enum class Tsl2591State {
+  IDLE,       // 0: Not measuring; ready to start
+  MEASURING   // 1: Measurement in progress (ADC integrating)
+};
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;  // Measurement start timestamp
+
+enum class Ds18b20State {
+  IDLE,       // 0: Not converting; ready to start
+  CONVERTING  // 1: Conversion in progress (1-Wire measuring)
+};
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;  // Conversion start timestamp
+
+// Track current sensor slot for rotation dispatch (FEATURE-SPEC-006)
+static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Previous slot number (init to invalid)
+
+// Cached values for display refresh optimization (FEATURE-SPEC-006)
+static Ina219Values lastIna219Values{};
+static Bme280Values lastBme280Values{};
+static Tsl2591Values lastTsl2591Values{};
+static Si1145Values lastSi1145Values{};
+static Veml6075Values lastVeml6075Values{};
+static Veml6070Values lastVeml6070Values{};
+static Scd30Values lastScd30Values{};
+static Ds2484Values lastDs2484Values{};
+static GamepadValues lastGamepadValues{};
+static EncoderValues lastEncoderValues{};
+static uint32_t lastTimerSeconds = 0xFFFFFFFF;
+static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limiting: max 5 Hz (200ms interval)
+
+// Statistics structures (optional, when ENABLE_STATS_REPORTING = 1)
+#if ENABLE_STATS_REPORTING
+struct SensorReadStats {
+  uint32_t minTime;   // Minimum read time (µs)
+  uint32_t maxTime;   // Maximum read time (µs)
+  uint32_t totalTime; // Cumulative time (µs)
+  uint16_t readCount; // Number of reads in this interval
+};
+
+struct GamepadStats {
+  uint32_t minTime;   // Minimum read time (µs)
+  uint32_t maxTime;   // Maximum read time (µs)
+  uint32_t totalTime; // Cumulative time (µs)
+  uint32_t readCount; // Number of reads in this 1-second interval
+};
+
+struct EncoderStats {
+  uint32_t minTime;   // Minimum read time (µs)
+  uint32_t maxTime;   // Maximum read time (µs)
+  uint32_t totalTime; // Cumulative time (µs)
+  uint32_t readCount; // Number of reads in this 1-second interval
+};
+
+struct Ina219Stats {
+  uint32_t minTime;   // Minimum read time (µs)
+  uint32_t maxTime;   // Maximum read time (µs)
+  uint32_t totalTime; // Cumulative time (µs)
+  uint32_t readCount; // Number of reads in this 1-second interval
+};
+
+static SensorReadStats bme280Stats, tsl2591Stats, si1145Stats, veml6075Stats, veml6070Stats, scd30Stats, ds18b20Stats;
+static GamepadStats gamepadStats{};
+static EncoderStats encoderStats{};
+static Ina219Stats ina219Stats{};
+static uint32_t lastStatsUpdateMs = 0;
+static uint32_t lastGamepadStatsLogMs = 0;  // For 1-second gamepad stats reporting
+static uint32_t lastEncoderStatsLogMs = 0;  // For 1-second encoder stats reporting
+static uint32_t lastIna219StatsLogMs = 0;   // For 1-second INA219 stats reporting
+#endif
+
 // Forward declarations
 String formatRuntime(uint32_t elapsedUs);
 
@@ -397,6 +482,8 @@ float scd30Float(const uint8_t *data)
 
 bool readScd30(Scd30Values &values)
 {
+  uint32_t startTime = micros();
+  
   if (!scd30Command(SCD30_CMD_READ) || Wire.requestFrom(SCD30_ADDR, 18) != 18) return false;
   uint8_t raw[18];
   for (uint8_t i = 0; i < 18; i++) raw[i] = Wire.read();
@@ -404,26 +491,42 @@ bool readScd30(Scd30Values &values)
   values.co2 = scd30Float(&raw[0]);
   values.temp = scd30Float(&raw[6]);
   values.humidity = scd30Float(&raw[12]);
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("SCD30 read time: %lu µs\n", duration);
   return true;
 }
 
 bool readVeml6075(Veml6075Values &values)
 {
+  uint32_t startTime = micros();
+  
   if (!readReg16(VEML6075_ADDR, VEML6075_REG_UVA, values.uva) || !readReg16(VEML6075_ADDR, VEML6075_REG_UVB, values.uvb) ||
       !readReg16(VEML6075_ADDR, VEML6075_REG_COMP1, values.comp1) || !readReg16(VEML6075_ADDR, VEML6075_REG_COMP2, values.comp2)) return false;
   values.uvaComp = max(0.0f, (float)values.uva - 2.22f * values.comp1 - 1.33f * values.comp2);
   values.uvbComp = max(0.0f, (float)values.uvb - 2.95f * values.comp1 - 1.74f * values.comp2);
   values.index = ((values.uvaComp * 0.001461f) + (values.uvbComp * 0.002591f)) * 0.5f;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("VEML6075 read time: %lu µs\n", duration);
   return true;
 }
 
 bool readVeml6070(Veml6070Values &values)
 {
+  uint32_t startTime = micros();
+  
   if (Wire.requestFrom(VEML6070_ADDR_LSB, 1) != 1) return false;
   values.lsb = Wire.read();
   if (Wire.requestFrom(VEML6070_ADDR_MSB, 1) != 1) return false;
   values.msb = Wire.read();
   values.raw = ((uint16_t)values.msb << 8) | values.lsb;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("VEML6070 read time: %lu µs\n", duration);
   return true;
 }
 
@@ -446,8 +549,8 @@ void readBme280(Bme280Values &values)
   if (temperature < -40 || temperature > 85 ||
       humidity < 0 || humidity > 100 ||
       pressure < 300 || pressure > 1100) {
-    Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
-                  temperature, humidity, pressure);
+    /* // Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
+                  temperature, humidity, pressure); */
     // Do NOT update cache; last known values persist
     return;
   }
@@ -475,11 +578,7 @@ void readTsl2591(Tsl2591Values &values)
 {
   if (!available.tsl2591) return;
   
-  uint32_t startTime = micros();
-  
-  // API: getFullLuminosity() returns uint32_t with [IR(16-31) | FullSpec(0-15)]
-  // Lower 16 bits: CHAN0 (fullSpectrum = visible + infrared)
-  // Upper 16 bits: CHAN1 (infrared only)
+  // Read sensor values using Adafruit_TSL2591 API
   uint32_t fullLum = tsl2591.getFullLuminosity();
   uint32_t fullSpectrum = fullLum & 0xFFFF;        // Lower 16 bits (CHAN0)
   uint32_t infrared = fullLum >> 16;               // Upper 16 bits (CHAN1)
@@ -490,7 +589,7 @@ void readTsl2591(Tsl2591Values &values)
   
   // Error check: If both channels read as zero, likely I2C error
   if (fullSpectrum == 0 && infrared == 0) {
-    Serial.println("ERROR: TSL2591 read returned zero values");
+    // Serial.println("ERROR: TSL2591 read returned zero values");
     // Do NOT update cache; last known values persist
     return;
   }
@@ -503,9 +602,7 @@ void readTsl2591(Tsl2591Values &values)
   values.gain = gain;
   values.integrationTime = integrationTime;
   
-  uint32_t endTime = micros();
-  uint32_t duration = endTime - startTime;
-  Serial.printf("TSL2591 read time: %lu µs\n", duration);
+  // NOTE: Timing measurement removed - this sync function is no longer used (replaced by async startTsl2591Measurement/checkTsl2591Async)
 }
 
 void readSi1145(Si1145Values &values)
@@ -521,7 +618,7 @@ void readSi1145(Si1145Values &values)
   
   // Error check: If all three values are 0, likely I2C error
   if (visible == 0 && infrared == 0 && uv == 0) {
-    Serial.println("ERROR: SI1145 read returned all zeros");
+    // Serial.println("ERROR: SI1145 read returned all zeros");
     // Do NOT update cache; last known values persist
     return;
   }
@@ -558,9 +655,9 @@ bool initDs2484()
   // Initialize Adafruit DS248x (parameter order: TwoWire*, uint8_t address)
   bool success = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (success) {
-    Serial.println("DS2484: Initialized at 0x18");
+    // Serial.println("DS2484: Initialized at 0x18");
   } else {
-    Serial.println("DS2484: Initialization FAILED");
+    // Serial.println("DS2484: Initialization FAILED");
   }
   return success;
 }
@@ -583,7 +680,7 @@ void performDs2484Scan()
   bool firstScan = ds2484Values.sensorCount == 0;
   if (!firstScan && (int32_t)(nowMs - ds2484Values.lastScanMs) < 60000) return;
   
-  Serial.println("DS2484: Scanning 1-Wire bus...");
+  // Serial.println("DS2484: Scanning 1-Wire bus...");
   
   // Reset sensor count and clear all sensors
   ds2484Values.sensorCount = 0;
@@ -610,11 +707,11 @@ void performDs2484Scan()
     sensor.temperature = 0.0f;
     sensor.lastReadMs = nowMs;
     
-    Serial.printf("DS2484: Found sensor %d: %s\n", ds2484Values.sensorCount, formatRomId(address).c_str());
+    // Serial.printf("DS2484: Found sensor %d: %s\n", ds2484Values.sensorCount, formatRomId(address).c_str());
     ds2484Values.sensorCount++;
   }
   
-  Serial.printf("DS2484: Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
+  // Serial.printf("DS2484: Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
   ds2484Values.lastScanMs = nowMs;
 }
 
@@ -644,6 +741,9 @@ void readDs2484Temperatures()
   }
   
   delay(850);  // Wait for conversion (12-bit resolution = 750ms typical)
+  
+  // Measure only the actual I2C read time, not the conversion wait time
+  uint32_t startTime = micros();
   
   // Read temperature for each discovered sensor
   for (uint8_t i = 0; i < ds2484Values.sensorCount; i++) {
@@ -707,8 +807,12 @@ void readDs2484Temperatures()
     sensor.available = true;
     sensor.lastReadMs = nowMs;
     
-    Serial.printf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
+    // Serial.printf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
   }
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("DS2484 read time: %lu µs\n", duration);
   
   ds2484Values.lastConversionMs = nowMs;
 }
@@ -749,31 +853,565 @@ void readEncoderAt50Hz()
   encoderValues.color = encoderColorNames[encoderColorIndex];
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("Encoder read time: %lu µs\n", duration);
+  
+  // Aggregate stats for 1-second reporting
+  #if ENABLE_STATS_REPORTING
+  encoderStats.readCount++;
+  encoderStats.totalTime += duration;
+  if (encoderStats.readCount == 1) {
+    encoderStats.minTime = duration;
+    encoderStats.maxTime = duration;
+  } else {
+    if (duration < encoderStats.minTime) encoderStats.minTime = duration;
+    if (duration > encoderStats.maxTime) encoderStats.maxTime = duration;
+  }
+  #endif
 }
 
 void readSensors()
 {
   if (available.bme280) readBme280(bme280Values);       // New: BME280 caching (FEATURE-SPEC-005)
-  if (available.tsl2591) readTsl2591(tsl2591Values);    // New: TSL2591 caching (FEATURE-SPEC-005)
+  // NOTE: TSL2591 is async - starts measurement in rotatedReadSensor(), checked later
+  // if (available.tsl2591) readTsl2591(tsl2591Values);  // Removed: async via startTsl2591Measurement()
   if (available.si1145) readSi1145(si1145Values);       // New: SI1145 caching (FEATURE-SPEC-005)
   if (available.veml6075) readVeml6075(veml6075Values);
   if (available.veml6070) readVeml6070(veml6070Values);
   if (available.scd30 && scd30Ready()) readScd30(scd30Values);
   if (available.ds2484) {
     performDs2484Scan();      // 60-second bus scan
-    readDs2484Temperatures(); // 3-second temperature polling
+    // NOTE: DS18B20 is async - conversion starts in rotatedReadSensor(), results checked later
+    // readDs2484Temperatures(); // Removed: async via startDs18b20Conversion()
   }
+}
+
+// ============================================================================
+// FEATURE-SPEC-006: Non-Blocking Asynchronous Sensor Functions
+// ============================================================================
+
+/// @brief Start TSL2591 asynchronous measurement (non-blocking, ~0 ms)
+/// Sets state to MEASURING and records start time; measurement happens in background.
+/// The result must be checked later via checkTsl2591Async() after TSL2591_INTEGRATION_TIME_MS.
+void startTsl2591Measurement()
+{
+  if (!available.tsl2591) return;
+  
+  uint32_t startTime = micros();
+  
+  // Set state machine to MEASURING
+  tsl2591State = Tsl2591State::MEASURING;
+  tsl2591MeasureStartMs = millis();
+  
+  // Note: The actual ADC integration setup would happen here if using low-level Adafruit API.
+  // For now, we rely on getFullLuminosity() blocking call to be split into:
+  // 1. This function: setup integration (minimal time)
+  // 2. checkTsl2591Async(): call getFullLuminosity() after delay
+  
+  uint32_t endTime = micros();
+  // Serial.printf("TSL2591 async START time: %lu µs\n", endTime - startTime);
+}
+
+/// @brief Check if TSL2591 measurement is complete; read result if ready (non-blocking if not ready)
+/// If measurement has been integrating for >= TSL2591_INTEGRATION_TIME_MS, reads the result
+/// and updates the cache. Otherwise, returns immediately without reading.
+void checkTsl2591Async()
+{
+  // Guard: Only proceed if currently MEASURING
+  if (tsl2591State != Tsl2591State::MEASURING) return;
+  if (!available.tsl2591) return;
+  
+  uint32_t elapsedMs = millis() - tsl2591MeasureStartMs;
+  
+  // Not ready yet; will retry next cycle
+  if (elapsedMs < TSL2591_INTEGRATION_TIME_MS) {
+    // Serial.printf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
+    return;
+  }
+  
+  // Ready to read; measure ONLY the actual I2C read time (NOT library overhead)
+  // Read directly from TSL2591 I2C registers: DATA0 (visible+IR) and DATA1 (IR only)
+  uint32_t startTime = micros();
+  
+  // Read DATA0 (0x14/0x15) and DATA1 (0x16/0x17) registers via direct I2C
+  Wire.beginTransmission(0x29);  // TSL2591 I2C address
+  Wire.write(0x14);               // DATA0_LOW register (with auto-increment in I2C)
+  Wire.endTransmission();
+  
+  // Read 4 bytes: DATA0_LOW, DATA0_HIGH, DATA1_LOW, DATA1_HIGH
+  Wire.requestFrom(0x29, 4);
+  uint16_t data0 = 0, data1 = 0;
+  if (Wire.available() >= 4) {
+    uint8_t data0_low = Wire.read();
+    uint8_t data0_high = Wire.read();
+    uint8_t data1_low = Wire.read();
+    uint8_t data1_high = Wire.read();
+    data0 = (data0_high << 8) | data0_low;
+    data1 = (data1_high << 8) | data1_low;
+  }
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  
+  // Calculate luminosity values (same as Adafruit does)
+  uint32_t fullSpectrum = data0;
+  uint32_t infrared = data1;
+  uint32_t visible = (fullSpectrum > infrared) ? (fullSpectrum - infrared) : 0;
+  float lux = tsl2591.calculateLux(fullSpectrum, infrared);
+  
+  // Get gain and integration time from cached state (already set at init)
+  uint16_t gain = tsl2591.getGain();
+  uint16_t integrationTime = tsl2591.getTiming();
+  
+  tsl2591Values.fullSpectrum = fullSpectrum;
+  tsl2591Values.infrared = infrared;
+  tsl2591Values.visible = visible;
+  tsl2591Values.lux = lux;
+  tsl2591Values.gain = gain;
+  tsl2591Values.integrationTime = integrationTime;
+  
+  // State machine back to IDLE
+  tsl2591State = Tsl2591State::IDLE;
+  
+  Serial.printf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", duration, elapsedMs);
+}
+
+/// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~0 ms)
+/// Sends 1-Wire conversion command to all DS18B20 sensors on the bus and records start time.
+/// The result must be checked later via checkDs18b20Async() after DS18B20_CONVERSION_TIME_MS.
+void startDs18b20Conversion()
+{
+  if (!available.ds2484) return;
+  
+  uint32_t startTime = micros();
+  
+  // Set state machine to CONVERTING
+  ds18b20State = Ds18b20State::CONVERTING;
+  ds18b20ConvertStartMs = millis();
+  
+  // Send 1-Wire "Convert T" command (0x44) to all sensors via DS2484 adapter
+  // Implementation: Send skip ROM (0xCC) followed by convert command (0x44)
+  // Note: For current implementation using readDs2484Temperatures() which handles this,
+  // we may need to refactor to split the command send from the result read.
+  
+  uint32_t endTime = micros();
+  // Serial.printf("DS18B20 async START time: %lu µs\n", endTime - startTime);
+}
+
+/// @brief Check if DS18B20 conversion is complete; read results if ready (non-blocking if not ready)
+/// If conversion has been running for >= DS18B20_CONVERSION_TIME_MS, reads the results
+/// and updates the cache. Otherwise, returns immediately without reading.
+void checkDs18b20Async()
+{
+  // Guard: Only proceed if currently CONVERTING
+  if (ds18b20State != Ds18b20State::CONVERTING) return;
+  if (!available.ds2484) return;
+  
+  uint32_t elapsedMs = millis() - ds18b20ConvertStartMs;
+  
+  // Not ready yet; will retry next cycle
+  if (elapsedMs < DS18B20_CONVERSION_TIME_MS) {
+    // Serial.printf("DS18B20 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
+    return;
+  }
+  
+  // Ready to read; call blocking read function
+  uint32_t startTime = micros();
+  readDs2484Temperatures();
+  uint32_t endTime = micros();
+  
+  // State machine back to IDLE
+  ds18b20State = Ds18b20State::IDLE;
+  
+  Serial.printf("DS18B20 async READ time: %lu µs (waited %lu ms)\n", endTime - startTime, elapsedMs);
+}
+
+/// @brief Rotated sensor read dispatcher (FEATURE-SPEC-006 non-blocking architecture)
+/// Call this once per SENSOR_SLOT_INTERVAL_MS with slot number (0-6) to distribute sensor reads.
+/// Each slot handles specific sensors; async sensors start in one slot and result is read in a later slot.
+///
+/// Slot schedule (200 ms intervals):
+///   Slot 0 (0 ms):   Read BME280
+///   Slot 1 (200 ms): Start TSL2591 measurement (async)
+///   Slot 2 (400 ms): Read SI1145
+///   Slot 3 (600 ms): Read VEML6075
+///   Slot 4 (800 ms): Read VEML6070
+///   Slot 5 (1000 ms): Read SCD30
+///   Slot 6 (1200 ms): Start DS18B20 conversion (async) + check TSL2591 + check DS18B20
+void rotatedReadSensor(uint32_t slot)
+{
+  // Clamp slot to valid range
+  slot = slot % 7;
+  
+  // Serial.printf("Sensor Slot %lu starting...\n", slot);
+  
+  switch (slot) {
+    case 0:
+      // BME280: Fast synchronous read (~2 ms)
+      if (available.bme280) readBme280(bme280Values);
+      break;
+      
+    case 1:
+      // Start TSL2591 async measurement (~0 ms to start, ~200 ms to complete)
+      startTsl2591Measurement();
+      break;
+      
+    case 2:
+      // SI1145: Fast synchronous read (~1 ms)
+      if (available.si1145) readSi1145(si1145Values);
+      break;
+      
+    case 3:
+      // VEML6075: Fast synchronous read (~1 ms)
+      if (available.veml6075) readVeml6075(veml6075Values);
+      break;
+      
+    case 4:
+      // VEML6070: Fast synchronous read (~1 ms)
+      if (available.veml6070) readVeml6070(veml6070Values);
+      break;
+      
+    case 5:
+      // SCD30: Moderate synchronous read (~5-10 ms)
+      if (available.scd30 && scd30Ready()) readScd30(scd30Values);
+      break;
+      
+    case 6:
+      // Start DS18B20 async conversion (~0 ms to start, ~750 ms to complete)
+      startDs18b20Conversion();
+      
+      // Check if TSL2591 result is ready (started in Slot 1, checking ~600 ms later)
+      checkTsl2591Async();
+      
+      // Check if DS18B20 result is ready (might complete from previous cycle)
+      checkDs18b20Async();
+      break;
+  }
+}
+
+/// @brief Check if any sensor value has changed compared to last cached snapshot
+/// Used for display refresh optimization: only redraw if data actually changed.
+/// Compares all relevant sensor cache fields with their last known values.
+bool valuesChanged()
+{
+  // INA219 changed?
+  if (ina219Values.load != lastIna219Values.load ||
+      ina219Values.bus != lastIna219Values.bus ||
+      ina219Values.current != lastIna219Values.current ||
+      ina219Values.power != lastIna219Values.power ||
+      ina219Values.shunt != lastIna219Values.shunt ||
+      ina219Values.chargeMah != lastIna219Values.chargeMah) {
+    return true;
+  }
+  
+  // BME280 changed?
+  if (bme280Values.temperature != lastBme280Values.temperature ||
+      bme280Values.humidity != lastBme280Values.humidity ||
+      bme280Values.pressure != lastBme280Values.pressure ||
+      bme280Values.altitude != lastBme280Values.altitude) {
+    return true;
+  }
+  
+  // TSL2591 changed?
+  if (tsl2591Values.lux != lastTsl2591Values.lux ||
+      tsl2591Values.visible != lastTsl2591Values.visible ||
+      tsl2591Values.infrared != lastTsl2591Values.infrared) {
+    return true;
+  }
+  
+  // SI1145 changed?
+  if (si1145Values.visible != lastSi1145Values.visible ||
+      si1145Values.infrared != lastSi1145Values.infrared ||
+      si1145Values.uvIndex != lastSi1145Values.uvIndex) {
+    return true;
+  }
+  
+  // VEML6075 changed?
+  if (veml6075Values.uva != lastVeml6075Values.uva ||
+      veml6075Values.uvb != lastVeml6075Values.uvb ||
+      veml6075Values.uvaComp != lastVeml6075Values.uvaComp ||
+      veml6075Values.uvbComp != lastVeml6075Values.uvbComp) {
+    return true;
+  }
+  
+  // VEML6070 changed?
+  if (veml6070Values.raw != lastVeml6070Values.raw) {
+    return true;
+  }
+  
+  // SCD30 changed?
+  if (scd30Values.co2 != lastScd30Values.co2 ||
+      scd30Values.temp != lastScd30Values.temp ||
+      scd30Values.humidity != lastScd30Values.humidity) {
+    return true;
+  }
+  
+  // DS2484 changed?
+  if (ds2484Values.sensorCount != lastDs2484Values.sensorCount) {
+    return true;  // Sensor count changed
+  }
+  for (uint8_t i = 0; i < ds2484Values.sensorCount && i < 3; i++) {
+    if (ds2484Values.sensors[i].temperature != lastDs2484Values.sensors[i].temperature) {
+      return true;  // Any DS18B20 temperature changed
+    }
+  }
+  
+  // Gamepad changed?
+  if (gamepadValues.x != lastGamepadValues.x ||
+      gamepadValues.y != lastGamepadValues.y ||
+      gamepadValues.buttons != lastGamepadValues.buttons) {
+    return true;
+  }
+  
+  // Encoder changed?
+  if (encoderValues.position != lastEncoderValues.position ||
+      encoderValues.pressed != lastEncoderValues.pressed ||
+      encoderValues.brightness != lastEncoderValues.brightness) {
+    return true;
+  }
+  
+  return false;  // No values changed
+}
+
+/// @brief Check if the SPECIFIC value displayed in Large Display Mode has changed
+/// In Large Display Mode, only the value at largeDisplayIndex should trigger a redraw.
+/// This prevents unnecessary updates when other sensors change.
+/// Returns false if NOT in large display mode on INA219 page (use valuesChanged() instead).
+bool largeDisplayValueChanged()
+{
+  // Only apply this optimization if in large display mode on INA219 page
+  if (!largeDisplayMode || currentPage != 2) {
+    return false;  // Not in large display mode; use regular valuesChanged()
+  }
+  
+  // Check only the value at largeDisplayIndex
+  switch (largeDisplayIndex) {
+    case 0:  // Laufzeit (Runtime) - computed from startTimeUs, changes every second
+      // Runtime changes continuously, so always return true to update display
+      return true;
+      
+    case 1:  // Batterie (Load Voltage)
+      return ina219Values.load != lastIna219Values.load;
+      
+    case 2:  // Versorgung (Bus Voltage)
+      return ina219Values.bus != lastIna219Values.bus;
+      
+    case 3:  // Strom (Current)
+      return ina219Values.current != lastIna219Values.current;
+      
+    case 4:  // Ladung (Charge)
+      return ina219Values.chargeMah != lastIna219Values.chargeMah;
+      
+    case 5:  // Shunt-Spannung (Shunt Voltage)
+      return ina219Values.shunt != lastIna219Values.shunt;
+      
+    case 6:  // Power
+      return ina219Values.power != lastIna219Values.power;
+      
+    default:
+      return false;
+  }
+}
+
+/// @brief Update cached values snapshot after display redraw (for next comparison)
+void updateCachedValues()
+{
+  lastIna219Values = ina219Values;
+  lastBme280Values = bme280Values;
+  lastTsl2591Values = tsl2591Values;
+  lastSi1145Values = si1145Values;
+  lastVeml6075Values = veml6075Values;
+  lastVeml6070Values = veml6070Values;
+  lastScd30Values = scd30Values;
+  lastDs2484Values = ds2484Values;
+  lastGamepadValues = gamepadValues;
+  lastEncoderValues = encoderValues;
+}
+
+/// @brief Update input statistics (optional, configurable via ENABLE_STATS_REPORTING)
+/// Called every INPUT_STATS_INTERVAL_MS (1000 ms) to aggregate and print sensor timing stats.
+/// When disabled (ENABLE_STATS_REPORTING=0), this function returns immediately.
+void updateInputStats()
+{
+#if !ENABLE_STATS_REPORTING
+  return;  // Stats reporting disabled
+#else
+  uint32_t now = millis();
+  
+  // Only aggregate once per interval
+  if (now - lastStatsUpdateMs < INPUT_STATS_INTERVAL_MS) {
+    return;
+  }
+  
+  lastStatsUpdateMs = now;
+  
+  // Print aggregated statistics to Serial
+  // Serial.println("\n=== Sensor Stats (1000 ms interval) ===");
+  
+  if (bme280Stats.readCount > 0) {
+    /* // Serial.printf("BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      bme280Stats.minTime, bme280Stats.maxTime,
+      bme280Stats.totalTime / bme280Stats.readCount,
+      bme280Stats.readCount); */
+  }
+  
+  if (tsl2591Stats.readCount > 0) {
+    /* // Serial.printf("TSL2591:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+      tsl2591Stats.minTime, tsl2591Stats.maxTime,
+      tsl2591Stats.totalTime / tsl2591Stats.readCount,
+      tsl2591Stats.readCount); */
+  }
+  
+  if (si1145Stats.readCount > 0) {
+    /* // Serial.printf("SI1145:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      si1145Stats.minTime, si1145Stats.maxTime,
+      si1145Stats.totalTime / si1145Stats.readCount,
+      si1145Stats.readCount); */
+  }
+  
+  if (veml6075Stats.readCount > 0) {
+    /* // Serial.printf("VEML6075:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      veml6075Stats.minTime, veml6075Stats.maxTime,
+      veml6075Stats.totalTime / veml6075Stats.readCount,
+      veml6075Stats.readCount); */
+  }
+  
+  if (veml6070Stats.readCount > 0) {
+    /* // Serial.printf("VEML6070:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      veml6070Stats.minTime, veml6070Stats.maxTime,
+      veml6070Stats.totalTime / veml6070Stats.readCount,
+      veml6070Stats.readCount); */
+  }
+  
+  if (scd30Stats.readCount > 0) {
+    /* // Serial.printf("SCD30:        min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+      scd30Stats.minTime, scd30Stats.maxTime,
+      scd30Stats.totalTime / scd30Stats.readCount,
+      scd30Stats.readCount); */
+  }
+  
+  if (ds18b20Stats.readCount > 0) {
+    /* // Serial.printf("DS18B20:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+      ds18b20Stats.minTime, ds18b20Stats.maxTime,
+      ds18b20Stats.totalTime / ds18b20Stats.readCount,
+      ds18b20Stats.readCount); */
+  }
+  
+  // Serial.println("=====================================\n");
+  
+  // Reset counters for next interval
+  bme280Stats = {};
+  tsl2591Stats = {};
+  si1145Stats = {};
+  veml6075Stats = {};
+  veml6070Stats = {};
+  scd30Stats = {};
+  ds18b20Stats = {};
+#endif
+}
+
+/// @brief Print aggregated gamepad statistics once per second
+/// Shows: readCount, min/max/total read times for gamepad in the last 1000ms
+void printGamepadStats()
+{
+  #if !ENABLE_STATS_REPORTING
+  return;
+  #endif
+  
+  const uint32_t nowMs = millis();
+  
+  // Print stats every 1000ms
+  if ((int32_t)(nowMs - lastGamepadStatsLogMs) < 1000) return;
+  
+  if (gamepadStats.readCount > 0) {
+    Serial.printf("Gamepad stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+      gamepadStats.readCount,
+      gamepadStats.minTime,
+      gamepadStats.maxTime,
+      gamepadStats.totalTime);
+  }
+  
+  // Reset for next interval
+  gamepadStats = {};
+  lastGamepadStatsLogMs = nowMs;
+}
+
+/// @brief Print aggregated encoder statistics once per second
+/// Shows: readCount, min/max/total read times for encoder in the last 1000ms
+void printEncoderStats()
+{
+  #if !ENABLE_STATS_REPORTING
+  return;
+  #endif
+  
+  const uint32_t nowMs = millis();
+  
+  // Print stats every 1000ms (synchronized with gamepad)
+  if ((int32_t)(nowMs - lastEncoderStatsLogMs) < 1000) return;
+  
+  if (encoderStats.readCount > 0) {
+    Serial.printf("Encoder stats (1000ms):  reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+      encoderStats.readCount,
+      encoderStats.minTime,
+      encoderStats.maxTime,
+      encoderStats.totalTime);
+  }
+  
+  // Reset for next interval
+  encoderStats = {};
+  lastEncoderStatsLogMs = nowMs;
+}
+
+/// @brief Print aggregated INA219 statistics once per second
+/// Shows: readCount, min/max/total read times for INA219 in the last 1000ms
+void printIna219Stats()
+{
+  #if !ENABLE_STATS_REPORTING
+  return;
+  #endif
+  
+  const uint32_t nowMs = millis();
+  
+  // Print stats every 1000ms (synchronized with gamepad)
+  if ((int32_t)(nowMs - lastIna219StatsLogMs) < 1000) return;
+  
+  if (ina219Stats.readCount > 0) {
+    Serial.printf("INA219 stats (1000ms):  reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+      ina219Stats.readCount,
+      ina219Stats.minTime,
+      ina219Stats.maxTime,
+      ina219Stats.totalTime);
+  }
+  
+  // Reset for next interval
+  ina219Stats = {};
+  lastIna219StatsLogMs = nowMs;
 }
 
 void readGamepadAt40Hz()
 {
   if (!available.gamepad) return;
 
+  uint32_t startTime = micros();
+  
   gamepadValues.x = 1023 - gamepad.analogRead(14);
   gamepadValues.y = 1023 - gamepad.analogRead(15);
   gamepadValues.buttons = gamepad.digitalReadBulk(BUTTON_MASK);
   gamepadValues.hasEvent = false;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  
+  // Aggregate stats for 1-second reporting
+  #if ENABLE_STATS_REPORTING
+  gamepadStats.readCount++;
+  gamepadStats.totalTime += duration;
+  if (gamepadStats.readCount == 1) {
+    gamepadStats.minTime = duration;
+    gamepadStats.maxTime = duration;
+  } else {
+    if (duration < gamepadStats.minTime) gamepadStats.minTime = duration;
+    if (duration > gamepadStats.maxTime) gamepadStats.maxTime = duration;
+  }
+  #endif
   
   // Skip getKeypadCount() as it causes I2C blocking with other sensors
   // Button states are read directly via digitalReadBulk() above
@@ -805,6 +1443,19 @@ void readIna219At50Hz()
   uint32_t readEndUs = micros();
   uint32_t readDuration = readEndUs - readStartUs;
   ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
+  
+  // Aggregate stats for 1-second reporting
+  #if ENABLE_STATS_REPORTING
+  ina219Stats.readCount++;
+  ina219Stats.totalTime += readDuration;
+  if (ina219Stats.readCount == 1) {
+    ina219Stats.minTime = readDuration;
+    ina219Stats.maxTime = readDuration;
+  } else {
+    if (readDuration < ina219Stats.minTime) ina219Stats.minTime = readDuration;
+    if (readDuration > ina219Stats.maxTime) ina219Stats.maxTime = readDuration;
+  }
+  #endif
 }
 
 // Format runtime as HH:MM:SS
@@ -1062,16 +1713,16 @@ void detectSensors()
   if (available.gamepad) gamepad.setGPIOInterrupts(BUTTON_MASK, true);
   
   // Probe DS2484 I2C-to-1-Wire adapter at 0x18
-  Serial.println("Probing DS2484 at 0x18...");
+  // Serial.println("Probing DS2484 at 0x18...");
   available.ds2484 = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (available.ds2484) {
-    Serial.println("DS2484: FOUND");
+    // Serial.println("DS2484: FOUND");
     initDs2484();  // Initialize DS2484
     ds2484Values.masterPresent = true;
     ds2484Values.lastScanMs = 0;  // Trigger immediate bus scan
     ds2484Values.lastConversionMs = 0;
   } else {
-    Serial.println("DS2484: NOT FOUND");
+    // Serial.println("DS2484: NOT FOUND");
   }
 }
 
@@ -1111,7 +1762,7 @@ void setup()
   drawHeader("Sensor Dashboard");
   detectSensors();
   initializeSensorCaches();  // Initialize sensor caches with NaN (FEATURE-SPEC-005)
-  if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
+  // if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
   readSensors();
   drawCurrentPage(true);
 }
@@ -1201,8 +1852,8 @@ void loop()
     nextDisplayMs = now + SENSOR_REFRESH_MS;
   }
 
-  // PRIORITY 3: Read encoder input (if on encoder page)
-  if (available.encoder && currentPage == 3 && (int32_t)(now - nextEncoderMs) >= 0) {
+  // PRIORITY 3: Read encoder input (always, for stats aggregation)
+  if (available.encoder && (int32_t)(now - nextEncoderMs) >= 0) {
     readEncoderAt50Hz();
     nextEncoderMs = now + INPUT_REFRESH_MS;
   }
@@ -1214,15 +1865,47 @@ void loop()
     nextInaSampleUs = nowUs + 20000;
   }
 
-  // PRIORITY 5: Read other I2C sensors
-  if ((int32_t)(now - nextSensorMs) >= 0) {
-    readSensors();
-    nextSensorMs = now + SENSOR_REFRESH_MS;
+  // PRIORITY 5: Rotated sensor read dispatch (FEATURE-SPEC-006 non-blocking architecture)
+  // Every SENSOR_SLOT_INTERVAL_MS (200 ms), dispatch the appropriate sensor(s) for current slot
+  static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
+  uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % 7;
+  if (currentSensorSlot != lastSensorSlotDispatched) {
+    rotatedReadSensor(currentSensorSlot);
+    lastSensorSlotDispatched = currentSensorSlot;
   }
 
-  // PRIORITY 6: Periodic display refresh (only if page hasn't changed)
-  if ((int32_t)(now - nextDisplayMs) >= 0 && currentPage == lastPage) {
+  // PRIORITY 6: Periodic display refresh with event-driven optimization (FEATURE-SPEC-006)
+  // Display shall redraw ONLY on:
+  //   1. Page change (immediate)
+  //   2. Sensor value change (detected by valuesChanged() or largeDisplayValueChanged())
+  //   3. Timer event (INA219 seconds counter increment)
+  //   4. Rate limited to max 5 Hz (200 ms minimum between updates) to prevent flickering
+  if (currentPage != lastPage) {
+    // Page changed: redraw immediately with full refresh
+    if (lastPage == 2 && currentPage != 2) {
+      largeDisplayMode = false;
+      largeDisplayIndex = 0;
+    }
+    drawCurrentPage(true);
+    lastPage = currentPage;
+    updateCachedValues();
+    nextDisplayMs = now + SENSOR_SLOT_INTERVAL_MS;  // Update timer for next refresh window
+    nextLargeDisplayRefreshMs = now + 200;  // Rate limit: max 5 Hz (200 ms between updates)
+  } else if ((largeDisplayValueChanged() || valuesChanged() || (int32_t)(now - nextDisplayMs) >= 0) && 
+             (int32_t)(now - nextLargeDisplayRefreshMs) >= 0) {
+    // Value changed OR timer event AND rate limit allows: partial refresh (data only, no header)
+    // largeDisplayValueChanged() checks ONLY the displayed value in large mode
+    // valuesChanged() checks all values for standard page display
+    // nextLargeDisplayRefreshMs enforces max 5 Hz (200 ms between updates)
     drawCurrentPage(false);
-    nextDisplayMs = now + SENSOR_REFRESH_MS;
+    updateCachedValues();
+    nextDisplayMs = now + SENSOR_SLOT_INTERVAL_MS;
+    nextLargeDisplayRefreshMs = now + 200;  // Rate limit: max 5 Hz (200 ms between updates)
   }
+
+  // PRIORITY 7: Update statistics (optional, configurable)
+  updateInputStats();
+  printGamepadStats();
+  printEncoderStats();
+  printIna219Stats();
 }

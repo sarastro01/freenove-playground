@@ -482,12 +482,14 @@ Implement all sensor polling, data processing, event handling, state machines, a
    - Source: [05-api.md](docs/05-api.md), INA219 section
 
 4. **Implement `readEncoderAt50Hz()` function**
-   - Check timing gate: (currentPage == 4 || currentPage != lastPage) AND time gate fires
+   - Read encoder position every 20 ms (ALWAYS, not page-conditional — required for continuous LED updates and stats aggregation)
    - Read encoder position, compute delta
    - Detect button falling edge: (pressed && !lastPressed)
    - On falling edge: colorIndex = (colorIndex + 1) % 4, increment pressCount, call updateEncoderLed()
    - On dial rotation (delta != 0): brightness = constrain(brightness + delta*8, 0, 255), call updateEncoderLed()
    - Update encoderValues struct with position, delta, pressed, color name
+   - Aggregate timing stats into EncoderStats struct (if ENABLE_STATS_REPORTING)
+   - Source: [01-requirements.md](docs/01-requirements.md), FR-004 (Encoder Read Continuously)
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-010, BR-011, BR-018
 
 5. **Implement `readGamepadAt40Hz()` function**
@@ -564,13 +566,14 @@ Implement all sensor polling, data processing, event handling, state machines, a
 13. **Implement timing gates in `loop()` function**
     - All timing gates use signed comparison for rollover safety: `(int32_t)(now - deadline) >= 0`
     - Gamepad read: gate fires every 25 ms → calls readGamepadAt40Hz()
-    - Encoder read: gate fires every 20 ms when page 4 OR page changing → calls readEncoderAt50Hz()
+    - Encoder read: gate fires every 20 ms (ALWAYS, not page-conditional) → calls readEncoderAt50Hz()
     - INA219 read: gate fires every 20 µs → calls readIna219At50Hz() using micros()
     - Sensor read: gate fires every 500 ms → calls readSensors() wrapper (reads all non-Coulomb sensors)
     - DS18B20 update: called every loop cycle (self-gated via pending state)
     - DS18B20 rescan: gate fires every 3000 ms → calls rescanDs18b20()
-    - Page redraw: full (with header) when currentPage != lastPage; data-only every 20 or 500 ms
-    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-021
+    - Display rate limit: minimum 200 ms between consecutive page redraws (5 Hz maximum) via `nextLargeDisplayRefreshMs` gate
+    - Page redraw: full (with header) when currentPage != lastPage; data-only when values change or timer fires, subject to 200 ms rate limit
+    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-021, BR-SC-011
     - Source: [09-configuration.md](docs/09-configuration.md), Timing Configuration table
 
 14. **Implement `loop()` main event loop**
@@ -1880,6 +1883,224 @@ sensor-pages-dashboard/
 ├── README.md (Phase 1)
 └── LICENSE (optional)
 ```
+
+---
+
+## Addendum: Phase 6 Enhancement (FEATURE-SPEC-006) — Non-Blocking Rotated Sensor Architecture
+
+### Objective
+
+After completing Phases 1–12 (basic implementation), Phase 6 enhances the business logic and UI to implement non-blocking rotated sensor polling. This eliminates blocking I2C reads and guarantees < 200 ms input latency.
+
+**Prerequisites:** Phase 5 (Business Logic) and Phase 7 (Frontend/UI) fully complete with FEATURE-SPEC-005 (sensor caching).
+
+### Modifications to Phase 5: Business Logic
+
+**Refactor `readSensors()` function:**
+```cpp
+// OLD (FEATURE-SPEC-005): All sensors read together every 500 ms
+void readSensors() {
+  readBme280(bme280Values);
+  readTsl2591(tsl2591Values);
+  readSi1145(si1145Values);
+  // ... (blocking, up to 250+ ms total)
+}
+
+// NEW (FEATURE-SPEC-006): Rotated read every 200 ms, one sensor per slot
+void rotatedReadSensor(uint32_t slot) {
+  switch (slot) {
+    case 0: readBme280(bme280Values); break;
+    case 1: startTsl2591Measurement(); break;
+    case 2: readSi1145(si1145Values); break;
+    case 3: readVeml6075(veml6075Values); break;
+    case 4: readVeml6070(veml6070Values); break;
+    case 5: readScd30(scd30Values); break;
+    case 6: startDs18b20Conversion(); checkTsl2591Async(); break;
+  }
+}
+```
+
+**New functions to implement:**
+1. `void rotatedReadSensor(uint32_t slot)` - Dispatcher (lines 1, ~100 lines)
+2. `void startTsl2591Measurement()` - Async start (~20 lines)
+3. `void checkTsl2591Async()` - Async complete check (~15 lines)
+4. `void startDs18b20Conversion()` - 1-Wire async start (~25 lines)
+5. `void checkDs18b20Async()` - 1-Wire async complete check (~20 lines)
+6. `void updateInputStats()` - Stats aggregation (~50 lines, only if `ENABLE_STATS_REPORTING`)
+
+**Main loop changes:**
+```cpp
+// OLD:
+if ((int32_t)(now - nextSensorMs) >= 0) {
+  readSensors();  // All sensors in one call
+  nextSensorMs = now + 500;
+}
+
+// NEW:
+uint32_t sensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % 7;
+if (sensorSlot != lastSensorSlot) {
+  rotatedReadSensor(sensorSlot);
+  lastSensorSlot = sensorSlot;
+}
+
+// Stats reporting (every 1 second):
+if ((int32_t)(now - nextStatsMs) >= 0) {
+  updateInputStats();
+  nextStatsMs = now + INPUT_STATS_INTERVAL_MS;
+}
+```
+
+**New state machines:**
+```cpp
+// TSL2591 async state
+enum Tsl2591State { IDLE, MEASURING, READY };
+static Tsl2591State tsl2591State = IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+// DS18B20 async state
+enum Ds18b20State { IDLE, CONVERTING, READY };
+static Ds18b20State ds18b20State = IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+```
+
+**New constants (in main.cpp):**
+```cpp
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;    // Immutable
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;   // Immutable
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;   // Adjustable
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;    // Adjustable
+#define ENABLE_STATS_REPORTING 1                      // Compile-time toggle
+```
+
+**Testing requirements:**
+- TC-Rotated-001: Verify 7-slot rotation schedule
+- TC-Rotated-002: Verify TSL2591 async pattern (start → wait → read)
+- TC-Rotated-003: Verify DS18B20 async pattern (start → wait → read)
+- TC-Rotated-006: Verify stats reporting toggle (ENABLE_STATS_REPORTING)
+- Serial output must show slot transitions and async events
+
+### Modifications to Phase 7: Frontend/UI
+
+**Update `drawCurrentPage()` to only redraw on value change:**
+```cpp
+// OLD (FEATURE-SPEC-005): Always redraw every cycle
+void drawCurrentPage(bool pageChanged) {
+  if (pageChanged) drawHeader(...);
+  // Render page content (data always rendered)
+}
+
+// NEW (FEATURE-SPEC-006): Conditional redraw
+static SensorCache lastSensorCache;  // Previous values
+
+bool valuesChanged() {
+  // Compare all relevant fields for current page
+  // Return true if ANY value differs from lastSensorCache
+  return (/* comparison logic */);
+}
+
+bool timerEventFired() {
+  // Check if INA219 seconds timer incremented
+  static uint32_t lastTimer = 0;
+  if (ina219Values.timerSeconds != lastTimer) {
+    lastTimer = ina219Values.timerSeconds;
+    return true;
+  }
+  return false;
+}
+
+// In main loop:
+if (currentPage != lastPage) {
+  drawCurrentPage(true);   // Full redraw
+} else if (valuesChanged()) {
+  drawCurrentPage(false);  // Partial redraw
+} else if (timerEventFired()) {
+  drawCurrentPage(false);  // Partial redraw
+}
+// Otherwise: no drawCurrentPage() call (no redraw)
+
+// Update cache after any redraw:
+lastSensorCache = getCurrentSensorCache();
+lastPage = currentPage;
+```
+
+**Performance benefit:**
+- Display updates only when necessary (eliminates flicker)
+- Reduced SPI bandwidth (fewer display writes per second)
+- Lower CPU load (skip rendering if unchanged)
+- Potential power savings (display idle more often)
+
+**Testing requirements:**
+- TC-Rotated-004: Verify display updates only on value change
+- TC-Rotated-005: Verify input latency < 200 ms (worst case)
+- Visual inspection: Page should not flicker with stable sensor values
+
+### Integration Checklist
+
+After completing Phase 6 modifications:
+
+1. **Code Review Verification:**
+   - [ ] `rotatedReadSensor()` dispatches all 7 slots correctly
+   - [ ] `startTsl2591Measurement()` and `checkTsl2591Async()` implement two-phase pattern
+   - [ ] `startDs18b20Conversion()` and `checkDs18b20Async()` implement two-phase pattern
+   - [ ] State machines transition correctly (IDLE ↔ MEASURING/CONVERTING ↔ READY/IDLE)
+   - [ ] Main loop calls `rotatedReadSensor()` once per 200 ms slot
+   - [ ] Display refresh logic gates on value changes, not time
+
+2. **Compilation:**
+   - [ ] Clean build: `pio run -t clean && pio run`
+   - [ ] No compiler warnings or errors
+   - [ ] Flash usage ≤ 28.5% (from FEATURE-SPEC-005 baseline)
+
+3. **Hardware Testing (5–10 minutes):**
+   - [ ] TC-Rotated-001: Sensor rotation scheduling (7-slot cycle)
+   - [ ] TC-Rotated-002: TSL2591 async measurement
+   - [ ] TC-Rotated-003: DS18B20 async conversion
+   - [ ] TC-Rotated-004: Display updates only on value change
+   - [ ] TC-Rotated-005: Input latency < 200 ms guaranteed
+   - [ ] TC-Rotated-006: Stats reporting (ENABLE_STATS_REPORTING toggle)
+   - [ ] Visual inspection: Display responsive, no flicker, pages transition smoothly
+
+4. **Regression Testing:**
+   - [ ] All 10 page renderers still work (FEATURE-SPEC-005 regression)
+   - [ ] Page navigation (Y/A buttons) still works
+   - [ ] Gamepad page (page 1) responsive
+   - [ ] Encoder page (page 4) responsive
+   - [ ] Large display mode (INA219 page 2) still works
+   - [ ] Error pages (missing sensors) still display correctly
+
+5. **Performance Validation:**
+   - [ ] Max blocked time per loop < 200 ms (measured via Serial output)
+   - [ ] Input response latency < 200 ms (button press to page change)
+   - [ ] Sensor freshness ≤ 1.4 seconds per full cycle
+   - [ ] Display refresh rate on value change (event-driven, not 500 ms constant)
+
+6. **Documentation Updates:**
+   - [ ] README.md: Note FEATURE-SPEC-006 is now implemented
+   - [ ] 01-requirements.md: FR-014 added (non-blocking architecture)
+   - [ ] 02-architecture.md: Section 15.1 (non-blocking rotated architecture)
+   - [ ] 05-api.md: New functions documented (rotatedReadSensor, async helpers)
+   - [ ] 06-business-rules.md: BR-SC-005 through BR-SC-010 added
+   - [ ] 09-configuration.md: New config constants documented
+   - [ ] 10-testing.md: TC-Rotated-001 through TC-Rotated-006 added
+   - [ ] FEATURE-SPEC-006*.md files: Updated with user clarifications (completed in this session)
+
+### Estimated Effort
+
+- **Code Implementation:** 4–6 hours
+  - Refactor `readSensors()` into 7-slot rotation: 1 hour
+  - Implement async state machines (TSL2591, DS18B20): 2 hours
+  - Update display logic (value change detection): 1 hour
+  - Stats reporting (configurable): 1 hour
+
+- **Testing:** 2–3 hours
+  - Unit tests (timing gates, state machines): 1 hour
+  - Hardware integration tests (all 6 test cases): 1.5 hours
+  - Regression testing (existing features): 0.5 hour
+
+- **Documentation:** 1 hour
+  - Update existing docs with FEATURE-SPEC-006 details (already completed)
+
+**Total Effort:** ~7–10 hours (1 day of focused development + testing)
 
 ---
 
