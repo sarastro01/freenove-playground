@@ -500,13 +500,19 @@ Implement all sensor polling, data processing, event handling, state machines, a
    - Store values in gamepadValues struct
    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-012, BR-013, BR-019, BR-020
 
-6. **Implement `readBme280()`, `readVeml6075()`, `readVeml6070()`, `readSi1145()`, `readTsl2591()`, `readScd30()` functions**
+6. **Implement `readBme280()`, `readVeml6075()`, `readVeml6070()`, `readSi1145()`, `readTsl2591()`, `readScd30()` functions (FEATURE-SPEC-005 Caching Architecture)**
    - Each reads from specific I2C sensor
-   - Apply sensor-specific processing (UV compensation, CRC validation, etc.)
+   - Apply sensor-specific processing (UV compensation, CRC validation, dew point calculation, bitwise extraction, etc.)
    - Only update global struct if all reads succeed
    - Return false on I2C error (stale data persists)
+   - Log timing to Serial (performance monitoring): `"SENSOR read time: XXX µs"`
+   - **NEW (FEATURE-SPEC-005):** BME280, TSL2591, SI1145 now use centralized caching:
+     - `readBme280()`: Compute Alduchov & Eskridge dew point (±0.35°C accuracy)
+     - `readTsl2591()`: Extract channels via bitwise operations (lower 16 bits = CHAN0/fullSpectrum, upper 16 bits = CHAN1/infrared)
+     - `readSi1145()`: Compute UV index as `raw / 100.0f`
    - Source: [04-data-model.md](docs/04-data-model.md), each sensor struct
-   - Source: [06-business-rules.md](docs/06-business-rules.md), BR-005 (CRC), BR-006 (UV comp), BR-007 (VEML6070 levels)
+   - Source: [05-api.md](docs/05-api.md), readBme280/readTsl2591/readSi1145 sections
+   - Source: [06-business-rules.md](docs/06-business-rules.md), BR-SC-003 (plausibility checks), BR-SC-004 (timing measurement)
    - [BLOCKED BY MISSING INFORMATION]: Exact register addresses for VEML sensors not fully specified; refer to sensor datasheets
 
 #### Group 3: Helper Functions
@@ -575,13 +581,18 @@ Implement all sensor polling, data processing, event handling, state machines, a
     - No delays; all operations cooperative scheduling via timing gates
     - Source: [02-architecture.md](docs/02-architecture.md), "Event Loop" section
 
-#### Group 6: Sensor Data Wrapper
+#### Group 6: Sensor Data Wrapper (FEATURE-SPEC-005 Caching Architecture)
 
-15. **Implement `readSensors()` wrapper function**
-    - Call all non-Coulomb sensor reads: readBme280, readVeml*, readSi1145, readTsl2591, readScd30
-    - Called every 500 ms from loop timing gate
-    - INA219 and gamepad/encoder have separate read cycles
+15. **Implement `readSensors()` wrapper function (FEATURE-SPEC-005 Caching)**
+    - Call all sensor reads in order: readBme280, readTsl2591, readSi1145, readVeml6075, readVeml6070, readScd30
+    - Called every 500 ms from loop timing gate (SENSOR_REFRESH_MS)
+    - Updates global cache structs: bme280Values, tsl2591Values, si1145Values, veml6075Values, veml6070Values, scd30Values
+    - INA219 and gamepad/encoder have separate high-frequency read cycles (50 Hz, 40 Hz respectively)
+    - **Benefit (FEATURE-SPEC-005):** Centralizes I2C reads; page functions read from cache (no I2C during render)
+    - **Performance:** Eliminates I2C latency during page rendering; improves display responsiveness
     - Source: [01-requirements.md](docs/01-requirements.md), FR-001
+    - Source: [05-api.md](docs/05-api.md), readBme280/readTsl2591/readSi1145 sections
+    - Source: [06-business-rules.md](docs/06-business-rules.md), BR-SC-004 (sensor caching pattern)
 
 ### Acceptance Criteria
 
@@ -756,12 +767,20 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
 
 8. **Implement 9 page renderer functions** (in order of [01-requirements.md](docs/01-requirements.md))
 
-   **Page 0: `pageBme280()`**
+   **Page 0: `pageBme280()` (FEATURE-SPEC-005 Caching)**
    - Check available.bme280; if false, return unavailable(...)
-   - Render: Temperature, Humidity, Pressure, Altitude, Dew point
-   - Colors: Temperature=GREEN, Pressure=GREEN, etc.
-   - Formulas: Dew point = standard meteorological formula (if specified in data model)
-   - [BLOCKED BY MISSING INFORMATION]: Exact dew point calculation formula not in documentation
+   - **Data Retrieval (CACHED):** Read from global `bme280Values` struct (updated every 500ms by `readSensors()`)
+   - Render: Temperature, Humidity, Pressure, Altitude, Dew point (from cache, no I2C calls)
+   - Dew Point Formula: Alduchov & Eskridge (±0.35°C accuracy, valid 0-50°C / 1-100% RH):
+     ```cpp
+     const float a = 17.62, b = 243.12;
+     alpha = ((a * T) / (b + T)) + log(RH% / 100)
+     dewPoint = (b * alpha) / (a - alpha)
+     ```
+   - Colors: Temperature=GREEN, Pressure=GREEN, Altitude=CYAN, Dew point=CYAN
+   - Benefit: Eliminates I2C latency during page rendering; improves responsiveness
+   - Source: [07-ui.md](docs/07-ui.md), Page 0 BME280 (FEATURE-SPEC-005 section)
+   - Source: [06-business-rules.md](docs/06-business-rules.md), BR-SC-003 (dew point formula)
 
    **Page 1: `pageDs18b20()`**
    - Check available.ds18b20; if false, return unavailable(...) [but DS18B20 unlikely to report as unavailable; check hot-plug count instead]
@@ -804,17 +823,27 @@ Implement all user-facing display rendering, page layouts, navigation logic, and
    - Data from scd30Values struct (CRC-validated)
    - Source: [07-ui.md](docs/07-ui.md), Page 5 SCD30
 
-   **Page 6: `pageSi1145()`**
+   **Page 6: `pageSi1145()` (FEATURE-SPEC-005 Caching)**
    - Check available.si1145; if false, return unavailable(...)
-   - Render: Visible spectrum, Infrared spectrum, UV index
-   - Colors: Visible=GREEN, IR=ORANGE, UV=CYAN
-   - Source: [07-ui.md](docs/07-ui.md), Page 6 SI1145
+   - **Data Retrieval (CACHED):** Read from global `si1145Values` struct (updated every 500ms by `readSensors()`)
+   - Render: Visible spectrum (ADC count), Infrared spectrum (ADC count), UV raw (index × 100), UV index (computed)
+   - UV Index Calculation: `uvIndex = uv_raw / 100.0f` (Adafruit standard formula)
+   - Colors: Visible=GREEN, IR=GREEN, UV raw=ORANGE, UV index=CYAN
+   - Benefit: Eliminates I2C latency during page rendering; improves responsiveness
+   - Source: [07-ui.md](docs/07-ui.md), Page 5 SI1145 (FEATURE-SPEC-005 section)
 
-   **Page 7: `pageTsl2591()`**
+   **Page 7: `pageTsl2591()` (FEATURE-SPEC-005 Caching)**
    - Check available.tsl2591; if false, return unavailable(...)
-   - Render: Full spectrum, IR, Visible, Calculated lux
+   - **Data Retrieval (CACHED):** Read from global `tsl2591Values` struct (updated every 500ms by `readSensors()`)
+   - Render: Full spectrum (ADC count), Infrared (ADC count), Visible (computed: full - IR), Lux (computed)
+   - Bitwise Extraction (in `readTsl2591()`): `getFullLuminosity()` returns uint32_t encoded as `[CHAN1(16-31) | CHAN0(0-15)]`
+     - fullSpectrum = lower 16 bits (CHAN0, visible + infrared)
+     - infrared = upper 16 bits (CHAN1, infrared only)
+   - Visible Calculation: `visible = max(0, fullSpectrum - infrared)`
+   - Lux Calculation: `lux = calculateLux(fullSpectrum, infrared)` (Adafruit library algorithm)
    - Colors: Lux=CYAN (computed value)
-   - Source: [07-ui.md](docs/07-ui.md), Page 7 TSL2591
+   - Benefit: Eliminates I2C latency during page rendering; improves responsiveness
+   - Source: [07-ui.md](docs/07-ui.md), Page 6 TSL2591 (FEATURE-SPEC-005 section)
 
    **Page 8: `pageVeml6070()`**
    - Check available.veml6070; if false, return unavailable(...)

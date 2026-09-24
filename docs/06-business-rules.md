@@ -615,6 +615,283 @@ HIGH
 
 ---
 
+## Sensor Caching & Error Handling Rules — **NEW (FEATURE-SPEC-005)**
+
+### BR-SC-001: Unified Sensor Data Caching Architecture (BME280, TSL2591, SI1145) — **NEW**
+
+**Description:**  
+Three sensors (BME280, TSL2591, SI1145) that previously performed direct I2C reads during page rendering are refactored to use the unified caching architecture. Sensor data is read once every 500 ms in `readSensors()`, cached in global structs, and page rendering functions read only from cache (no I2C during rendering).
+
+**Trigger:**  
+- `readSensors()` called every 500 ms via `SENSOR_REFRESH_MS` timer gate in main loop
+- Sensor availability detected at boot (`available.bme280`, `available.tsl2591`, `available.si1145`)
+
+**Conditions:**  
+- Sensor detected at boot (`available.X = true`)
+- 500 ms refresh interval elapsed
+- I2C bus operational
+
+**Behavior:**  
+1. **In `readSensors()` function (every 500 ms):**
+   ```cpp
+   void readSensors() {
+     if (available.bme280) readBme280(bme280Values);
+     if (available.tsl2591) readTsl2591(tsl2591Values);
+     if (available.si1145) readSi1145(si1145Values);
+     // ... other sensor reads ...
+   }
+   ```
+
+2. **Each `readBme280()`, `readTsl2591()`, `readSi1145()` function:**
+   - Guard: Return immediately if sensor not available
+   - Record start time via `micros()`
+   - Read I2C values from sensor using manufacturer API
+   - Perform plausibility checks (range validation)
+   - If checks fail: Log error to Serial and **RETURN without updating cache**
+   - If checks pass: Update cache struct and log timing to Serial
+   - Record end time and output performance: `"SENSOR read time: XXX µs"`
+
+3. **In page rendering functions (`pageBme280()`, `pageTsl2591()`, `pageSi1145()`):**
+   - Read **only from cache structs** (no direct I2C I/O)
+   - Example: `tft.drawString(String(bme280Values.temperature, 1), ...)`
+   - No sensor availability guard needed (cache always valid, even if stale)
+
+**Benefits:**  
+- Reduces I2C load during display refresh (improves responsiveness)
+- Separates sensor data acquisition from UI rendering
+- Consistent with existing VEML6075, VEML6070, SCD30, DS2484 architecture
+
+**Failure Behavior:**  
+- If I2C read fails (plausibility check rejects values), cache not updated
+- Page continues to display last known values (stale data)
+- Error logged to Serial with sensor name and specific failure reason
+- Next successful read (500 ms later) updates cache again
+
+**Evidence:**  
+- FEATURE-SPEC-005-SENSOR-CACHING-ARCHITECTURE.md
+- New functions: `readBme280()`, `readTsl2591()`, `readSi1145()` (main.cpp, post-implementation)
+- Modified function: `readSensors()` includes three new conditional calls
+- Affected page renderers: `pageBme280()`, `pageTsl2591()`, `pageSi1145()` (changed from direct I2C to cache reads)
+
+**Confidence:**  
+HIGH (pending implementation)
+
+---
+
+### BR-SC-002: Sensor Data Initialization with NaN — **NEW**
+
+**Description:**  
+All three new cache structs (Bme280Values, Tsl2591Values, Si1145Values) are initialized with NaN (not-a-number) values at startup, not `0.0f`. This allows distinguishing "never read" from "real measurement = 0" or "measurement error".
+
+**Trigger:**  
+System boot; `setup()` initialization.
+
+**Conditions:**  
+- Sensor detected at boot (`available.X = true`)
+- `initializeSensorCaches()` function called in `setup()`
+
+**Behavior:**  
+```cpp
+void initializeSensorCaches() {
+  // BME280 cache
+  bme280Values.temperature = NAN;
+  bme280Values.humidity = NAN;
+  bme280Values.pressure = NAN;
+  bme280Values.altitude = NAN;
+  bme280Values.dewPoint = NAN;
+  
+  // TSL2591 cache
+  tsl2591Values.fullSpectrum = NAN;
+  tsl2591Values.infrared = NAN;
+  tsl2591Values.visible = NAN;
+  tsl2591Values.lux = NAN;
+  tsl2591Values.gain = 0;          // Enum value, not NaN
+  tsl2591Values.integrationTime = 0;  // Enum value, not NaN
+  
+  // SI1145 cache
+  si1145Values.visible = 0;  // ADC count, not NaN
+  si1145Values.infrared = 0; // ADC count, not NaN
+  si1145Values.uv = 0;       // Raw count, not NaN
+  si1145Values.uvIndex = NAN;
+}
+
+// In setup():
+initializeSensorCaches();
+```
+
+**Special Cases:**  
+- Non-float fields (uint16_t, uint32_t) initialized to 0 (cannot be NaN)
+- Only float fields use NaN initialization
+- Requires: `#include <math.h>` for `NAN` constant
+
+**UI Behavior:**  
+- Page rendering detects NaN values via `isnan(value)` check
+- Display shows "---" or "--" instead of numeric value
+- After first successful sensor read (500 ms), page shows real values
+
+**Failure Behavior:**  
+- If sensor detected but never reads successfully (I2C permanently failed), displays remain "--" indefinitely
+- User sees "uninitialized" indicator rather than "0" (which might be misinterpreted as valid measurement)
+
+**Evidence:**  
+- `initializeSensorCaches()` function called in `setup()` (post-implementation)
+- Cache struct definitions: Bme280Values, Tsl2591Values, Si1145Values (main.cpp)
+- Page renderers check: `if (isnan(bme280Values.temperature))` before displaying
+
+**Confidence:**  
+HIGH (pending implementation)
+
+---
+
+### BR-SC-003: Sensor I2C Error Detection via Plausibility Checks — **NEW**
+
+**Description:**  
+Each sensor read function includes plausibility checks (range validation) to detect I2C errors. If sensor values fall outside physically valid ranges, the read is considered failed and cache not updated.
+
+**Trigger:**  
+`readBme280()`, `readTsl2591()`, `readSi1145()` functions during 500 ms sensor polling cycle.
+
+**Conditions:**  
+- Sensor detected at boot
+- I2C read completed (bytes received)
+- Returned values within/outside valid ranges
+
+**Behavior (BME280 Example with Dew Point Calculation):**  
+```cpp
+void readBme280(Bme280Values &values) {
+  if (!available.bme280) return;
+  
+  uint32_t startTime = micros();
+  
+  // Read sensor values
+  float temp = bme280.readTemperature();
+  float rh = bme280.readHumidity();
+  float press = bme280.readPressure() / 100.0f;  // Pa -> hPa
+  float alt = bme280.readAltitude(1013.25);
+  
+  // Plausibility checks (valid ranges)
+  if (temp < -40 || temp > 85 || 
+      rh < 0 || rh > 100 || 
+      press < 300 || press > 1100) {
+    Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
+                  temp, rh, press);
+    return;  // Cache NOT updated; stale values persist
+  }
+  
+  // All checks passed: compute dew point using Alduchov & Eskridge formula
+  // Accuracy: ±0.35°C, valid range: 0-50°C, 1-100% RH
+  const float a = 17.62;
+  const float b = 243.12;
+  float alpha = ((a * temp) / (b + temp)) + log(rh / 100.0f);
+  float dewPoint = (b * alpha) / (a - alpha);
+  
+  // Update cache
+  values.temperature = temp;
+  values.humidity = rh;
+  values.pressure = press;
+  values.altitude = alt;
+  values.dewPoint = dewPoint;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("BME280 read time: %lu µs\n", duration);
+}
+```
+
+**Dew Point Formula Details (Alduchov & Eskridge, more accurate than simplified formula):**
+- Simplified formula: `Td ≈ T - (100% - RH%) / 5` (±3°C accuracy)
+- Alduchov & Eskridge: Uses logarithmic approximation with coefficients a=17.62, b=243.12 (±0.35°C accuracy)
+- Valid range: Temperature 0–50°C, Relative Humidity 1–100%
+- Requires: `#include <math.h>` for `log()` function
+
+**Valid Ranges:**
+- **BME280:** T[-40, 85]°C, RH[0, 100]%, P[300, 1100]hPa
+- **TSL2591:** fullSpectrum ≠ 0 OR infrared ≠ 0 (reject all-zero as I2C error)
+- **SI1145:** visible ≠ 0 OR infrared ≠ 0 OR uv ≠ 0 (reject all-zero as I2C error)
+
+**Error Logging:**  
+All plausibility check failures logged to Serial with sensor name and specific failure details:
+```
+ERROR: BME280 read returned invalid values: T=95.0, RH=120.0, P=1200.0
+ERROR: TSL2591 read returned zero values
+ERROR: SI1145 read returned all zeros
+```
+
+**Failure Behavior:**  
+- Cache struct not updated; last known values persist
+- Error message printed to Serial (visible in PlatformIO Serial Monitor)
+- No retry or recovery; next read attempt occurs 500 ms later
+- User sees stale values on page (no indication of staleness without Serial log)
+
+**Evidence:**  
+- `readBme280()` plausibility checks (post-implementation, lines TBD)
+- `readTsl2591()` zero-check (post-implementation, lines TBD)
+- `readSi1145()` all-zero check (post-implementation, lines TBD)
+- Serial output examples in FEATURE-SPEC-005
+
+**Confidence:**  
+HIGH (pending implementation)
+
+---
+
+### BR-SC-004: Sensor Read Timing Measurement & Serial Output — **NEW**
+
+**Description:**  
+Each sensor read function measures I/O time using `micros()` timer and logs performance to Serial in microseconds. This allows monitoring I2C performance and detecting slow reads caused by bus congestion or sensor issues.
+
+**Trigger:**  
+Every successful sensor read in `readBme280()`, `readTsl2591()`, `readSi1145()` functions (every 500 ms, assuming success).
+
+**Conditions:**  
+- Sensor read completed successfully (plausibility checks passed)
+- Timing recorded via `micros()` at start and end of read operation
+
+**Behavior:**  
+```cpp
+void readBme280(Bme280Values &values) {
+  if (!available.bme280) return;
+  
+  uint32_t startTime = micros();
+  // Read sensor and validate
+  // ...
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("BME280 read time: %lu µs\n", duration);
+}
+```
+
+**Expected Timings (Approximate):**
+- **BME280:** 5–50 ms (multiple registers, conversion wait)
+- **TSL2591:** 5–20 ms (2–3 I2C reads + lux calculation)
+- **SI1145:** 5–15 ms (3 I2C reads, no heavy computation)
+
+**Serial Output Format:**
+```
+BME280 read time: 12345 µs
+TSL2591 read time: 8234 µs
+SI1145 read time: 6789 µs
+```
+
+**Use Case:**  
+- Debugging I2C bus performance
+- Detecting slow sensor responses (due to electromagnetic interference, cable issues, etc.)
+- Validating that 500 ms sensor refresh cycle has sufficient headroom (< 400 ms read time)
+
+**Failure Behavior:**  
+- If read fails (plausibility check fails), timing not logged (function returns early)
+- Successful reads always log timing
+
+**Evidence:**  
+- Gamepad read timing: `readGamepadAt40Hz()` lines 619–629 (existing pattern)
+- Encoder read timing: `readEncoderAt50Hz()` lines 581–609 (existing pattern)
+- INA219 read timing: `readIna219At50Hz()` lines 636–665 (existing pattern)
+- New functions follow same pattern: `readBme280()`, `readTsl2591()`, `readSi1145()`
+
+**Confidence:**  
+HIGH (pending implementation; follows proven pattern)
+
+---
+
 ## Display & Rendering Rules
 
 ### BR-015: Page Redraw Only on Page Change (Header Skip)

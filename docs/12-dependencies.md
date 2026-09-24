@@ -109,7 +109,8 @@ All libraries are **pinned to compatible versions** in `platformio.ini`. Version
 | **Repository** | [adafruit/Adafruit_TSL2591_Library](https://github.com/adafruit/Adafruit_TSL2591_Library) |
 | **Purpose** | I2C light sensor driver (lux, IR spectrum) |
 | **Hardware** | TSL2591 @ 0x29 |
-| **Key Functions** | `begin()`, `setGain()`, `setTiming()`, `getFullSpectrum()`, `getInfrared()` |
+| **Key Functions** | `begin()`, `setGain()`, `setTiming()`, `getFullLuminosity()`, `calculateLux()`, `getTiming()` |
+| **Usage (FEATURE-SPEC-005)** | `readTsl2591()` calls `getFullLuminosity()` (returns uint32_t: upper 16b=IR, lower 16b=fullSpectrum), extracts channels via bitwise operations, computes visible = fullSpectrum - IR, lux via `calculateLux()`, retrieves timing via `getTiming()` |
 | **Configuration** | GAIN_MED, INTEGRATIONTIME_200MS (set at boot) |
 | **Flash Size** | ~8 KB |
 | **Heap Size** | ~200 bytes |
@@ -599,12 +600,29 @@ float power = ina219.getPower_mW();
 
 ### BME280 (Temperature/Humidity/Pressure)
 
+**Note:** In sensor-pages-dashboard, BME280 reads are centralized via caching architecture (FEATURE-SPEC-005). Direct API calls occur in `readBme280()` function only, not scattered throughout page functions. This improves responsiveness and reduces I2C bus load.
+
 ```cpp
-Adafruit_BME280 bme280;
-bme280.begin(0x77, &Wire);
-float temp = bme280.readTemperature();
-float humidity = bme280.readHumidity();
-float pressure = bme280.readPressure();
+// Centralized read function (called every 500ms in readSensors())
+void readBme280(Bme280Values &values) {
+  if (!available.bme280) return;
+  
+  float temp = bme280.readTemperature();
+  float humidity = bme280.readHumidity();
+  float pressure = bme280.readPressure() / 100.0f;  // Pa -> hPa
+  float altitude = bme280.readAltitude(1013.25);
+  
+  // Plausibility checks...
+  // Compute dew point via Alduchov & Eskridge formula...
+  // Update cache struct...
+}
+
+// Page function reads from cache (no I2C calls)
+void pageBme280() {
+  // Display cached values from bme280Values struct
+  row(56, "Temperature:", String(bme280Values.temperature, 2) + " C", TFT_GREEN);
+  // ...
+}
 ```
 
 ### DS18B20 (Temperature via DS2484 1-Wire Bridge)
