@@ -804,7 +804,6 @@ void readIna219At50Hz()
   ina219Values.power = ina219.getPower_mW();
   uint32_t readEndUs = micros();
   uint32_t readDuration = readEndUs - readStartUs;
-  Serial.printf("INA219 read time: %lu µs\n", readDuration);
   ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
 }
 
