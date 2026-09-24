@@ -1,9 +1,10 @@
 # Architecture: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-21  
+**Last Updated:** 2026-09-25  
 **Firmware Version:** [UNKNOWN - no version constant in source]  
 **Build Target:** ESP32 Dev Module  
-**Display:** Freenove 3.5" 320×480 TFT (ST7796 controller, IPS panel)
+**Display:** Freenove 3.5" 320×480 TFT (ST7796 controller, IPS panel)  
+**Recent Changes:** Added FEATURE-SPEC-008 Central Parameter Definitions (Section 3.4); renumbered sections 3.4+ to 3.5+
 
 ---
 
@@ -254,7 +255,165 @@ struct GamepadValues {
 
 ---
 
-### 3.4 Display & UI Rendering Components
+### 3.4 Central Parameter Definitions (FEATURE-SPEC-008)
+
+**Overview:** Each sensor page displays a fixed set of parameters (values) to the user. To ensure consistency between the standard sensor page view and the large display mode, each sensor defines its parameters once in a central location. This eliminates redundancy and makes inconsistencies impossible by design.
+
+#### **Data Structure: ParameterTriple**
+
+```cpp
+struct ParameterTriple {
+  const char* label;   // Parameter name ("Temperature", "Pressure", etc.)
+  const char* unit;    // Unit string ("C", "hPa", "%", etc.)
+  uint16_t color;      // TFT color for value display (TFT_GREEN, TFT_ORANGE, etc.)
+};
+```
+
+**Purpose:** Groups related metadata (label, unit, color) for each sensor parameter to avoid duplicate declarations across page renderers and large display helpers.
+
+#### **Central Parameter Arrays (All Sensors)**
+
+Each sensor defines a `const` array of ParameterTriple structs and a count constant:
+
+| Sensor | Page | Param Count | Array Name | Count Constant |
+|--------|------|-------------|------------|-----------------|
+| BME280 | 0 | 7 | `bme280_params[]` | `BME280_PARAM_COUNT` |
+| Gamepad | 1 | 8 | `gamepad_params[]` | `GAMEPAD_PARAM_COUNT` |
+| INA219 | 2 | 7 | `ina219_params[]` | `INA219_PARAM_COUNT` |
+| Encoder | 3 | 7 | `encoder_params[]` | `ENCODER_PARAM_COUNT` |
+| SCD30 | 4 | 3 | `scd30_params[]` | `SCD30_PARAM_COUNT` |
+| SI1145 | 5 | 4 | `si1145_params[]` | `SI1145_PARAM_COUNT` |
+| TSL2591 | 6 | 4 | `tsl2591_params[]` | `TSL2591_PARAM_COUNT` |
+| VEML6070 | 7 | 3 | `veml6070_params[]` | `VEML6070_PARAM_COUNT` |
+| VEML6075 | 8 | 6 | `veml6075_params[]` | `VEML6075_PARAM_COUNT` |
+
+**Example (BME280):**
+```cpp
+const ParameterTriple bme280_params[] = {
+  {"Temperature", "C", TFT_GREEN},
+  {"Pressure", "hPa", TFT_GREEN},
+  {"Humidity", "%", TFT_ORANGE},
+  {"Dew Point", "C", TFT_CYAN},
+  {"Altitude", "m", TFT_CYAN},
+  {"Air Quality", "AQI", TFT_ORANGE},
+  {"Temp Trend", "C/min", TFT_CYAN}
+};
+const uint8_t BME280_PARAM_COUNT = 7;
+```
+
+**Key Properties:**
+- Arrays are `const` (compile-time fixed, cannot be modified at runtime).
+- Parameter indices (0 to PARAM_COUNT-1) correspond to value getter function indices.
+- Color coding ensures consistent visual hierarchy across all display modes.
+- Order is significant: both page and large display modes follow identical order.
+
+#### **Component: Central Value Getters**
+
+Each sensor implements a `String sensor_getValue(uint8_t index)` function that returns the formatted value string for a given parameter index.
+
+| Sensor | Function | Signature |
+|--------|----------|-----------|
+| BME280 | `bme280_getValue()` | `String bme280_getValue(uint8_t index)` |
+| Gamepad | `gamepad_getValue()` | `String gamepad_getValue(uint8_t index)` |
+| INA219 | `ina219_getValue()` | `String ina219_getValue(uint8_t index)` |
+| Encoder | `encoder_getValue()` | `String encoder_getValue(uint8_t index)` |
+| SCD30 | `scd30_getValue()` | `String scd30_getValue(uint8_t index)` |
+| SI1145 | `si1145_getValue()` | `String si1145_getValue(uint8_t index)` |
+| TSL2591 | `tsl2591_getValue()` | `String tsl2591_getValue(uint8_t index)` |
+| VEML6070 | `veml6070_getValue()` | `String veml6070_getValue(uint8_t index)` |
+| VEML6075 | `veml6075_getValue()` | `String veml6075_getValue(uint8_t index)` |
+
+**Example (BME280):**
+```cpp
+String bme280_getValue(uint8_t index) {
+  if (index >= BME280_PARAM_COUNT || !available.bme280) return "";
+  switch (index) {
+    case 0: return String(bme280Values.temperature, 2);
+    case 1: return String(bme280Values.pressure, 2);
+    case 2: return String(bme280Values.humidity, 2);
+    // ... 4 more cases ...
+    default: return "";
+  }
+}
+```
+
+**Key Behaviors:**
+- Returns formatted value string (e.g., "23.45", "1013.25", "45%").
+- Built-in availability check: returns empty string if sensor unavailable.
+- Used by BOTH standard sensor page rendering AND large display mode.
+- All formatting (decimal places, unit conversion) centralized here.
+
+#### **Component: Generic Sensor Page Renderer**
+
+```cpp
+void displaySensorPage(
+  const ParameterTriple* params,
+  uint8_t paramCount,
+  String (*getValueFunc)(uint8_t)
+)
+```
+
+**Responsibility:** Render all parameters of a sensor using central definitions and value getter. Replaces ~15-30 lines of hardcoded `rowTriple()` calls per sensor.
+
+**Inputs:**
+- `params`: Pointer to central parameter array (e.g., `bme280_params`)
+- `paramCount`: Number of parameters (e.g., `BME280_PARAM_COUNT`)
+- `getValueFunc`: Function pointer to value getter (e.g., `bme280_getValue`)
+
+**Outputs:** TFT display rows, rendering all parameters in order.
+
+**Implementation:**
+```cpp
+void displaySensorPage(const ParameterTriple* params, uint8_t paramCount, String (*getValueFunc)(uint8_t)) {
+  int displayY = 56;
+  const int lineHeight = 24;
+  
+  for (uint8_t i = 0; i < paramCount && displayY < 280; i++) {
+    String value = getValueFunc(i);
+    String label = String(params[i].label) + ":";
+    rowTriple(displayY, label.c_str(), value, params[i].unit, params[i].color);
+    displayY += lineHeight;
+  }
+  tft.setTextPadding(0);
+}
+```
+
+**Key Behavior:**
+- Single loop iterates through all parameters.
+- Calls value getter for current value.
+- Uses central parameter definition for label, unit, color.
+- Displays each row with consistent formatting via `rowTriple()` helper.
+
+#### **Component: Helper getPageValueCount()**
+
+```cpp
+uint8_t getPageValueCount(uint8_t pageIndex)
+```
+
+**Responsibility:** Return the number of displayable values for a given page. Used for cycling through values in large display mode.
+
+**Returns:** Parameter count for the page (3–9 values depending on sensor).
+
+**Example:**
+```cpp
+uint8_t getPageValueCount(uint8_t pageIndex) {
+  switch (pageIndex) {
+    case 0: return BME280_PARAM_COUNT;      // 7
+    case 1: return GAMEPAD_PARAM_COUNT;     // 8
+    case 2: return INA219_PARAM_COUNT;      // 7
+    // ... etc for pages 3–8 ...
+    case 9: {  // DS2484: Dynamic
+      if (!available.ds2484 || ds2484Values.sensorCount == 0) return 0;
+      return 3 * ds2484Values.sensorCount;  // 3 per sensor, max 9
+    }
+    default: return 0;
+  }
+}
+```
+
+---
+
+### 3.5 Display & UI Rendering Components
 
 #### **Component: drawCurrentPage(bool pageChanged) [Page Dispatcher]**
 

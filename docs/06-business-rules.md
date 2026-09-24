@@ -1,6 +1,6 @@
 # Business Rules: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-23  
+**Last Updated:** 2026-09-25  
 **Firmware Type:** Embedded bare-metal (includes 1-Wire temperature sensors)  
 **Business Domain:** Sensor data acquisition, display, input handling, 1-Wire discovery
 
@@ -2652,6 +2652,333 @@ visible = data0 - data1  // Calculate visible by subtraction
 - FEATURE-SPEC-006.md: Async measurement pattern (start in slot 1, read in slot 6+)
 
 **Confidence:** HIGH
+
+---
+
+## Universal Large Display Mode Rules (All Pages) — **NEW (FEATURE-SPEC-007)**
+
+### BR-SP-001: Large Display Mode Entry (All Pages)
+
+**Rule:**  
+Button B press on any sensor page (0–9) activates large display mode, starting at value index 0 for that page.
+
+**Trigger:**  
+Button B press (falling-edge detection) while on sensor page in standard view mode.
+
+**Conditions:**  
+- Current page is a sensor page (0–9)
+- Not already in large display mode
+- No page navigation in progress
+
+**Behavior:**  
+1. Set `largeDisplayMode.active = true`
+2. Set `largeDisplayMode.currentPage = currentPage`
+3. Set `largeDisplayMode.valueIndex = 0` (always start at first value)
+4. Display immediately refreshes to show large display mode
+5. Page navigation buttons (Y/A) disabled until mode exit
+
+**Failure Behavior:**  
+If sensor unavailable (error screen displayed):
+- Button B press ignored; page remains in error view
+- Mode not entered
+
+**Evidence:**  
+- Button handler: Mode-aware logic for Button B
+- FEATURE-SPEC-007: Entry specifications for all 10 pages
+- Global state: `largeDisplayMode` struct tracks active page and value index
+
+---
+
+### BR-SP-002: Large Display Mode Forward Value Cycling (Button B)
+
+**Rule:**  
+Button B press in large display mode advances value index to next value (with wrap-around from last → 0).
+
+**Trigger:**  
+Button B press while `largeDisplayMode.active = true`.
+
+**Conditions:**  
+- Large display mode currently active
+- Multiple values available on current page (valueCount ≥ 2)
+
+**Behavior:**  
+1. Increment `largeDisplayMode.valueIndex` by 1
+2. Wrap at boundary: `valueIndex = (valueIndex + 1) % valueCount`
+3. Immediately retrieve new value from sensor-specific helper (no I2C call; cached data only)
+4. Queue display update (subject to 200 ms rate limit)
+5. Button response feels immediate; display update may lag up to 200 ms if just refreshed
+
+**Value Count per Page:**  
+- Page 0 (BME280): 7 values
+- Page 1 (Gamepad): 4 values
+- Page 2 (INA219): 7 values
+- Page 3 (Encoder): 5 values
+- Page 4 (SCD30): 3 values
+- Page 5 (SI1145): 4 values
+- Page 6 (TSL2591): 4 values
+- Page 7 (VEML6070): 3 values
+- Page 8 (VEML6075): 6 values
+- Page 9 (DS2484): 3–9 values (3 per discovered 1-Wire sensor, max 3 sensors)
+
+**Evidence:**  
+- Button handler: Context-sensitive B button logic
+- Per-page value definitions: Documented in docs/07-ui.md
+
+---
+
+### BR-SP-003: Large Display Mode Reverse Value Cycling (Button X)
+
+**Rule:**  
+Button X press in large display mode decrements value index to previous value (with wrap-around from 0 → last).
+
+**Trigger:**  
+Button X press while `largeDisplayMode.active = true`.
+
+**Conditions:**  
+- Large display mode currently active
+- Multiple values available on current page (valueCount ≥ 2)
+
+**Behavior:**  
+1. Decrement `largeDisplayMode.valueIndex` by 1 (with modulo wrap)
+2. Safe calculation: `valueIndex = (valueIndex - 1 + valueCount) % valueCount`
+3. Immediately retrieve new value from sensor-specific helper (no I2C call; cached data only)
+4. Queue display update (subject to 200 ms rate limit)
+5. Button response feels immediate; display update may lag up to 200 ms if just refreshed
+
+**Evidence:**  
+- Button handler: Context-sensitive X button logic
+- Modulo arithmetic: Safe wrap-around using addition before subtraction
+
+---
+
+### BR-SP-004: Large Display Mode Exit (Button Y)
+
+**Rule:**  
+Button Y press in large display mode exits mode and returns to standard page view.
+
+**Trigger:**  
+Button Y press while `largeDisplayMode.active = true`.
+
+**Conditions:**  
+- Large display mode currently active
+
+**Behavior:**  
+1. Set `largeDisplayMode.active = false`
+2. Set `largeDisplayMode.valueIndex = 0` (reset for next entry)
+3. Page remains on same sensor page (no navigation)
+4. Display immediately refreshes to show standard page view
+5. Page navigation buttons (Y/A) re-enabled
+
+**Trade-off:**  
+- Y button repurposed in large display mode (exit) vs. standard mode (previous page navigation)
+- Users cannot navigate pages while in large display mode; must exit first
+
+**Evidence:**  
+- Button handler: Mode-aware Y button logic (context-sensitive)
+- Page navigation disabled: Documented as constraint in FEATURE-SPEC-007
+
+---
+
+### BR-SP-005: Button A Inactive in Large Display Mode
+
+**Rule:**  
+Button A has no function in large display mode (remains inactive).
+
+**Trigger:**  
+Button A press while `largeDisplayMode.active = true`.
+
+**Behavior:**  
+Button A press is ignored; no action taken.
+
+**Rationale:**  
+- Button A reserved for future use or consistency with other input devices
+- Large display mode navigation: B (next) + X (prev) + Y (exit) only
+- No need for "next page" in large display mode
+
+**Evidence:**  
+- Button handler: No branch for Button A in large display mode
+- FEATURE-SPEC-007: Input specification for all pages
+
+---
+
+### BR-SP-006: Auto-Exit on Page Navigation (Y/A in Standard Mode)
+
+**Rule:**  
+If user navigates to a different page (Y or A press in standard mode) while another page is in large display mode, that mode automatically exits.
+
+**Trigger:**  
+Button Y or A press in standard page view.
+
+**Conditions:**  
+- Large display mode is active (on any page)
+- User navigates to different page
+
+**Behavior:**  
+1. Current page Y/A button advances to next/previous page
+2. `largeDisplayMode.active = false` (auto-exit)
+3. `largeDisplayMode.valueIndex = 0` (reset)
+4. New page renders in standard view (not large display)
+5. User can then press B on new page to enter large display
+
+**Edge Case:**  
+If user presses B to enter large display on page 0, then presses Y (prev page), mode exits and user navigates to page 9 in standard view.
+
+**Evidence:**  
+- Page navigation logic: Checks `largeDisplayMode.active` before navigating
+- State reset: Ensures clean transition between pages
+
+---
+
+### BR-SP-007: Display Rate Limiting in Large Display Mode
+
+**Rule:**  
+Large display mode respects the same 200 ms display rate limit (5 Hz maximum) as standard page rendering.
+
+**Trigger:**  
+Display update requested after value index change or page change.
+
+**Behavior:**  
+1. User presses B/X to change value index → valueIndex updated immediately (no rate limit)
+2. Page renderer calls `renderLargeDisplay(pageIndex, valueIndex)` → calls sensor-specific helper to get label/value/unit/color
+3. Display update queued but subject to rate limit gate: `(int32_t)(now - nextLargeDisplayRefreshMs) >= 0`
+4. If rate limit not met: Display not redrawn yet; but helper data remains ready for next refresh cycle
+5. Display eventually updates within 200 ms
+
+**Trade-off:**  
+- Button presses feel responsive (immediate valueIndex change)
+- Visual display update may lag up to 200 ms (acceptable for user experience)
+- Rate limit prevents excessive SPI traffic and CPU load
+
+**Configuration:**  
+```cpp
+static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limit timer (shared with standard pages)
+```
+
+**Evidence:**  
+- Display loop logic: Rate limit gate enforced before `tft.begin()` SPI operations
+- FR-015: Display rate limiting applies to both standard and large display modes
+
+---
+
+### BR-SP-008: Unified Renderer for All Pages
+
+**Rule:**  
+Large display rendering uses single `renderLargeDisplay()` function for all pages (0–9), with page-specific helper function providing label/value/unit/color data.
+
+**Trigger:**  
+Page render cycle when `largeDisplayMode.active = true`.
+
+**Behavior:**  
+1. `renderCurrentPage()` detects large display mode and calls `renderLargeDisplay(currentPage, largeDisplayMode.valueIndex)`
+2. `renderLargeDisplay()` performs layout operations:
+   - Clear display
+   - Draw title (sensor name), Font 4, Cyan, centered
+   - Draw label (value name), Font 4, Cyan, centered
+   - Draw value (numeric/text), Font 8, color-coded, centered
+   - Draw unit, Font 2, White, centered
+   - Draw footer (\"B:next X:prev Y:exit\"), Font 1, Dark Grey, centered
+3. For data retrieval, `renderLargeDisplay()` calls sensor-specific helper:
+   ```cpp
+   String value = sensorType_getLargeDisplayData(valueIndex, &label, &unit, &color);
+   ```
+4. Helper retrieves data from global cache struct (BME280Values, INA219Values, etc.) — no I2C calls
+5. Helper returns all four pieces of information for `renderLargeDisplay()` to use
+
+**Per-Page Helper Functions:**  
+Each sensor page defines one combined helper function (not four separate):
+- `bme280_getLargeDisplayData(index, &label, &unit, &color)` → returns value string
+- `gamepad_getLargeDisplayData(index, &label, &unit, &color)` → returns value string
+- `ina219_getLargeDisplayData(index, &label, &unit, &color)` → returns value string (already exists)
+- ... (similar for pages 3–9)
+
+**Code Organization:**  
+- Unified renderer: Single function `renderLargeDisplay()` in main.cpp display section
+- Per-page helpers: Defined immediately after standard page renderer (e.g., after `pageBme280()`)
+
+**Benefit:**  
+- No code duplication in layout rendering
+- Easy to add new pages: define one helper + register in `renderLargeDisplay()` switch statement
+- Memory efficient: Single renderer + compact helper functions
+
+**Evidence:**  
+- FEATURE-SPEC-007 clarification: \"Unified rendering system\"
+- Implementation approach: Encapsulation of display layout logic in single function
+
+---
+
+### BR-SP-009: Large Display Mode and Sensor Unavailable
+
+**Rule:**  
+If sensor is unavailable (error screen displayed), Button B press is ignored; large display mode cannot be entered.
+
+**Trigger:**  
+Button B press on page with unavailable sensor (error screen showing \"Sensor nicht vorhanden\").
+
+**Behavior:**  
+1. Button B press detected
+2. Check `available.sensor` flag → false (sensor unavailable)
+3. Button press ignored; no mode transition
+4. Page remains in error view
+5. User cannot cycle error message with B/X buttons
+
+**Rationale:**  
+- Error screen is priority; user must address sensor issue first
+- Large display mode meaningless without data to display
+
+**Evidence:**  
+- Button handler: Guard check on `available.sensor` before enabling large display
+- Page rendering: Error screen shown before standard/large display logic executes
+
+---
+
+### BR-SP-010: DS2484 Large Display Mode (Max 3 Sensors)
+
+**Rule:**  
+DS2484 1-Wire adapter (Page 9) supports large display mode with up to 3 discovered temperature sensors, showing 3–9 values (3 per sensor: ROM-ID, Temperature, Status).
+
+**Details:**  
+- **Sensor discovery:** At boot, DS2484 performs 1-Wire bus scan to find DS18B20/DS1822/DS1820 sensors
+- **Max sensors:** 3 sensors (hardware limit of this adapter/1-Wire configuration)
+- **Values per sensor:**
+  1. ROM-ID: 8-byte hexadecimal address (e.g., \"28:AB:CD:12:34:56:78:9F\")
+  2. Temperature: Current reading (e.g., \"22.50°C\") or \"Disconnected\" if not responding
+  3. Status: Connection status (\"OK\", \"CRC Error\", \"Not Responding\")
+- **Total value count:** 3 × (discovered sensor count) = 3, 6, or 9 values
+- **Initial index:** 0 (always ROM-ID of first discovered sensor)
+- **Cycling behavior:** B/X buttons cycle through all 3–9 values in order
+
+**Sensor Discovery Example:**  
+```
+Boot → DS2484 scan → Found 2 DS18B20 sensors
+  Sensor 0: 28:AB:CD:12:34:56:78:9F (temp: 22.50°C, status: OK)
+  Sensor 1: 28:11:22:33:44:55:66:77 (temp: 19.30°C, status: OK)
+Values available: 6 (3 × 2 sensors)
+```
+
+**Helper Function:**  
+```cpp
+String ds2484_getLargeDisplayData(uint8_t valueIndex, 
+                                  const char** outLabel,
+                                  const char** outUnit,
+                                  uint16_t* outColor)
+{
+  uint8_t sensorNum = valueIndex / 3;    // Which sensor (0, 1, 2)
+  uint8_t fieldNum = valueIndex % 3;     // Which field (0=ROM-ID, 1=Temp, 2=Status)
+  
+  // Retrieve from ds2484 cache struct
+  // Return appropriate label/unit/color based on fieldNum
+}
+```
+
+**Behavior on Discovery Failure:**  
+- If no 1-Wire sensors found: Page displays error (\"Keine Sensoren gefunden\")
+- Large display mode cannot be entered
+- Button B press ignored
+
+**Evidence:**  
+- FEATURE-SPEC-007 clarification: \"Limit DS2484 to max 3 sensors\"
+- DS2484 address: 0x18 (hardcoded)
+- 1-Wire discovery: `performDs2484Scan()` and `readDs2484Temperatures()` functions
 
 ---
 

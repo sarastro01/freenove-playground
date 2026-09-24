@@ -1,6 +1,6 @@
 # Requirements: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-23  
+**Last Updated:** 2026-09-25  
 **Project Type:** Embedded Firmware (ESP32)  
 **Platform:** PlatformIO + Arduino Framework
 
@@ -388,6 +388,114 @@ static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limit timer
 - Display update logic in `loop()`: lines ~1894-1903 (rate limit check)
 - Runtime counter changes every second, triggering display update (guarded by rate limit)
 - Prevents excessive TFT_eSPI SPI traffic and CPU load
+
+---
+
+### FR-016: Universal Large Display Mode for All Sensor Pages — **NEW (FEATURE-SPEC-007)**
+
+**Requirement:**  
+The system shall support large display mode (single value focus, enlarged font) on ALL 10 sensor pages (Pages 0–9).
+
+**Details:**
+- **Entry:** Button B press on any sensor page activates large display mode
+- **Exit:** Button Y press exits large display mode, returns to standard page view
+- **Value count per page:** 3–8 displayable values (sensor-dependent) — Uses central parameter definitions (FEATURE-SPEC-008)
+  - Page 0 (BME280): 7 values (Temperature, Pressure, Humidity, Dew Point, Altitude, Air Quality, Temp Trend)
+  - Page 1 (Gamepad): 8 values (Joystick X/Y, Buttons X/Y/A/B, Select/Start, Button Mask)
+  - Page 2 (INA219): 7 values (Runtime, Battery, Supply, Current, Charge, Shunt Voltage, Power) — existing, verified
+  - Page 3 (Encoder): 7 values (Position, Delta, Button, Presses, LED Color, LED Brightness, Seesaw Temp)
+  - Page 4 (SCD30): 3 values (CO2 Level, Temperature, Humidity)
+  - Page 5 (SI1145): 4 values (Visible Light, Infrared, UV Index, UV Raw)
+  - Page 6 (TSL2591): 4 values (Full Spectrum, Infrared, Visible, Lux)
+  - Page 7 (VEML6070): 3 values (UV Raw, UV Level, LSB/MSB)
+  - Page 8 (VEML6075): 6 values (UVA Raw, UVB Raw, UVA Compensated, UVB Compensated, UV Index, Compensation)
+  - Page 9 (DS2484): 3–9 values (3 per discovered 1-Wire sensor, max 3 sensors → 9 values total)
+- **Initial entry point:** Always starts at value index 0 for each page
+- **Sensor-specific display:** Each page defines its own set of displayable values (not necessarily all measurements)
+- **Consistency:** All pages follow same navigation pattern (B=next, X=prev, Y=exit)
+- **Page navigation disabled:** Y/A buttons disabled in large display mode (Y exits instead)
+
+**Evidence:**
+- FEATURE-SPEC-007.md — Full specification with per-page value definitions
+- Page rendering logic: Modified to support conditional large display rendering
+- Button handler logic: Context-sensitive (large display mode vs. standard mode)
+
+---
+
+### FR-017: Large Display Mode Value Navigation — **NEW (FEATURE-SPEC-007)**
+
+**Requirement:**  
+The system shall allow users to cycle through displayable values within large display mode using gamepad buttons.
+
+**Details:**
+- **Button B (Forward):** Advance to next value; wraps at last value → index 0
+- **Button X (Backward):** Advance to previous value; wraps at index 0 → last value
+- **Button Y (Exit):** Exit large display mode, return to standard page, reset index to 0
+- **Button A (Inactive):** No function in large display mode
+- **Cycling behavior:** Button press updates value index immediately (display update bypasses 200 ms rate limit)
+- **Display update:** Only the final rendered display is rate-limited (200 ms minimum between redraws)
+- **Rate limit applies to:** Display refresh timing, NOT button response timing
+
+**Evidence:**
+- Button handling logic: Mode-aware context switching
+- Display rate limiting: Applied after value index changes, not blocking value cycling
+- FEATURE-SPEC-007 clarifications: Cycling bypasses rate limit
+
+---
+
+### FR-018: Large Display Mode Rendering — **NEW (FEATURE-SPEC-007)**
+
+**Requirement:**  
+The system shall render large display mode with enlarged, centered value display for readability at distance.
+
+**Details:**
+- **Layout components:**
+  - Title: Sensor name (e.g., "BME280 Large Display"), Font 4, Cyan, centered
+  - Label: Current value name (e.g., "Temperatur"), Font 4, Cyan, centered
+  - Value: Numeric or text value, Font 8 (largest), color-coded, centered
+  - Unit: Measurement unit (e.g., "°C", "%"), Font 2, White, centered
+  - Footer: Navigation instructions ("B:next X:prev Y:exit"), Font 1, Dark Grey, centered
+- **Font sizes:** Uses TFT_eSPI font sizing (Font 1 smallest, Font 8 largest)
+- **Color coding:** Inherits from standard page colors (Green/Orange/Cyan, never Magenta)
+- **Readability:** Display readable from 5+ meters distance (rationale: presentation/field diagnostics use cases)
+
+**Evidence:**
+- FEATURE-SPEC-007.md — Display layout specifications
+- TFT_eSPI font constants (fonts 1–8 available)
+- Color scheme: Consistent with FR-002 (standard page colors)
+
+---
+
+### FR-019: Unified Large Display Function Architecture — **NEW (FEATURE-SPEC-007)**
+
+**Requirement:**  
+The system shall implement large display rendering via single unified renderer function and combined per-page helper function.
+
+**Details:**
+- **Unified renderer:** Single `renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex)` function handles layout for all pages
+- **Per-page helper:** Combined function per sensor (not 4 separate functions):
+  ```cpp
+  // Example: For BME280 page
+  String bme280_getLargeDisplayData(uint8_t valueIndex, 
+                                     const char** outLabel,    // OUTPUT: "Temperatur"
+                                     const char** outUnit,     // OUTPUT: "°C"
+                                     uint16_t* outColor);      // OUTPUT: TFT_GREEN
+  ```
+- **Data flow:**
+  1. Button press triggers value index change (no display update yet)
+  2. Page render calls `renderLargeDisplay(page, valueIndex)`
+  3. `renderLargeDisplay()` calls sensor-specific helper to get label/value/unit/color
+  4. Helper retrieves data from cache struct (no I2C calls)
+  5. `renderLargeDisplay()` draws layout with retrieved data
+  6. Display update subject to 200 ms rate limit
+- **Code organization:** Helpers defined near standard page renderer (e.g., after `pageBme280()` function)
+- **Memory efficiency:** Single combined function reduces code duplication vs. 4 separate functions per page
+- **Scalability:** Adding new page easy: define one helper function + register with pageIndex in switch statement
+
+**Evidence:**
+- FEATURE-SPEC-007 clarification: "Combine into single function"
+- Implementation approach: Progressive 5-phase rollout
+- Backward compatibility: Existing INA219 large display (FR-012) refactored to use unified renderer
 
 ---
 

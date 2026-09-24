@@ -1,6 +1,6 @@
 # Testing Strategy & Coverage: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-23  
+**Last Updated:** 2026-09-25  
 **Current Status:** ⚠️ **NO AUTOMATED TESTS** (Manual testing only, includes DS2484 1-Wire tests)  
 **Test Framework:** None (PlatformIO Unity available but not used)
 
@@ -1926,6 +1926,318 @@ DS18B20 async START time: 50 µs
 | **Test Coverage** | 0% | Target 70% unit + 95% integration |
 | **Estimated Time to Full Testing** | — | 12 days (phased approach) |
 | **Minimum Viable Testing** | — | 2 days (TIER 1 unit tests) |
+
+---
+
+## Test Cases: Universal Large Display Mode (FEATURE-SPEC-007) — **NEW**
+
+### TC-LDM-001: Large Display Mode Entry (Button B on All Pages)
+
+**Setup:** Device with at least BME280 sensor (Page 0) working. Device boots to Page 0 in standard view.
+
+**Action:**
+1. Observe Page 0 displaying standard sensor data (7 rows of labels + values)
+2. Press Button B once
+3. Observe display
+
+**Expected Result:**
+- Display immediately switches to large display mode
+- Page title "BME280 Large Display" displayed at top (Font 4, Cyan)
+- Value label "Temperatur" displayed (Font 4, Cyan)
+- Large temperature value displayed centered (Font 8, Green, e.g., "24.50")
+- Unit "°C" displayed below (Font 2, White)
+- Footer "B:next  X:prev  Y:exit" displayed at bottom (Font 1, Dark Grey)
+- Display readable from 5+ meters away
+
+**Verification:**
+- Visual inspection; font size and colors match specification
+- Large display layout correct
+- No crashes or display artifacts
+
+**Repeat for All 10 Pages:**
+- Pages 0–9 should support entry via Button B
+- Each page shows correct title, initial value, unit, color
+- Verify at least one other page (e.g., Page 2 INA219, Page 4 SCD30)
+
+**Error Condition:**
+If sensor unavailable (error screen shown):
+- Button B press is ignored
+- Page remains in error view
+- Large display mode not entered
+
+---
+
+### TC-LDM-002: Large Display Mode Value Cycling Forward (Button B in Mode)
+
+**Setup:** Device on Page 0, large display mode active, displaying value index 0 (Temperatur).
+
+**Action:**
+1. Press Button B repeatedly (5–10 times)
+2. Observe display changes
+
+**Expected Result:**
+- First B press: Advance to index 1 (Luftdruck/hPa, Green)
+- Second B press: Advance to index 2 (Feuchtigkeit/%, Orange)
+- Third B press: Advance to index 3 (Taupunkt/°C, Cyan)
+- ... continue through all 7 values ...
+- Seventh B press: Advance to index 0 (wraps around back to Temperatur)
+- Each press cycles to next value with updated label/value/unit/color
+- Button response feels immediate (< 50 ms)
+- Display update within 200 ms of button press
+
+**Verification:**
+- All values cycle correctly with no gaps
+- Wrap-around behavior works (last value → index 0)
+- Labels, values, units, and colors correct for each value
+- No crashes during cycling
+
+**Repeat for Other Pages:**
+- Verify Page 1 (Gamepad, 4 values): 0→1→2→3→0
+- Verify Page 2 (INA219, 7 values): 0→...→6→0
+- Verify Page 4 (SCD30, 3 values): 0→1→2→0
+
+---
+
+### TC-LDM-003: Large Display Mode Value Cycling Backward (Button X in Mode)
+
+**Setup:** Device on Page 0, large display mode active, displaying value index 0.
+
+**Action:**
+1. Press Button X once
+2. Observe display
+
+**Expected Result:**
+- Display jumps to index 6 (last value, wraps backward from 0)
+- Value label "Temperaturtrend" displayed
+- Value shown with correct unit and color
+- Display updates within 200 ms
+
+**Action:**
+3. Press Button X again
+4. Observe display
+
+**Expected Result:**
+- Display shows index 5 (Kompensation)
+- Continue pressing X; should cycle backward through all indices
+
+**Verification:**
+- Backward cycling works correctly
+- Wrap-around from 0 to (valueCount-1) correct
+- All values reachable via backward cycling
+- No display artifacts
+
+---
+
+### TC-LDM-004: Large Display Mode Exit (Button Y in Mode)
+
+**Setup:** Device on Page 0, large display mode active, displaying some value (e.g., index 2).
+
+**Action:**
+1. Press Button Y
+
+**Expected Result:**
+- Large display mode immediately exits
+- Page 0 returns to standard view (7 rows of labeled data)
+- Display shows normal temperature, humidity, pressure, etc.
+- Page has not changed (still on Page 0)
+
+**Verification:**
+- Standard layout restored (not large display)
+- Page index unchanged (still Page 0)
+- No crashes
+
+**Action:**
+2. Press Button B again
+
+**Expected Result:**
+- Large display mode re-enters at value index 0 (Temperatur)
+- Value index was reset by exit
+
+**Verification:**
+- Mode re-entry works; index reset to 0 confirmed
+
+---
+
+### TC-LDM-005: Page Navigation Disabled in Large Display Mode
+
+**Setup:** Device on Page 0, large display mode active.
+
+**Action:**
+1. Press Button A (next page button)
+2. Observe display
+
+**Expected Result:**
+- Display remains on Page 0 large display mode
+- Page navigation does NOT occur
+- Button A has no effect
+
+**Verification:**
+- Page did not change
+- Display still shows Page 0 large display
+
+**Action:**
+3. Press Button Y (previous page button in standard mode, but exit in large mode)
+
+**Expected Result:**
+- Large display mode exits (as expected from TC-LDM-004)
+- Returns to Page 0 standard view
+
+**Verification:**
+- Y button correctly exits (not navigating page)
+- Page navigation re-enabled after exit
+
+---
+
+### TC-LDM-006: Auto-Exit on Page Navigation
+
+**Setup:** Device on Page 0, large display mode active.
+
+**Action:**
+1. Press Button Y to exit large display
+2. Press Button A to navigate to next page (Page 1)
+3. Observe Page 1 in standard view
+
+**Expected Result:**
+- Page 1 displays in standard view (not large display)
+- Large display mode is inactive on Page 1
+
+**Verification:**
+- Navigation worked after exit
+- New page shows standard view (no stale large display state)
+- User can press B on Page 1 to enter its own large display mode
+
+---
+
+### TC-LDM-007: Display Rate Limiting in Large Display Mode
+
+**Setup:** Device on Page 0, large display mode active. Serial monitor shows timing.
+
+**Action:**
+1. Rapidly press Button B 10 times in quick succession (< 500 ms total)
+2. Observe display and Serial output
+
+**Expected Result:**
+- Value index updates immediately (valueIndex increments with each press)
+- Display updates may lag behind button presses due to 200 ms rate limit
+- Serial output shows display updates happening at ~5 Hz (200 ms intervals)
+- Display does not flicker; updates are smooth
+
+**Verification:**
+- Button response immediate
+- Display rate limited to 5 Hz (200 ms min interval)
+- No excessive SPI traffic
+- No flicker
+
+---
+
+### TC-LDM-008: All Pages Support Large Display (10 Pages)
+
+**Setup:** Device with as many sensors available as possible.
+
+**Action:**
+1. Navigate to Page 0 (BME280)
+2. Press Button B → verify large display mode
+3. Press Button Y to exit
+4. Navigate to Page 1 (Gamepad) via Button A
+5. Press Button B → verify large display mode
+6. Press Button Y to exit
+7. Repeat for Pages 2–9
+
+**Expected Result:**
+- All 10 pages support entry into large display mode via Button B
+- Each page shows correct page title, value count, labels, units, colors
+- No page is missing large display support
+
+**Verification:**
+- All 10 pages tested
+- Each page has unique value set and correct layout
+- No crashes or missing pages
+
+**Example Expected Titles:**
+- Page 0: "BME280 Large Display"
+- Page 1: "Gamepad QT Large Display"
+- Page 2: "INA219 Large Display"
+- ... etc.
+
+---
+
+### TC-LDM-009: Large Display with Unavailable Sensor
+
+**Setup:** Device with sensor disconnected (e.g., BME280 unplugged).
+
+**Action:**
+1. Navigate to Page 0
+2. Verify error screen displayed ("Sensor nicht vorhanden")
+3. Press Button B
+
+**Expected Result:**
+- Button B press is ignored
+- Large display mode is NOT entered
+- Page remains showing error screen
+- B/X buttons do not function
+
+**Verification:**
+- Error screen is priority; large display unavailable
+- Button presses ignored correctly
+- No crash or undefined behavior
+
+---
+
+### TC-LDM-010: DS2484 Large Display Mode (If 1-Wire Sensors Available)
+
+**Setup:** Device with DS2484 (Page 9) and 1–3 DS18B20 sensors connected.
+
+**Action:**
+1. Navigate to Page 9 (DS2484)
+2. Verify standard view shows discovered sensors
+3. Press Button B
+4. Observe large display mode
+
+**Expected Result:**
+- Large display shows first sensor ROM-ID (e.g., "28:AB:CD:12:34:56:78:9F", Cyan)
+- Press Button B → shows first sensor temperature (e.g., "22.50°C", Green)
+- Press Button B → shows first sensor status (e.g., "OK", Green)
+- Press Button B → shows second sensor ROM-ID (if available)
+- Continue until all sensors cycled
+- Wrap-around to first sensor after last
+
+**Value Count Verification:**
+- 1 sensor discovered: 3 values (0, 1, 2)
+- 2 sensors discovered: 6 values (0–5)
+- 3 sensors discovered: 9 values (0–8)
+
+**Verification:**
+- Dynamic value count correct
+- All sensors reachable via cycling
+- ROM-IDs, temperatures, status correct
+- Wrap-around works
+
+**Error Case:**
+- 0 sensors discovered: Error screen; large display cannot enter
+
+---
+
+### Summary: Large Display Mode Test Coverage
+
+| Test | Purpose | Hardware Required |
+|------|---------|---|
+| TC-LDM-001 | Entry via Button B on all 10 pages | All sensors |
+| TC-LDM-002 | Forward cycling (Button B) | Page 0 + 2 others |
+| TC-LDM-003 | Backward cycling (Button X) | Page 0 + 2 others |
+| TC-LDM-004 | Exit via Button Y | Any page with large display |
+| TC-LDM-005 | Page navigation disabled | Any page with large display |
+| TC-LDM-006 | Auto-exit on navigate | 2 adjacent pages |
+| TC-LDM-007 | Display rate limiting (5 Hz) | Any page; monitor serial timing |
+| TC-LDM-008 | All 10 pages support mode | All 10 sensors (or mock errors) |
+| TC-LDM-009 | Unavailable sensor behavior | 1 sensor disconnected |
+| TC-LDM-010 | DS2484 dynamic value count | DS2484 + 1–3 DS18B20 sensors |
+
+**Minimum Viable Testing:**
+- TC-LDM-001: Entry (Pages 0, 2, 4)
+- TC-LDM-002: Forward cycling (Page 0)
+- TC-LDM-003: Backward cycling (Page 0)
+- TC-LDM-004: Exit (Page 0)
+- **Time estimate:** 30 minutes
 
 ---
 

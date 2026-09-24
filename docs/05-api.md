@@ -1,6 +1,6 @@
 # API & External Interfaces: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-23  
+**Last Updated:** 2026-09-25  
 **Project Type:** Embedded Firmware (No HTTP/REST APIs)
 
 ---
@@ -1725,3 +1725,210 @@ To integrate with external systems, a developer would need to:
   - `0x00, 0x00` → `0x81`
   - `0x00, 0x01` → `0xB0`
   - `0x02, 0x02` → `0x3A`
+
+---
+
+## Appendix E: Large Display Mode Rendering API — **NEW (FEATURE-SPEC-007)**
+
+### Unified Large Display Renderer
+
+**Function:**
+```cpp
+void renderLargeDisplay(uint8_t sensorPage, uint8_t valueIndex);
+```
+
+**Purpose:**  
+Render large display mode for any sensor page with single value focus, enlarged font, centered layout.
+
+**Parameters:**
+- `sensorPage` (uint8_t): Page index 0–9
+- `valueIndex` (uint8_t): Value to display (0 to page-specific valueCount-1)
+
+**Behavior:**
+1. Clear TFT display (black background)
+2. Retrieve sensor-specific data via combined helper function:
+   ```cpp
+   String value = getSensorLargeDisplayData(sensorPage, valueIndex, &label, &unit, &color);
+   ```
+3. Draw layout components:
+   - **Title (y=80):** Sensor name (e.g., "BME280 Large Display"), Font 4, Cyan, centered
+   - **Label (y=140):** Value name (e.g., "Temperatur"), Font 4, Cyan, centered
+   - **Value (y=200):** Numeric/text value, Font 8 (largest), color-coded, centered
+   - **Unit (y=280):** Measurement unit (e.g., "°C"), Font 2, White, centered
+   - **Footer (y=350):** "B:next X:prev Y:exit", Font 1, Dark Grey, centered
+4. Return (no rate limit applied here; rate limiting occurs in main loop)
+
+**Return:** void
+
+**Color Coding:**  
+- Green (TFT_GREEN): Primary measurements, good readings
+- Orange (TFT_ORANGE): Secondary measurements, caution
+- Cyan (TFT_CYAN): Computed/derived values, indices
+- Red (TFT_RED): Errors, out-of-range values
+- **Never use Magenta** (not readable in sunlight)
+
+**Performance:**  
+Display update subject to 200 ms rate limit (FR-015) enforced in main loop.
+
+---
+
+### Sensor-Specific Large Display Helper Functions
+
+**Generic Function Signature:**
+```cpp
+// All sensor-specific helpers follow this pattern:
+String sensorType_getLargeDisplayData(uint8_t valueIndex,
+                                       const char** outLabel,    // OUTPUT: e.g., "Temperatur"
+                                       const char** outUnit,     // OUTPUT: e.g., "°C"
+                                       uint16_t* outColor);      // OUTPUT: e.g., TFT_GREEN
+// Returns: Formatted value string (e.g., "24.50")
+```
+
+**Implementation Pattern:**
+1. Guard: Return empty string if `available.sensor = false`
+2. Validate: Check `valueIndex` is within page-specific valueCount
+3. Retrieve: Read value from global cache struct (no I2C calls)
+4. Format: Convert to string with appropriate decimal places
+5. Return: All four pieces of information (value, label, unit, color)
+
+---
+
+### Per-Page Large Display Helpers
+
+#### Page 0: BME280
+```cpp
+String bme280_getLargeDisplayData(uint8_t valueIndex,
+                                   const char** outLabel,
+                                   const char** outUnit,
+                                   uint16_t* outColor);
+// Value count: 7
+// Values: 0=Temperature, 1=Pressure, 2=Humidity, 3=Dew point, 4=Altitude, 5=AQI, 6=Temp trend
+```
+
+#### Page 1: Gamepad
+```cpp
+String gamepad_getLargeDisplayData(uint8_t valueIndex,
+                                    const char** outLabel,
+                                    const char** outUnit,
+                                    uint16_t* outColor);
+// Value count: 4
+// Values: 0=Joystick X, 1=Joystick Y, 2=Button state, 3=Total presses
+```
+
+#### Page 2: INA219
+```cpp
+String ina219_getLargeDisplayData(uint8_t valueIndex,
+                                   const char** outLabel,
+                                   const char** outUnit,
+                                   uint16_t* outColor);
+// Value count: 7
+// Values: 0=Runtime, 1=Voltage, 2=Supply, 3=Current, 4=Charge, 5=Shunt voltage, 6=Power
+// NOTE: Existing implementation; refactored to use unified renderer
+```
+
+#### Page 3: Rotary Encoder
+```cpp
+String encoder_getLargeDisplayData(uint8_t valueIndex,
+                                    const char** outLabel,
+                                    const char** outUnit,
+                                    uint16_t* outColor);
+// Value count: 5
+// Values: 0=Position, 1=Delta, 2=Presses, 3=LED color, 4=LED brightness
+```
+
+#### Page 4: SCD30 CO₂
+```cpp
+String scd30_getLargeDisplayData(uint8_t valueIndex,
+                                 const char** outLabel,
+                                 const char** outUnit,
+                                 uint16_t* outColor);
+// Value count: 3
+// Values: 0=CO₂, 1=Temperature, 2=Humidity
+```
+
+#### Page 5: SI1145 UV/IR
+```cpp
+String si1145_getLargeDisplayData(uint8_t valueIndex,
+                                  const char** outLabel,
+                                  const char** outUnit,
+                                  uint16_t* outColor);
+// Value count: 4
+// Values: 0=Visible light, 1=Infrared, 2=UV index, 3=UV raw
+```
+
+#### Page 6: TSL2591 Light
+```cpp
+String tsl2591_getLargeDisplayData(uint8_t valueIndex,
+                                   const char** outLabel,
+                                   const char** outUnit,
+                                   uint16_t* outColor);
+// Value count: 4
+// Values: 0=Full spectrum, 1=Infrared, 2=Visible, 3=Lux
+```
+
+#### Page 7: VEML6070 UV
+```cpp
+String veml6070_getLargeDisplayData(uint8_t valueIndex,
+                                    const char** outLabel,
+                                    const char** outUnit,
+                                    uint16_t* outColor);
+// Value count: 3
+// Values: 0=UV raw, 1=UV level, 2=LSB/MSB
+```
+
+#### Page 8: VEML6075 UV
+```cpp
+String veml6075_getLargeDisplayData(uint8_t valueIndex,
+                                    const char** outLabel,
+                                    const char** outUnit,
+                                    uint16_t* outColor);
+// Value count: 6
+// Values: 0=UVA raw, 1=UVB raw, 2=UVA comp, 3=UVB comp, 4=UV index, 5=Compensation
+```
+
+#### Page 9: DS2484 1-Wire
+```cpp
+String ds2484_getLargeDisplayData(uint8_t valueIndex,
+                                  const char** outLabel,
+                                  const char** outUnit,
+                                  uint16_t* outColor);
+// Value count: 3–9 (3 per discovered sensor, max 3 sensors)
+// Values: [Sensor 0: ROM-ID, Temp, Status], [Sensor 1: ROM-ID, Temp, Status], ...
+// Dynamic based on discovered sensor count
+```
+
+---
+
+### Global Large Display State
+
+```cpp
+struct {
+  bool active;                  // Large display mode currently active?
+  uint8_t currentPage;          // Page index where mode entered (0-9)
+  uint8_t valueIndex;           // Current value being displayed (0 to pageValueCount-1)
+} largeDisplayMode;
+```
+
+**Initialization:**
+```cpp
+largeDisplayMode = {false, 0, 0};  // Boot: inactive, no page, index 0
+```
+
+---
+
+### Integration in Page Rendering
+
+**Example (Page 0 - BME280):**
+```cpp
+void pageBme280() {
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 0) {
+    // Large display mode active on this page
+    renderLargeDisplay(0, largeDisplayMode.valueIndex);
+  } else {
+    // Standard page rendering
+    pageBme280Standard();  // Existing standard renderer
+  }
+}
+```
+
+**Every page renderer (0–9) follows same pattern.**

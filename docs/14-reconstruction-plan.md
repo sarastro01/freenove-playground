@@ -10,7 +10,8 @@
 - Hardware (ESP32 + sensors) available for testing
 - PlatformIO and toolchain installed
 
-**Last Updated:** 2026-09-21
+**Last Updated:** 2026-09-25  
+**Status:** ✅ **Complete** (Updated to reference FEATURE-SPEC-008 Central Parameter Definitions)
 
 ---
 
@@ -28,6 +29,7 @@
 10. [Phase 10: Tests](#phase-10-tests)
 11. [Phase 11: Build](#phase-11-build)
 12. [Phase 12: Deployment](#phase-12-deployment)
+13. [Phase 13: Universal Large Display Mode](#phase-13-universal-large-display-mode-feature-spec-007)
 
 ---
 
@@ -2101,6 +2103,310 @@ After completing Phase 6 modifications:
   - Update existing docs with FEATURE-SPEC-006 details (already completed)
 
 **Total Effort:** ~7–10 hours (1 day of focused development + testing)
+
+## Phase 13: Universal Large Display Mode (FEATURE-SPEC-007) (FEATURE-SPEC-007) — **NEW**
+
+### Objective
+Extend large display mode from INA219 (Page 2 only) to all 10 sensor pages (Pages 0–9). Implement unified rendering architecture that supports all pages with consistent UI/UX.
+
+### Dependencies
+- ✅ Phase 7 completed (page renderers exist)
+- ✅ Phase 10 completed (test infrastructure ready)
+- ✅ FEATURE-SPEC-006 completed (display rate limiting in place)
+- ✅ Documentation complete (FR-016-019, BR-SP-001-010, test cases defined)
+
+### Implementation Sequence
+
+#### Sub-Phase 13.1: Core Infrastructure (2–3 hours)
+
+**Objective:** Implement unified `renderLargeDisplay()` function and global state management.
+
+**Tasks:**
+1. Define global state struct in main.cpp:
+   ```cpp
+   struct {
+     bool active;
+     uint8_t currentPage;
+     uint8_t valueIndex;
+   } largeDisplayMode = {false, 0, 0};
+   ```
+
+2. Implement unified renderer function:
+   - `void renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex)`
+   - Draw layout: title (Font 4, Cyan), label (Font 4, Cyan), value (Font 8, color-coded), unit (Font 2, White), footer (Font 1, Grey)
+   - Call sensor-specific helper to retrieve label/value/unit/color
+   - Respect display rate limiting (200 ms minimum)
+
+3. Modify all 10 page renderers to support conditional rendering:
+   ```cpp
+   void pageXxx() {
+     if (largeDisplayMode.active && largeDisplayMode.currentPage == pageIndex) {
+       renderLargeDisplay(pageIndex, largeDisplayMode.valueIndex);
+     } else {
+       pageXxxStandard();  // Existing standard renderer
+     }
+   }
+   ```
+
+4. Update button handlers:
+   - Button B: Mode entry/forward cycling (context-aware)
+   - Button X: Backward cycling (context-aware)
+   - Button Y: Mode exit (context-aware)
+   - Button A: Inactive in large display mode
+
+5. Add main loop check for page navigation:
+   - Auto-exit large display mode if user navigates away via Y/A
+
+**Acceptance Criteria:**
+- [ ] Unified renderer function compiles without errors
+- [ ] Global state initialized correctly
+- [ ] All 10 page renderers support conditional rendering
+- [ ] Button handlers route correctly based on mode
+- [ ] No compilation warnings or errors
+- [ ] Firmware compiles and loads to ESP32 (FEATURE-SPEC-006 code should still work)
+
+**Testing:**
+- Compile check
+- Load to device; boot to Page 0
+- Manually verify each button's behavior in standard and large display modes
+
+---
+
+#### Sub-Phase 13.2: INA219 Large Display Refactoring (1 hour)
+
+**Objective:** Refactor existing INA219 large display mode (FR-012, working since FEATURE-SPEC-006) to use unified renderer and single combined helper function.
+
+**Current State:**
+- INA219 large display mode exists and works (Page 2, Button B entry)
+- Has its own renderer function: `pageLargeDisplayIna219()`
+- Has individual value retrieval logic (4 separate functions or inline code)
+
+**Tasks:**
+1. Create single combined helper function:
+   ```cpp
+   String ina219_getLargeDisplayData(uint8_t valueIndex,
+                                     const char** outLabel,
+                                     const char** outUnit,
+                                     uint16_t* outColor);
+   ```
+
+2. Implement logic for all 7 values:
+   - Index 0: Runtime (HH:MM:SS format, Green)
+   - Index 1: Voltage (V format, Green)
+   - Index 2: Supply (V format, Green)
+   - Index 3: Current (A format, Orange)
+   - Index 4: Charge (mAh format, Cyan)
+   - Index 5: Shunt voltage (mV format, Orange)
+   - Index 6: Power (W format, Green)
+
+3. Integrate with unified renderer:
+   - Remove old `pageLargeDisplayIna219()` function
+   - Update `pageIna219()` to use conditional rendering pattern
+
+4. Verify backward compatibility:
+   - Button B entry should still work
+   - All 7 values should cycle correctly
+   - Display should remain flicker-free (rate limit still active)
+
+**Acceptance Criteria:**
+- [ ] INA219 large display mode still works (backward compatible)
+- [ ] All 7 values cycle correctly (B/X buttons)
+- [ ] Exit via Y returns to standard page
+- [ ] No display flicker
+- [ ] No crashes or anomalies
+
+**Testing:**
+- TC-LDM-001: Entry on Page 2
+- TC-LDM-002: Forward cycling (all 7 values)
+- TC-LDM-003: Backward cycling (wrap-around)
+- TC-LDM-004: Exit via Y
+- Regression: Standard INA219 page still displays correctly
+
+---
+
+#### Sub-Phase 13.3: High-Priority Pages (2–3 hours)
+
+**Objective:** Implement large display mode for Pages 0 (BME280) and 4 (SCD30).
+
+**Page 0 (BME280):**
+- 7 values: Temperature, Pressure, Humidity, Dew point, Altitude, AQI, Temp trend
+- Colors: Green (primary), Orange (secondary), Cyan (derived)
+- Units: °C, hPa, %, °C, m, index, °C/min
+
+**Page 4 (SCD30):**
+- 3 values: CO₂, Temperature, Humidity
+- Colors: Green (primary), Green (temp), Orange (humidity)
+- Units: ppm, °C, %
+
+**Tasks:**
+1. Implement combined helper functions:
+   ```cpp
+   String bme280_getLargeDisplayData(uint8_t valueIndex, ...);
+   String scd30_getLargeDisplayData(uint8_t valueIndex, ...);
+   ```
+
+2. Update page renderers (Pages 0 and 4) to use unified rendering
+
+3. Update page renderer entries in `renderLargeDisplay()` switch statement:
+   ```cpp
+   case 0:  // BME280
+     value = bme280_getLargeDisplayData(valueIndex, &label, &unit, &color);
+     break;
+   case 4:  // SCD30
+     value = scd30_getLargeDisplayData(valueIndex, &label, &unit, &color);
+     break;
+   // ... etc
+   ```
+
+**Acceptance Criteria:**
+- [ ] Pages 0 and 4 both support large display mode
+- [ ] All values (7 for BME280, 3 for SCD30) cycle correctly
+- [ ] Colors and units correct for each value
+- [ ] Display readable from 5+ meters
+- [ ] No crashes or flicker
+
+**Testing:**
+- TC-LDM-001: Entry on Pages 0 and 4
+- TC-LDM-002/003: Cycling forward/backward
+- TC-LDM-004: Exit via Y
+- Verify standard pages still work
+
+---
+
+#### Sub-Phase 13.4: Remaining Pages (2–3 hours)
+
+**Objective:** Implement large display mode for Pages 1, 3, 5, 6, 7, 8.
+
+**Value Sets:**
+- Page 1 (Gamepad): 4 values
+- Page 3 (Encoder): 5 values
+- Page 5 (SI1145): 4 values
+- Page 6 (TSL2591): 4 values
+- Page 7 (VEML6070): 3 values
+- Page 8 (VEML6075): 6 values
+
+**Tasks:**
+1. Implement combined helper functions for all 6 pages (follow BME280/SCD30 pattern)
+
+2. Register all 6 pages in `renderLargeDisplay()` switch statement
+
+3. Update page renderers (1, 3, 5, 6, 7, 8) to use unified rendering
+
+**Acceptance Criteria:**
+- [ ] All 6 pages support large display mode
+- [ ] All values cycle correctly per page
+- [ ] Colors and units match specification
+- [ ] No crashes across all page transitions
+
+**Testing:**
+- TC-LDM-001: Entry on each of 6 pages
+- TC-LDM-002/003: Cycling verification
+- TC-LDM-008: Full 10-page sweep
+
+---
+
+#### Sub-Phase 13.5: DS2484 1-Wire Support (1–2 hours, Optional)
+
+**Objective:** Implement large display mode for Page 9 (DS2484) with dynamic sensor count (max 3).
+
+**Challenge:** Value count not fixed; depends on discovered 1-Wire sensors.
+
+**Tasks:**
+1. Implement helper function with dynamic value count:
+   ```cpp
+   String ds2484_getLargeDisplayData(uint8_t valueIndex, ...);
+   // Must handle 0–9 values based on discovered sensor count
+   ```
+
+2. Get dynamic value count:
+   ```cpp
+   uint8_t getPageValueCount(uint8_t pageIndex) {
+     if (pageIndex == 9) {
+       return 3 * ds2484SensorCount;  // 0, 3, 6, or 9
+     }
+     // ... other pages have fixed counts
+   }
+   ```
+
+3. Handle edge cases:
+   - No sensors discovered: Error screen (large display cannot enter)
+   - 1 sensor: 3 values
+   - 2 sensors: 6 values
+   - 3 sensors: 9 values
+   - Wrap-around at current sensor count
+
+**Acceptance Criteria:**
+- [ ] Page 9 supports large display if sensors discovered
+- [ ] Dynamic value count correct (3 × sensorCount)
+- [ ] All values cycle correctly
+- [ ] Wrap-around works at boundary
+- [ ] Error handling (no sensors) correct
+
+**Testing:**
+- TC-LDM-010: 1, 2, 3 sensors discovered
+- Cycle through all values
+- Wrap-around verification
+
+---
+
+### Files to Modify
+
+**src/main.cpp:**
+- Add global `largeDisplayMode` struct (~3 lines)
+- Add `renderLargeDisplay()` function (~50–80 lines)
+- Add per-page helper functions (~10–15 lines each, 10 pages = 100–150 lines total)
+- Modify all 10 page renderers (~2–3 lines each, 10 pages = 20–30 lines)
+- Modify button handlers (~20–30 lines)
+- Add `getPageValueCount()` helper (~20 lines)
+- **Total additions:** ~200–300 lines of new code
+
+**docs/01-requirements.md:**
+- Add FR-016, FR-017, FR-018, FR-019 (already done)
+
+**docs/06-business-rules.md:**
+- Add BR-SP-001 through BR-SP-010 (already done)
+
+**docs/05-api.md:**
+- Add large display rendering API section (already done)
+
+**docs/07-ui.md:**
+- Add large display mode specifications for all 10 pages (already done)
+
+**docs/10-testing.md:**
+- Add test cases TC-LDM-001 through TC-LDM-010 (already done)
+
+### Estimated Effort
+
+**Development:**
+- Sub-Phase 13.1 (Core): 2–3 hours
+- Sub-Phase 13.2 (INA219 refactor): 1 hour
+- Sub-Phase 13.3 (BME280, SCD30): 2–3 hours
+- Sub-Phase 13.4 (Remaining 6 pages): 2–3 hours
+- Sub-Phase 13.5 (DS2484 optional): 1–2 hours
+- **Total:** 8–12 hours (~1 day of development)
+
+**Testing:**
+- Manual integration tests (TC-LDM-001–010): 2–3 hours
+- Regression testing (all 10 pages standard mode): 1 hour
+- **Total:** 3–4 hours
+
+**Documentation:**
+- Already complete (FR-016-019, BR-SP-001-010, API docs, test cases)
+- **Total:** 0 hours
+
+**Overall Effort:** 11–16 hours (~1.5 days)
+
+### Success Criteria
+
+- [ ] All 10 pages support large display mode via Button B
+- [ ] Value cycling works correctly (B=forward, X=backward, Y=exit)
+- [ ] Display readable from 5+ meters away (Font 8 centered layout)
+- [ ] Display rate limiting still active (no flicker)
+- [ ] Existing INA219 mode backward compatible
+- [ ] DS2484 supports 0–3 sensors with dynamic value count
+- [ ] All 10 pages render correctly in standard and large display modes
+- [ ] No crashes or memory leaks
+- [ ] Passes TC-LDM-001 through TC-LDM-010
 
 ---
 

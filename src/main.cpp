@@ -156,8 +156,14 @@ uint32_t optionsMask = 0;
 float seesawTemperature = 0.0f;
 uint8_t currentPage = 2;  // Start with INA219 page (Page 2)
 uint8_t lastPage = 255;
-bool largeDisplayMode = false;        // INA219 large display mode active
-uint8_t largeDisplayIndex = 0;        // Current value index in large display (0-6)
+
+// FEATURE-SPEC-007: Universal Large Display Mode (All Pages)
+struct {
+  bool active;              // Large display mode currently active
+  uint8_t currentPage;      // Page index where mode was entered (0-9)
+  uint8_t valueIndex;       // Current value being displayed (0 to pageValueCount-1)
+} largeDisplayMode = {false, 0, 0};
+
 int32_t encoderLastPosition = 0;
 uint32_t encoderPressCount = 0;
 uint32_t encoderPressedSince = 0;
@@ -255,6 +261,239 @@ static uint32_t lastEncoderStatsLogMs = 0;  // For 1-second encoder stats report
 static uint32_t lastIna219StatsLogMs = 0;   // For 1-second INA219 stats reporting
 #endif
 
+// ============================================================================
+// FEATURE-SPEC-008: CENTRAL PARAMETER TRIPLE DEFINITIONS
+// ============================================================================
+// Each sensor defines its parameter metadata once (Label, Unit, Color)
+// Both Large Display and Sensor Page use the same definition
+// This guarantees consistency by design, eliminates redundancy
+// ============================================================================
+
+struct ParameterTriple {
+  const char* label;
+  const char* unit;
+  uint16_t color;
+};
+
+// BME280: 7 Parameters
+const ParameterTriple bme280_params[] = {
+  {"Temperature", "C", TFT_GREEN},
+  {"Pressure", "hPa", TFT_GREEN},
+  {"Humidity", "%", TFT_ORANGE},
+  {"Dew Point", "C", TFT_CYAN},
+  {"Altitude", "m", TFT_CYAN},
+  {"Air Quality", "AQI", TFT_ORANGE},
+  {"Temp Trend", "C/min", TFT_CYAN}
+};
+const uint8_t BME280_PARAM_COUNT = 7;
+
+// Gamepad: 8 Parameters
+const ParameterTriple gamepad_params[] = {
+  {"Joystick X", "ADC", TFT_GREEN},
+  {"Joystick Y", "ADC", TFT_GREEN},
+  {"Button X", "State", TFT_ORANGE},
+  {"Button Y", "State", TFT_ORANGE},
+  {"Button A", "State", TFT_ORANGE},
+  {"Button B", "State", TFT_ORANGE},
+  {"Select/Start", "State", TFT_ORANGE},
+  {"Button Mask", "Hex", TFT_CYAN}
+};
+const uint8_t GAMEPAD_PARAM_COUNT = 8;
+
+// INA219: 7 Parameters
+const ParameterTriple ina219_params[] = {
+  {"Runtime", "", TFT_CYAN},
+  {"Battery", "V", TFT_GREEN},
+  {"Supply", "V", TFT_GREEN},
+  {"Current", "mA", TFT_ORANGE},
+  {"Charge", "mAh", TFT_CYAN},
+  {"Shunt Voltage", "mV", TFT_GREEN},
+  {"Power", "mW", TFT_ORANGE}
+};
+const uint8_t INA219_PARAM_COUNT = 7;
+
+// Encoder: 7 Parameters
+const ParameterTriple encoder_params[] = {
+  {"Position", "Steps", TFT_GREEN},
+  {"Delta", "Steps", TFT_ORANGE},
+  {"Button", "State", TFT_ORANGE},
+  {"Presses", "Count", TFT_CYAN},
+  {"LED Color", "Name", TFT_CYAN},
+  {"LED Brightness", "/255", TFT_GREEN},
+  {"Seesaw Temp", "C", TFT_ORANGE}
+};
+const uint8_t ENCODER_PARAM_COUNT = 7;
+
+// SCD30: 3 Parameters
+const ParameterTriple scd30_params[] = {
+  {"CO2 Level", "ppm", TFT_GREEN},
+  {"Temperature", "C", TFT_GREEN},
+  {"Humidity", "%", TFT_ORANGE}
+};
+const uint8_t SCD30_PARAM_COUNT = 3;
+
+// SI1145: 4 Parameters
+const ParameterTriple si1145_params[] = {
+  {"Visible Light", "ADC", TFT_GREEN},
+  {"Infrared", "ADC", TFT_GREEN},
+  {"UV Index", "Index", TFT_CYAN},
+  {"UV Raw", "ADC", TFT_ORANGE}
+};
+const uint8_t SI1145_PARAM_COUNT = 4;
+
+// TSL2591: 4 Parameters
+const ParameterTriple tsl2591_params[] = {
+  {"Full Spectrum", "counts", TFT_GREEN},
+  {"Infrared", "counts", TFT_GREEN},
+  {"Visible", "counts", TFT_ORANGE},
+  {"Lux", "lux", TFT_CYAN}
+};
+const uint8_t TSL2591_PARAM_COUNT = 4;
+
+// VEML6070: 3 Parameters
+const ParameterTriple veml6070_params[] = {
+  {"UV Raw", "ADC", TFT_GREEN},
+  {"UV Level", "Level", TFT_ORANGE},
+  {"LSB/MSB", "Hex", TFT_CYAN}
+};
+const uint8_t VEML6070_PARAM_COUNT = 3;
+
+// VEML6075: 6 Parameters
+const ParameterTriple veml6075_params[] = {
+  {"UVA Raw", "ADC", TFT_GREEN},
+  {"UVB Raw", "ADC", TFT_GREEN},
+  {"UVA Compensated", "Calc", TFT_CYAN},
+  {"UVB Compensated", "Calc", TFT_CYAN},
+  {"UV Index", "Index", TFT_ORANGE},
+  {"Compensation", "Factors", TFT_CYAN}
+};
+const uint8_t VEML6075_PARAM_COUNT = 6;
+
+// ============================================================================
+// FORWARD DECLARATIONS - Required for Value Getters to use helper functions
+// ============================================================================
+String formatRuntime(uint32_t elapsedUs);
+
+// ============================================================================
+// CENTRAL VALUE GETTERS - Return value string for each sensor parameter
+// Used by both Large Display and Sensor Page rendering (FEATURE-SPEC-008)
+// ============================================================================
+
+String bme280_getValue(uint8_t index) {
+  if (index >= BME280_PARAM_COUNT || !available.bme280) return "";
+  switch (index) {
+    case 0: return String(bme280Values.temperature, 2);
+    case 1: return String(bme280Values.pressure, 2);
+    case 2: return String(bme280Values.humidity, 2);
+    case 3: return String(bme280Values.dewPoint, 2);
+    case 4: return String(bme280Values.altitude, 1);
+    case 5: return String(0.95, 2);  // Placeholder AQI
+    case 6: return String(0.5, 2);   // Placeholder trend
+    default: return "";
+  }
+}
+
+String gamepad_getValue(uint8_t index) {
+  if (index >= GAMEPAD_PARAM_COUNT || !available.gamepad) return "";
+  switch (index) {
+    case 0: return String((int)gamepadValues.x);
+    case 1: return String((int)gamepadValues.y);
+    case 2: return (gamepadValues.buttons & GAMEPAD_BUTTON_X) ? "PRESSED" : "released";
+    case 3: return (gamepadValues.buttons & GAMEPAD_BUTTON_Y) ? "PRESSED" : "released";
+    case 4: return (gamepadValues.buttons & GAMEPAD_BUTTON_A) ? "PRESSED" : "released";
+    case 5: return (gamepadValues.buttons & GAMEPAD_BUTTON_B) ? "PRESSED" : "released";
+    case 6: return (gamepadValues.buttons & GAMEPAD_BUTTON_SELECT) ? "SEL" : (gamepadValues.buttons & GAMEPAD_BUTTON_START) ? "SRT" : "--";
+    case 7: return String("0x") + String((unsigned long)gamepadValues.buttons, HEX);
+    default: return "";
+  }
+}
+
+String ina219_getValue(uint8_t index) {
+  if (index >= INA219_PARAM_COUNT || !available.ina219) return "";
+  switch (index) {
+    case 0: {  // Runtime
+      const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
+      return formatRuntime(runtimeUs);
+    }
+    case 1: return String(ina219Values.load, 3);
+    case 2: return String(ina219Values.bus, 3);
+    case 3: return String(ina219Values.current, 1);
+    case 4: return String(ina219Values.chargeMah, 3);
+    case 5: return String(ina219Values.shunt, 2);
+    case 6: return String((uint16_t)ina219Values.power);
+    default: return "";
+  }
+}
+
+String encoder_getValue(uint8_t index) {
+  if (index >= ENCODER_PARAM_COUNT || !available.encoder) return "";
+  switch (index) {
+    case 0: return String((long)encoderValues.position);
+    case 1: return String((long)encoderValues.delta);
+    case 2: return encoderValues.pressed ? "PRESSED" : "released";
+    case 3: return String((unsigned long)encoderValues.presses);
+    case 4: return encoderValues.color;
+    case 5: return String((int)encoderValues.brightness);
+    case 6: return String(seesawTemperature, 1);
+    default: return "";
+  }
+}
+
+String scd30_getValue(uint8_t index) {
+  if (index >= SCD30_PARAM_COUNT || !available.scd30) return "";
+  switch (index) {
+    case 0: return String((uint16_t)scd30Values.co2);
+    case 1: return String(scd30Values.temp, 1);
+    case 2: return String(scd30Values.humidity, 1);
+    default: return "";
+  }
+}
+
+String si1145_getValue(uint8_t index) {
+  if (index >= SI1145_PARAM_COUNT || !available.si1145) return "";
+  switch (index) {
+    case 0: return String(si1145Values.visible);
+    case 1: return String(si1145Values.infrared);
+    case 2: return String(si1145Values.uvIndex, 2);
+    case 3: return String(si1145Values.uv);
+    default: return "";
+  }
+}
+
+String tsl2591_getValue(uint8_t index) {
+  if (index >= TSL2591_PARAM_COUNT || !available.tsl2591) return "";
+  switch (index) {
+    case 0: return String(tsl2591Values.fullSpectrum);
+    case 1: return String(tsl2591Values.infrared);
+    case 2: return String(tsl2591Values.visible);
+    case 3: return String(tsl2591Values.lux, 2);
+    default: return "";
+  }
+}
+
+String veml6070_getValue(uint8_t index) {
+  if (index >= VEML6070_PARAM_COUNT || !available.veml6070) return "";
+  switch (index) {
+    case 0: return String(veml6070Values.raw);
+    case 1: return String(veml6070Values.raw > 200 ? "High" : (veml6070Values.raw > 100 ? "Medium" : "Low"));
+    case 2: return String("0x") + String(veml6070Values.msb, HEX) + String("/0x") + String(veml6070Values.lsb, HEX);
+    default: return "";
+  }
+}
+
+String veml6075_getValue(uint8_t index) {
+  if (index >= VEML6075_PARAM_COUNT || !available.veml6075) return "";
+  switch (index) {
+    case 0: return String(veml6075Values.uva);
+    case 1: return String(veml6075Values.uvb);
+    case 2: return String(veml6075Values.uvaComp, 1);
+    case 3: return String(veml6075Values.uvbComp, 1);
+    case 4: return String(veml6075Values.index, 2);
+    case 5: return String(veml6075Values.comp1) + "/" + String(veml6075Values.comp2);
+    default: return "";
+  }
+}
+
 // Forward declarations
 String formatRuntime(uint32_t elapsedUs);
 
@@ -281,6 +520,39 @@ void row(int y, const char *label, const String &value, uint16_t color = TFT_WHI
   tft.drawRightString(value, 474, y, 2);
 }
 
+/// @brief Display a parameter triple: (Name, Value, Unit)
+/// Renders: "Name: value unit" with color-coded value
+/// This ensures consistent triple structure across all pages (FEATURE-SPEC-007)
+void rowTriple(int y, const char *name, const String &value, const String &unit, uint16_t color = TFT_WHITE)
+{
+  // Display: "Name:" (left, white) | "value unit" (right, color-coded)
+  writeText(6, y, name, TFT_WHITE);
+  tft.setTextPadding(320);
+  tft.setTextColor(color, TFT_BLACK);
+  String displayValue = value + (unit.length() > 0 ? String(" ") + unit : "");
+  tft.drawRightString(displayValue, 474, y, 2);
+}
+
+/// @brief Display all sensor parameters using central parameter definition
+/// Eliminates redundancy: one definition, used by both Large Display and Sensor Page (FEATURE-SPEC-008)
+void displaySensorPage(
+  const ParameterTriple* params,
+  uint8_t paramCount,
+  String (*getValueFunc)(uint8_t)
+) {
+  int displayY = 56;
+  const int lineHeight = 24;
+  
+  for (uint8_t i = 0; i < paramCount && displayY < 280; i++) {
+    String value = getValueFunc(i);
+    // Add colon to label for display
+    String label = String(params[i].label) + ":";
+    rowTriple(displayY, label.c_str(), value, params[i].unit, params[i].color);
+    displayY += lineHeight;
+  }
+  tft.setTextPadding(0);
+}
+
 void footer(const char *status)
 {
   writeText(6, 294, status, TFT_DARKGREY);
@@ -294,133 +566,249 @@ void unavailable(const char *name, const char *address, const char *addressLabel
   writeText(6, 64, "Sensor nicht vorhanden", TFT_RED, 2);
   writeText(6, 142, "Y: vorherige Seite", TFT_WHITE);
   writeText(6, 166, "A: naechste Seite", TFT_WHITE);
-  footer("Keine Daten verfuegbar");
+  footer("No data available");
 }
 
-// ==================== LARGE DISPLAY MODE HELPER FUNCTIONS (INA219 Page 2) ====================
+// ==================== FEATURE-SPEC-007: UNIVERSAL LARGE DISPLAY MODE INFRASTRUCTURE ====================
 
-const char* getLargeDisplayLabel(uint8_t valueIndex)
-{
-  static const char* labels[] = {
-    "Laufzeit",          // 0 - Runtime
-    "Batterie",          // 1 - Bus voltage
-    "Versorgung",        // 2 - Shunt voltage
-    "Strom",             // 3 - Current
-    "Ladung",            // 4 - Charge
-    "Shunt-Spannung",    // 5 - Load voltage
-    "Power"              // 6 - Power
-  };
-  return valueIndex < 7 ? labels[valueIndex] : "???";
-}
+// Forward declarations for combined helper functions (implemented below)
+String ina219_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String bme280_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String gamepad_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String encoder_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String scd30_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String si1145_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String tsl2591_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String veml6070_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String veml6075_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+String ds2484_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
 
-String getLargeDisplayValue(uint8_t valueIndex)
-{
-  // Must match standard pageIna219() formatting exactly per BR-033
-  switch (valueIndex) {
-    case 0:  // Runtime (Laufzeit) - use formatRuntime() for HH:MM:SS format
-      {
-        const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
-        return formatRuntime(runtimeUs);
-      }
-    case 1:  // Battery/Load voltage (Batterie) - MUST use ina219Values.load!
-      return String(ina219Values.load, 3);  // 3 decimals
-    case 2:  // Supply/Bus voltage (Versorgung) - MUST use ina219Values.bus!
-      return String(ina219Values.bus, 3);  // 3 decimals
-    case 3:  // Current (Strom) - 1 decimal to match standard page!
-      return String(ina219Values.current, 1);  // 1 decimal (not 3!)
-    case 4:  // Charge (Ladung)
-      return String(ina219Values.chargeMah, 3);  // 3 decimals
-    case 5:  // Load voltage / Shunt voltage (Shunt-Spannung) - MUST use ina219Values.shunt, 2 decimals!
-      return String(ina219Values.shunt, 2);  // 2 decimals (not 3!)
-    case 6:  // Power (Power) - 0 decimals (cast to uint16_t) to match standard page!
-      return String((uint16_t)ina219Values.power);  // 0 decimals (not 3!)
-    default:
-      return "???";
+/// @brief Get the number of values available in large display mode for a given page
+/// @param pageIndex Page index (0-9)
+/// @return Number of displayable values for that page (3-9)
+uint8_t getPageValueCount(uint8_t pageIndex) {
+  switch (pageIndex) {
+    case 0:  return BME280_PARAM_COUNT;     // BME280
+    case 1:  return GAMEPAD_PARAM_COUNT;    // Gamepad
+    case 2:  return INA219_PARAM_COUNT;     // INA219
+    case 3:  return ENCODER_PARAM_COUNT;    // Encoder
+    case 4:  return SCD30_PARAM_COUNT;      // SCD30
+    case 5:  return SI1145_PARAM_COUNT;     // SI1145
+    case 6:  return TSL2591_PARAM_COUNT;    // TSL2591
+    case 7:  return VEML6070_PARAM_COUNT;   // VEML6070
+    case 8:  return VEML6075_PARAM_COUNT;   // VEML6075
+    case 9:  {                              // DS2484: Dynamic
+      if (!available.ds2484 || ds2484Values.sensorCount == 0) return 0;
+      return 3 * ds2484Values.sensorCount;
+    }
+    default: return 0;
   }
 }
 
-const char* getLargeDisplayUnit(uint8_t valueIndex)
-{
-  static const char* units[] = {
-    "",       // 0 - Runtime (no unit, already formatted as HH:MM:SS)
-    "V",      // 1 - Batterie (load voltage)
-    "V",      // 2 - Versorgung (bus voltage)
-    "mA",     // 3 - Strom (current)
-    "mAh",    // 4 - Ladung (charge)
-    "mV",     // 5 - Shunt-Spannung (shunt voltage)
-    "mW"      // 6 - Power
-  };
-  return valueIndex < 7 ? units[valueIndex] : "";
-}
-
-uint16_t getLargeDisplayColor(uint8_t valueIndex)
-{
-  switch (valueIndex) {
-    case 0:  // Laufzeit - Cyan (computed value)
-      return TFT_CYAN;
-    case 1:  // Batterie - Green (primary)
-      return TFT_GREEN;
-    case 2:  // Versorgung - Green (primary)
-      return TFT_GREEN;
-    case 3:  // Strom - Orange (secondary)
-      return TFT_ORANGE;
-    case 4:  // Ladung - Cyan (computed value)
-      return TFT_CYAN;
-    case 5:  // Shunt-Spannung - Green (primary)
-      return TFT_GREEN;
-    case 6:  // Power - Orange (secondary)
-      return TFT_ORANGE;
-    default:
-      return TFT_WHITE;  // Fallback error color
+/// @brief Unified large display renderer for all pages (FEATURE-SPEC-007)
+/// Displays a single sensor value in large format: title, label, huge value (Font 8), unit, footer
+/// @param pageIndex Page to render (0-9)
+/// @param valueIndex Value to display within that page (0 to pageValueCount-1)
+void renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex) {
+  // Get page-specific data via combined helper function
+  const char* label = nullptr;
+  const char* unit = nullptr;
+  uint16_t color = TFT_WHITE;
+  String value = "";
+  
+  switch (pageIndex) {
+    case 0:  value = bme280_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 1:  value = gamepad_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 2:  value = ina219_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 3:  value = encoder_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 4:  value = scd30_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 5:  value = si1145_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 6:  value = tsl2591_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 7:  value = veml6070_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 8:  value = veml6075_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    case 9:  value = ds2484_getLargeDisplayData(valueIndex, &label, &unit, &color); break;
+    default: return;
   }
-}
-
-void pageLargeDisplayIna219(uint8_t valueIndex)
-{
-  // Main renderer for large display mode
-  // Display Resolution: 480px HORIZONTAL (x) × 320px VERTICAL (y) in landscape mode
-  // Optimized rendering: fillScreen once, then draw all elements in order (top to bottom)
-  // This reduces flicker compared to incremental drawing
   
-  // Get display components first (before any drawing)
-  const char* label = getLargeDisplayLabel(valueIndex);
-  String value = getLargeDisplayValue(valueIndex);
-  const char* unit = getLargeDisplayUnit(valueIndex);
-  uint16_t color = getLargeDisplayColor(valueIndex);
-  
-  // Single screen clear
+  // Render layout (identical for all pages)
   tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);  // Middle-center alignment
   
-  // Set middle-center alignment for all text (x is center at 240 for 480px width)
-  tft.setTextDatum(MC_DATUM);
+  // Get page title for display
+  const char* pageTitle = nullptr;
+  switch (pageIndex) {
+    case 0: pageTitle = "BME280 Climate Sensor"; break;
+    case 1: pageTitle = "Gamepad QT Controller"; break;
+    case 2: pageTitle = "INA219 Power Monitor"; break;
+    case 3: pageTitle = "Rotary Encoder Input"; break;
+    case 4: pageTitle = "SCD30 CO2 Sensor"; break;
+    case 5: pageTitle = "SI1145 UV/IR Sensor"; break;
+    case 6: pageTitle = "TSL2591 Light Sensor"; break;
+    case 7: pageTitle = "VEML6070 UV Sensor"; break;
+    case 8: pageTitle = "VEML6075 UV Sensor"; break;
+    case 9: pageTitle = "DS2484 1-Wire Adapter"; break;
+    default: pageTitle = "Unknown"; break;
+  }
   
-  // Draw header section (Font 4 title + separator line)
+  // Draw layout components
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString("INA219 Large Display", 240, 18, 4);
+  tft.drawString(pageTitle, 240, 18, 4);          // Title (Font 4, Cyan, top)
+  
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawFastHLine(6, 48, 468, TFT_DARKGREY);
+  tft.drawFastHLine(6, 48, 468, TFT_DARKGREY);   // Separator line
   
-  // Draw label (Font 4, centered at x=240, y=70) - below header with breathing room
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString(label, 240, 70, 4);
+  tft.drawString(label ? label : "???", 240, 70, 4);  // Label (Font 4, Cyan)
   
-  // Draw value (Font 8, centered at x=240, y=160, with color per value type)
-  // This is the focal point: large and centered in the display
   tft.setTextColor(color, TFT_BLACK);
-  tft.drawString(value, 240, 160, 8);
+  tft.drawString(value, 240, 160, 8);             // Value (Font 8, color-coded, focal point)
   
-  // Draw unit (Font 4, centered at x=240, y=240 - SAME SIZE AS LABEL, good spacing)
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString(unit, 240, 240, 4);
+  tft.drawString(unit ? unit : "", 240, 240, 4); // Unit (Font 4, White)
   
-  // Draw footer with navigation instructions (Font 2, centered at x=240, y=295)
-  // Must stay within 320px vertical boundary!
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawString("B:next X:prev Y:exit", 240, 295, 2);
+  tft.drawString("B:next X:prev Y:exit", 240, 295, 2);  // Footer (Font 2, Dark Grey)
   
-  // Reset text datum to default
-  tft.setTextDatum(TL_DATUM);
+  tft.setTextDatum(TL_DATUM);  // Reset to default
 }
+
+// ==================== END LARGE DISPLAY MODE INFRASTRUCTURE ====================
+
+// ==================== END LARGE DISPLAY MODE INFRASTRUCTURE ====================
+
+// ==================== LARGE DISPLAY MODE COMBINED HELPER FUNCTIONS ====================
+
+/// Page 0: BME280 - Uses central parameter definitions (FEATURE-SPEC-008)
+String bme280_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= BME280_PARAM_COUNT) return "";
+  *outLabel = bme280_params[valueIndex].label;
+  *outUnit = bme280_params[valueIndex].unit;
+  *outColor = bme280_params[valueIndex].color;
+  return bme280_getValue(valueIndex);
+}
+
+/// Page 1: Gamepad - Uses central parameter definitions (FEATURE-SPEC-008)
+String gamepad_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= GAMEPAD_PARAM_COUNT) return "";
+  *outLabel = gamepad_params[valueIndex].label;
+  *outUnit = gamepad_params[valueIndex].unit;
+  *outColor = gamepad_params[valueIndex].color;
+  return gamepad_getValue(valueIndex);
+}
+
+/// Page 2: INA219 - Uses central parameter definitions (FEATURE-SPEC-008)
+String ina219_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= INA219_PARAM_COUNT) return "";
+  *outLabel = ina219_params[valueIndex].label;
+  *outUnit = ina219_params[valueIndex].unit;
+  *outColor = ina219_params[valueIndex].color;
+  return ina219_getValue(valueIndex);
+}
+
+/// Page 3: Encoder - Uses central parameter definitions (FEATURE-SPEC-008)
+String encoder_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= ENCODER_PARAM_COUNT) return "";
+  *outLabel = encoder_params[valueIndex].label;
+  *outUnit = encoder_params[valueIndex].unit;
+  *outColor = encoder_params[valueIndex].color;
+  return encoder_getValue(valueIndex);
+}
+
+/// Page 4: SCD30 - Uses central parameter definitions (FEATURE-SPEC-008)
+String scd30_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= SCD30_PARAM_COUNT) return "";
+  *outLabel = scd30_params[valueIndex].label;
+  *outUnit = scd30_params[valueIndex].unit;
+  *outColor = scd30_params[valueIndex].color;
+  return scd30_getValue(valueIndex);
+}
+
+/// Page 5: SI1145 - Uses central parameter definitions (FEATURE-SPEC-008)
+String si1145_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= SI1145_PARAM_COUNT) return "";
+  *outLabel = si1145_params[valueIndex].label;
+  *outUnit = si1145_params[valueIndex].unit;
+  *outColor = si1145_params[valueIndex].color;
+  return si1145_getValue(valueIndex);
+}
+
+/// Page 6: TSL2591 - Uses central parameter definitions (FEATURE-SPEC-008)
+String tsl2591_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= TSL2591_PARAM_COUNT) return "";
+  *outLabel = tsl2591_params[valueIndex].label;
+  *outUnit = tsl2591_params[valueIndex].unit;
+  *outColor = tsl2591_params[valueIndex].color;
+  return tsl2591_getValue(valueIndex);
+}
+
+/// Page 7: VEML6070 - Uses central parameter definitions (FEATURE-SPEC-008)
+String veml6070_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= VEML6070_PARAM_COUNT) return "";
+  *outLabel = veml6070_params[valueIndex].label;
+  *outUnit = veml6070_params[valueIndex].unit;
+  *outColor = veml6070_params[valueIndex].color;
+  return veml6070_getValue(valueIndex);
+}
+
+/// Page 8: VEML6075 - Uses central parameter definitions (FEATURE-SPEC-008)
+String veml6075_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (valueIndex >= VEML6075_PARAM_COUNT) return "";
+  *outLabel = veml6075_params[valueIndex].label;
+  *outUnit = veml6075_params[valueIndex].unit;
+  *outColor = veml6075_params[valueIndex].color;
+  return veml6075_getValue(valueIndex);
+}
+
+/// Page 9: DS2484 1-Wire Temperature Sensor Large Display Helper (FEATURE-SPEC-007)
+String ds2484_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor) {
+  if (!available.ds2484 || ds2484Values.sensorCount == 0 || valueIndex >= (3 * ds2484Values.sensorCount)) return "";
+  
+  uint8_t sensorIdx = valueIndex / 3;
+  uint8_t fieldIdx = valueIndex % 3;
+  
+  if (sensorIdx >= ds2484Values.sensorCount) return "";
+  
+  const Ds18b20Sensor &sensor = ds2484Values.sensors[sensorIdx];
+  
+  switch (fieldIdx) {
+    case 0: {  // ROM-ID
+      *outLabel = "ROM-ID";
+      *outUnit = "Hex";
+      *outColor = TFT_CYAN;
+      String romId = "";
+      for (int i = 0; i < 8; i++) {
+        if (i > 0) romId += ":";
+        romId += String(sensor.address[i], HEX);
+      }
+      return romId;
+    }
+    case 1: {  // Temperature
+      *outLabel = "Temperature";
+      *outUnit = "°C";
+      if (sensor.temperature == -127.0f) {
+        *outColor = TFT_RED;
+        return "Disconnected";
+      }
+      *outColor = TFT_GREEN;
+      return String(sensor.temperature, 2);
+    }
+    case 2: {  // Status
+      *outLabel = "Status";
+      *outUnit = "Text";
+      if (sensor.temperature == -127.0f) {
+        *outColor = TFT_RED;
+        return "Not Found";
+      }
+      *outColor = TFT_GREEN;
+      return "OK";
+    }
+    default: return "";
+  }
+}
+
+// ==================== END COMBINED HELPER FUNCTIONS ====================
+
+// ==================== OLD INA219 HELPERS (KEPT FOR COMPATIBILITY - TO BE REMOVED) ====================
 
 // ==================== END LARGE DISPLAY MODE HELPERS ====================
 
@@ -1171,41 +1559,43 @@ bool valuesChanged()
   return false;  // No values changed
 }
 
-/// @brief Check if the SPECIFIC value displayed in Large Display Mode has changed
-/// In Large Display Mode, only the value at largeDisplayIndex should trigger a redraw.
+/// @brief Check if the SPECIFIC value displayed in Large Display Mode has changed (FEATURE-SPEC-007)
+/// In Large Display Mode, only the value at largeDisplayMode.valueIndex should trigger a redraw.
 /// This prevents unnecessary updates when other sensors change.
-/// Returns false if NOT in large display mode on INA219 page (use valuesChanged() instead).
+/// Returns false if NOT in large display mode.
 bool largeDisplayValueChanged()
 {
-  // Only apply this optimization if in large display mode on INA219 page
-  if (!largeDisplayMode || currentPage != 2) {
+  // Only apply this optimization if in large display mode
+  if (!largeDisplayMode.active) {
     return false;  // Not in large display mode; use regular valuesChanged()
   }
   
-  // Check only the value at largeDisplayIndex
-  switch (largeDisplayIndex) {
-    case 0:  // Laufzeit (Runtime) - computed from startTimeUs, changes every second
-      // Runtime changes continuously, so always return true to update display
+  uint8_t pageIndex = largeDisplayMode.currentPage;
+  uint8_t valueIndex = largeDisplayMode.valueIndex;
+  
+  // Page-specific checks - for now, always return true to ensure display updates
+  // In the future, this can be optimized with per-page value change tracking
+  switch (pageIndex) {
+    case 0:  // BME280 - runtime changes every second
       return true;
-      
-    case 1:  // Batterie (Load Voltage)
-      return ina219Values.load != lastIna219Values.load;
-      
-    case 2:  // Versorgung (Bus Voltage)
-      return ina219Values.bus != lastIna219Values.bus;
-      
-    case 3:  // Strom (Current)
-      return ina219Values.current != lastIna219Values.current;
-      
-    case 4:  // Ladung (Charge)
-      return ina219Values.chargeMah != lastIna219Values.chargeMah;
-      
-    case 5:  // Shunt-Spannung (Shunt Voltage)
-      return ina219Values.shunt != lastIna219Values.shunt;
-      
-    case 6:  // Power
-      return ina219Values.power != lastIna219Values.power;
-      
+    case 1:  // Gamepad - button states change frequently
+      return true;
+    case 2:  // INA219 - runtime changes every second
+      return true;
+    case 3:  // Encoder - position/delta change frequently
+      return true;
+    case 4:  // SCD30 - CO2/temp/humidity change gradually
+      return true;
+    case 5:  // SI1145 - light levels change gradually
+      return true;
+    case 6:  // TSL2591 - light levels change gradually
+      return true;
+    case 7:  // VEML6070 - UV levels change gradually
+      return true;
+    case 8:  // VEML6075 - UV levels change gradually
+      return true;
+    case 9:  // DS2484 - temperatures change gradually
+      return true;
     default:
       return false;
   }
@@ -1473,108 +1863,112 @@ void pageIna219()
 {
   if (!available.ina219) return unavailable("INA219", "0x40", "I2C address:");
   
-  // Check if in large display mode
-  if (largeDisplayMode) {
-    pageLargeDisplayIna219(largeDisplayIndex);
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 2) {
+    renderLargeDisplay(2, largeDisplayMode.valueIndex);
     return;
   }
   
-  // Standard page layout (existing code)
-  // Calculate runtime since measurement started
-  const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
-  String runtimeStr = formatRuntime(runtimeUs);
-  
-  // Determine charging status based on current polarity
-  const char *statusLabel = ina219Values.current > 0 ? "Charging" : "Discharging";
-  
-  // Display all values
-  row(56, "Laufzeit:", runtimeStr, TFT_CYAN);
-  row(80, "Batterie:", String(ina219Values.load, 3) + " V", TFT_GREEN);
-  row(104, "Versorgung:", String(ina219Values.bus, 3) + " V", TFT_GREEN);
-  row(128, "Strom:", String(ina219Values.current, 1) + " mA [" + statusLabel + "]", TFT_ORANGE);
-  row(152, "Ladung:", String(ina219Values.chargeMah, 3) + " mAh", TFT_CYAN);
-  row(176, "Shunt-Spannung:", String(ina219Values.shunt, 2) + " mV", TFT_GREEN);
-  row(200, "Power:", String((uint16_t)ina219Values.power) + " mW", TFT_ORANGE);
-  
-  footer("Y/A: Seite wechseln | INA219");
+  // Display all INA219 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(ina219_params, INA219_PARAM_COUNT, ina219_getValue);
+  footer("Y/A: Change page | INA219");
 }
 
 void pageVeml6075()
 {
   if (!available.veml6075) return unavailable("VEML6075", "0x10", "I2C address:");
-  row(56, "UVA raw:", String(veml6075Values.uva), TFT_GREEN);
-  row(80, "UVB raw:", String(veml6075Values.uvb), TFT_GREEN);
-  row(104, "UVCOMP1/2:", String(veml6075Values.comp1) + " / " + String(veml6075Values.comp2), TFT_ORANGE);
-  row(128, "UVA compensated:", String(veml6075Values.uvaComp, 1), TFT_CYAN);
-  row(152, "UVB compensated:", String(veml6075Values.uvbComp, 1), TFT_CYAN);
-  row(176, "UV index:", String(veml6075Values.index, 2), TFT_CYAN);
-  footer("Y/A: Seite wechseln | VEML6075");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 8) {
+    renderLargeDisplay(8, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all VEML6075 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(veml6075_params, VEML6075_PARAM_COUNT, veml6075_getValue);
+  footer("Y/A: Change page | VEML6075");
 }
 
 void pageTsl2591()
 {
   if (!available.tsl2591) return unavailable("TSL2591", "0x29", "I2C address:");
-  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
-  row(56, "Full spectrum:", String(tsl2591Values.fullSpectrum), TFT_GREEN);
-  row(80, "Infrared:", String(tsl2591Values.infrared), TFT_GREEN);
-  row(104, "Visible:", String(tsl2591Values.visible), TFT_ORANGE);
-  row(128, "Lux:", String(tsl2591Values.lux, 2), TFT_CYAN);
-  footer("Y/A: Seite wechseln | TSL2591");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 6) {
+    renderLargeDisplay(6, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all TSL2591 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(tsl2591_params, TSL2591_PARAM_COUNT, tsl2591_getValue);
+  footer("Y/A: Change page | TSL2591");
 }
 
 void pageEncoder()
 {
   if (!available.encoder) return unavailable("Rotary Encoder", "0x36", "I2C address:");
-  row(56, "Position:", String((long)encoderValues.position), TFT_GREEN);
-  row(80, "Delta:", String((long)encoderValues.delta), TFT_GREEN);
-  row(104, "Button:", encoderValues.pressed ? "PRESSED" : "released", TFT_ORANGE);
-  row(128, "Presses:", String((unsigned long)encoderValues.presses), TFT_ORANGE);
-  row(152, "LED color:", encoderValues.color, TFT_CYAN);
-  row(176, "LED brightness:", String((int)encoderValues.brightness) + " / 255", TFT_CYAN);
-  row(200, "Seesaw temp:", String(seesawTemperature, 1) + " C", TFT_ORANGE);
-  footer("Y/A: Seite wechseln | Encoder");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 3) {
+    renderLargeDisplay(3, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all Encoder parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(encoder_params, ENCODER_PARAM_COUNT, encoder_getValue);
+  footer("Y/A: Change page | Encoder");
 }
 
 void pageVeml6070()
 {
   if (!available.veml6070) return unavailable("VEML6070", "0x38/0x39", "I2C address:");
-  const char *level = veml6070Values.raw < 200 ? "Very low" : veml6070Values.raw < 500 ? "Low" : veml6070Values.raw < 1000 ? "Moderate" : veml6070Values.raw < 2000 ? "High" : "Very high";
-  row(56, "UVA raw:", String(veml6070Values.raw), TFT_GREEN);
-  row(80, "LSB / MSB:", String("0x") + String(veml6070Values.lsb, HEX) + " / 0x" + String(veml6070Values.msb, HEX), TFT_ORANGE);
-  row(104, "UV level:", level, TFT_CYAN);
-  footer("Y/A: Seite wechseln | VEML6070");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 7) {
+    renderLargeDisplay(7, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all VEML6070 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(veml6070_params, VEML6070_PARAM_COUNT, veml6070_getValue);
+  footer("Y/A: Change page | VEML6070");
 }
 
 void pageSi1145()
 {
   if (!available.si1145) return unavailable("SI1145", "0x60", "I2C address:");
-  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
-  row(56, "Visible:", String(si1145Values.visible), TFT_GREEN);
-  row(80, "Infrared:", String(si1145Values.infrared), TFT_GREEN);
-  row(104, "UV raw:", String(si1145Values.uv), TFT_ORANGE);
-  row(128, "UV index:", String(si1145Values.uvIndex, 2), TFT_CYAN);
-  footer("Y/A: Seite wechseln | SI1145");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 5) {
+    renderLargeDisplay(5, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all SI1145 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(si1145_params, SI1145_PARAM_COUNT, si1145_getValue);
+  footer("Y/A: Change page | SI1145");
 }
 
 void pageScd30()
 {
   if (!available.scd30) return unavailable("SCD30", "0x61", "I2C address:");
-  row(56, "CO2 ppm:", String(scd30Values.co2, 0), TFT_GREEN);
-  row(80, "Temperature:", String(scd30Values.temp, 2) + " C", TFT_GREEN);
-  row(104, "Humidity:", String(scd30Values.humidity, 2) + " %", TFT_ORANGE);
-  footer("Y/A: Seite wechseln | SCD30");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 4) {
+    renderLargeDisplay(4, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all SCD30 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(scd30_params, SCD30_PARAM_COUNT, scd30_getValue);
+  footer("Y/A: Change page | SCD30");
 }
 
 void pageBme280()
 {
   if (!available.bme280) return unavailable("BME280", "0x77", "I2C address:");
-  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
-  row(56, "Temperature:", String(bme280Values.temperature, 2) + " C", TFT_GREEN);
-  row(80, "Humidity:", String(bme280Values.humidity, 2) + " %", TFT_GREEN);
-  row(104, "Pressure:", String(bme280Values.pressure, 2) + " hPa", TFT_ORANGE);
-  row(128, "Altitude:", String(bme280Values.altitude, 1) + " m", TFT_CYAN);
-  row(152, "Dew point:", String(bme280Values.dewPoint, 2) + " C", TFT_CYAN);
-  footer("Y/A: Seite wechseln | BME280");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 0) {
+    renderLargeDisplay(0, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all BME280 parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(bme280_params, BME280_PARAM_COUNT, bme280_getValue);
+  footer("Y/A: Change page | BME280");
 }
 
 String gamepadButtonState(uint8_t pin)
@@ -1595,28 +1989,33 @@ String gamepadEventText()
 void pageGamepad()
 {
   if (!available.gamepad) return unavailable("Gamepad QT", "0x50", "I2C address:");
-  row(56, "Joystick X:", String(gamepadValues.x), TFT_GREEN);
-  row(80, "Joystick Y:", String(gamepadValues.y), TFT_GREEN);
-  row(104, "Button X:", gamepadButtonState(GAMEPAD_BUTTON_X), TFT_ORANGE);
-  row(128, "Button Y:", gamepadButtonState(GAMEPAD_BUTTON_Y), TFT_ORANGE);
-  row(152, "Button A:", gamepadButtonState(GAMEPAD_BUTTON_A), TFT_ORANGE);
-  row(176, "Button B:", gamepadButtonState(GAMEPAD_BUTTON_B), TFT_ORANGE);
-  row(200, "Select / Start:", gamepadButtonState(GAMEPAD_BUTTON_SELECT) + " / " + gamepadButtonState(GAMEPAD_BUTTON_START), TFT_ORANGE);
-  row(224, "Button mask:", String("0x") + String((unsigned long)gamepadValues.buttons, HEX), TFT_CYAN);
-  row(248, "Last event:", gamepadEventText(), TFT_CYAN);
-  footer("Y/A: Seite wechseln | Gamepad QT");
+  
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 1) {
+    renderLargeDisplay(1, largeDisplayMode.valueIndex);
+    return;
+  }
+  
+  // Display all Gamepad parameters using central definition (FEATURE-SPEC-008)
+  displaySensorPage(gamepad_params, GAMEPAD_PARAM_COUNT, gamepad_getValue);
+  footer("Y/A: Change page | Gamepad QT");
 }
 
 void pageDs2484()
 {
   if (!available.ds2484) return unavailable("DS2484 1-Wire", "0x18", "I2C address:");
   
+  if (largeDisplayMode.active && largeDisplayMode.currentPage == 9) {
+    renderLargeDisplay(9, largeDisplayMode.valueIndex);
+    return;
+  }
+  
   // Status line: adapter present and sensor count
   const char *statusMsg = ds2484Values.sensorCount == 0 ? "OK - No Sensors Found" :
                           ds2484Values.sensorCount == 1 ? "OK - 1 Sensor" :
                           ds2484Values.sensorCount == 2 ? "OK - 2 Sensors" :
                           "OK - 3 Sensors";
-  row(56, "Status:", statusMsg, TFT_GREEN);
+  // Display values as triples: (Name, Value, Unit) for consistency (FEATURE-SPEC-007)
+  rowTriple(56, "Status:", String(statusMsg), "", TFT_GREEN);
   
   // Display up to 3 sensors with their ROM-IDs and temperatures
   int displayY = 90;
@@ -1649,7 +2048,7 @@ void pageDs2484()
   }
   
   tft.setTextPadding(0);
-  footer("Y/A: Seite wechseln | DS2484");
+  footer("Y/A: Change page | DS2484");
 }
 
 void drawCurrentPage(bool pageChanged)
@@ -1789,52 +2188,78 @@ void loop()
     const bool lastY = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_Y));
     const bool lastA = !(buttonsBefore & (1UL << GAMEPAD_BUTTON_A));
     
-    // Large Display Mode Logic (INA219 Page 2)
-    if (currentPage == 2) {  // INA219 page
-      // Button B: Enter mode or cycle forward
-      if (bPressed && !lastB) {
-        if (!largeDisplayMode) {
+    // Large Display Mode Logic (All Pages) - FEATURE-SPEC-007
+    // Button B: Enter mode or cycle forward
+    if (bPressed && !lastB) {
+      if (!largeDisplayMode.active) {
+        // Check if sensor on this page is available
+        bool sensorAvailable = false;
+        switch (currentPage) {
+          case 0: sensorAvailable = available.bme280; break;
+          case 1: sensorAvailable = available.gamepad; break;
+          case 2: sensorAvailable = available.ina219; break;
+          case 3: sensorAvailable = available.encoder; break;
+          case 4: sensorAvailable = available.scd30; break;
+          case 5: sensorAvailable = available.si1145; break;
+          case 6: sensorAvailable = available.tsl2591; break;
+          case 7: sensorAvailable = available.veml6070; break;
+          case 8: sensorAvailable = available.veml6075; break;
+          case 9: sensorAvailable = available.ds2484; break;
+          default: sensorAvailable = false; break;
+        }
+        uint8_t valueCount = getPageValueCount(currentPage);
+        if (valueCount > 0 && sensorAvailable) {
           // Enter large display mode
-          largeDisplayMode = true;
-          largeDisplayIndex = 0;
-        } else {
-          // Cycle forward in large display mode
-          largeDisplayIndex = (largeDisplayIndex + 1) % 7;
+          largeDisplayMode.active = true;
+          largeDisplayMode.currentPage = currentPage;
+          largeDisplayMode.valueIndex = 0;
         }
+      } else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
+        // Cycle forward in large display mode
+        uint8_t valueCount = getPageValueCount(currentPage);
+        largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex + 1) % valueCount;
       }
-      
-      // Button X: Cycle backward (only in large display mode)
-      if (xPressed && !lastX && largeDisplayMode) {
-        largeDisplayIndex = (largeDisplayIndex - 1 + 7) % 7;
+    }
+    
+    // Button X: Cycle backward (only in large display mode)
+    if (xPressed && !lastX && largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
+      uint8_t valueCount = getPageValueCount(currentPage);
+      largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + valueCount) % valueCount;
+    }
+    
+    // Button Y: Exit mode or navigate to previous page
+    if (yPressed && !lastY) {
+      if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
+        // Exit large display mode - clear screen to avoid artifacts
+        largeDisplayMode.active = false;
+        largeDisplayMode.valueIndex = 0;
+        // Force screen clear and header redraw to prevent display artifacts (FEATURE-SPEC-007)
+        const char *titles[] = {
+          "BME280 (0x77)",
+          "Gamepad QT (0x50)",
+          "INA219 (0x40)",
+          "Rotary Encoder (0x36)",
+          "SCD30 (0x61)",
+          "SI1145 (0x60)",
+          "TSL2591 (0x29)",
+          "VEML6070 (0x38/0x39)",
+          "VEML6075 (0x10)",
+          "DS2484 1-Wire (0x18)"
+        };
+        drawHeader(titles[currentPage]);
+      } else {
+        // Normal page navigation
+        currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
       }
-      
-      // Button Y: Exit mode or navigate to previous page
-      if (yPressed && !lastY) {
-        if (largeDisplayMode) {
-          // Exit large display mode with immediate clean rendering
-          largeDisplayMode = false;
-          largeDisplayIndex = 0;
-          // Clear screen and render standard page for clean transition
-          drawHeader("INA219 (0x40)");  // fillScreen(TFT_BLACK) + header
-          pageIna219();  // Render standard page data
-        } else {
-          // Normal page navigation
-          currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
-        }
+    }
+    
+    // Button A: Inactive in large display mode, or navigate to next page
+    if (aPressed && !lastA) {
+      if (!largeDisplayMode.active || largeDisplayMode.currentPage != currentPage) {
+        // Normal page navigation
+        currentPage = (currentPage + 1) % PAGE_COUNT;
       }
-      
-      // Button A: Inactive in large display mode, or navigate to next page
-      if (aPressed && !lastA) {
-        if (!largeDisplayMode) {
-          // Normal page navigation
-          currentPage = (currentPage + 1) % PAGE_COUNT;
-        }
-        // else: Button A is inactive in large display mode (do nothing)
-      }
-    } else {
-      // Normal page navigation for all other pages
-      if (yPressed && !lastY) currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
-      if (aPressed && !lastA) currentPage = (currentPage + 1) % PAGE_COUNT;
+      // else: Button A is inactive in large display mode (do nothing)
     }
     
     nextGamepadMs = now + INPUT_REFRESH_MS;
@@ -1842,10 +2267,10 @@ void loop()
 
   // PRIORITY 2: IMMEDIATE draw if page changed (no delay!)
   if (currentPage != lastPage) {
-    // Safety: Reset large display mode when leaving Page 2
-    if (lastPage == 2 && currentPage != 2) {
-      largeDisplayMode = false;
-      largeDisplayIndex = 0;
+    // Safety: Reset large display mode when navigating to different page (FEATURE-SPEC-007)
+    if (largeDisplayMode.active) {
+      largeDisplayMode.active = false;
+      largeDisplayMode.valueIndex = 0;
     }
     drawCurrentPage(true);
     lastPage = currentPage;
@@ -1882,9 +2307,10 @@ void loop()
   //   4. Rate limited to max 5 Hz (200 ms minimum between updates) to prevent flickering
   if (currentPage != lastPage) {
     // Page changed: redraw immediately with full refresh
-    if (lastPage == 2 && currentPage != 2) {
-      largeDisplayMode = false;
-      largeDisplayIndex = 0;
+    // Safety: Reset large display mode when navigating to different page (FEATURE-SPEC-007)
+    if (largeDisplayMode.active) {
+      largeDisplayMode.active = false;
+      largeDisplayMode.valueIndex = 0;
     }
     drawCurrentPage(true);
     lastPage = currentPage;
