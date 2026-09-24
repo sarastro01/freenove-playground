@@ -114,10 +114,40 @@ struct Ds2484Values {
   uint32_t lastConversionMs;    // Timestamp of last temperature conversion (3s interval)
 };
 
+// BME280 climate sensor cache struct (FEATURE-SPEC-005)
+struct Bme280Values {
+  float temperature;      // °C
+  float humidity;         // %RH
+  float pressure;         // hPa
+  float altitude;         // m
+  float dewPoint;         // °C
+};
+
+// TSL2591 light sensor cache struct (FEATURE-SPEC-005)
+struct Tsl2591Values {
+  uint32_t fullSpectrum;       // Full spectrum raw (16-bit CHAN0)
+  uint32_t infrared;           // Infrared raw (16-bit CHAN1)
+  uint32_t visible;            // Visible light (calculated)
+  float lux;                   // Illuminance in lux
+  uint16_t gain;               // Sensor gain setting
+  uint16_t integrationTime;    // Integration time in ms
+};
+
+// SI1145 multi-spectrum sensor cache struct (FEATURE-SPEC-005)
+struct Si1145Values {
+  uint16_t visible;       // Visible light raw (16-bit)
+  uint16_t infrared;      // Infrared raw (16-bit)
+  uint16_t uv;            // UV raw (register 0x2C)
+  float uvIndex;          // UV index (calculated: uv / 100.0f)
+};
+
 Ina219Values ina219Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
+Bme280Values bme280Values{};       // BME280 cache
+Tsl2591Values tsl2591Values{};     // TSL2591 cache
+Si1145Values si1145Values{};       // SI1145 cache
 EncoderValues encoderValues{};
 GamepadValues gamepadValues{};
 Ds2484Values ds2484Values{};  // DS2484 1-Wire adapter and sensors
@@ -397,6 +427,119 @@ bool readVeml6070(Veml6070Values &values)
   return true;
 }
 
+// New sensor read functions (FEATURE-SPEC-005: Unified Sensor Caching Architecture)
+
+void readBme280(Bme280Values &values)
+{
+  if (!available.bme280) return;
+  
+  uint32_t startTime = micros();
+  
+  // Read sensor values
+  float temperature = bme280.readTemperature();
+  float humidity = bme280.readHumidity();
+  float pressure = bme280.readPressure() / 100.0f;  // Pa → hPa
+  float altitude = bme280.readAltitude(1013.25f);   // m, using 1013.25 hPa reference
+  
+  // Plausibility check: Verify values in valid ranges
+  // Valid ranges: T[-40,85]°C, RH[0,100]%, P[300,1100]hPa
+  if (temperature < -40 || temperature > 85 ||
+      humidity < 0 || humidity > 100 ||
+      pressure < 300 || pressure > 1100) {
+    Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
+                  temperature, humidity, pressure);
+    // Do NOT update cache; last known values persist
+    return;
+  }
+  
+  // Calculate dew point using Alduchov & Eskridge formula (±0.35°C accuracy)
+  // Valid for 0-50°C, 1-100%RH
+  const float a = 17.62f;
+  const float b = 243.12f;
+  float alpha = ((a * temperature) / (b + temperature)) + log(humidity / 100.0f);
+  float dewPoint = (b * alpha) / (a - alpha);
+  
+  // Update cache (only on successful read)
+  values.temperature = temperature;
+  values.humidity = humidity;
+  values.pressure = pressure;
+  values.altitude = altitude;
+  values.dewPoint = dewPoint;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("BME280 read time: %lu µs\n", duration);
+}
+
+void readTsl2591(Tsl2591Values &values)
+{
+  if (!available.tsl2591) return;
+  
+  uint32_t startTime = micros();
+  
+  // API: getFullLuminosity() returns uint32_t with [IR(16-31) | FullSpec(0-15)]
+  // Lower 16 bits: CHAN0 (fullSpectrum = visible + infrared)
+  // Upper 16 bits: CHAN1 (infrared only)
+  uint32_t fullLum = tsl2591.getFullLuminosity();
+  uint32_t fullSpectrum = fullLum & 0xFFFF;        // Lower 16 bits (CHAN0)
+  uint32_t infrared = fullLum >> 16;               // Upper 16 bits (CHAN1)
+  uint32_t visible = (fullSpectrum > infrared) ? (fullSpectrum - infrared) : 0;
+  float lux = tsl2591.calculateLux(fullSpectrum, infrared);
+  uint16_t gain = tsl2591.getGain();
+  uint16_t integrationTime = tsl2591.getTiming();
+  
+  // Error check: If both channels read as zero, likely I2C error
+  if (fullSpectrum == 0 && infrared == 0) {
+    Serial.println("ERROR: TSL2591 read returned zero values");
+    // Do NOT update cache; last known values persist
+    return;
+  }
+  
+  // Update cache (only on successful read)
+  values.fullSpectrum = fullSpectrum;
+  values.infrared = infrared;
+  values.visible = visible;
+  values.lux = lux;
+  values.gain = gain;
+  values.integrationTime = integrationTime;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("TSL2591 read time: %lu µs\n", duration);
+}
+
+void readSi1145(Si1145Values &values)
+{
+  if (!available.si1145) return;
+  
+  uint32_t startTime = micros();
+  
+  // Read sensor values using Adafruit_SI1145 API
+  uint16_t visible = si1145.readVisible();
+  uint16_t infrared = si1145.readIR();
+  uint16_t uv = si1145.readUV();  // Raw UV from register 0x2C
+  
+  // Error check: If all three values are 0, likely I2C error
+  if (visible == 0 && infrared == 0 && uv == 0) {
+    Serial.println("ERROR: SI1145 read returned all zeros");
+    // Do NOT update cache; last known values persist
+    return;
+  }
+  
+  // Calculate UV index (standard Adafruit formula: raw / 100.0)
+  float uvIndex = uv / 100.0f;
+  
+  // Update cache (only on successful read)
+  values.visible = visible;
+  values.infrared = infrared;
+  values.uv = uv;
+  values.uvIndex = uvIndex;
+  
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("SI1145 read time: %lu µs\n", duration);
+}
+
 // DS2484 1-Wire temperature sensor functions
 String formatRomId(const uint8_t *address)
 {
@@ -582,6 +725,7 @@ void readEncoderAt50Hz()
 {
   if (!available.encoder) return;
 
+  uint32_t startTime = micros();
   int32_t position = encoder.getEncoderPosition();
   encoderValues.delta = position - encoderLastPosition;
   encoderLastPosition = position;
@@ -603,10 +747,16 @@ void readEncoderAt50Hz()
   encoderValues.presses = encoderPressCount;
   encoderValues.brightness = encoderBrightness;
   encoderValues.color = encoderColorNames[encoderColorIndex];
+  uint32_t endTime = micros();
+  uint32_t duration = endTime - startTime;
+  Serial.printf("Encoder read time: %lu µs\n", duration);
 }
 
 void readSensors()
 {
+  if (available.bme280) readBme280(bme280Values);       // New: BME280 caching (FEATURE-SPEC-005)
+  if (available.tsl2591) readTsl2591(tsl2591Values);    // New: TSL2591 caching (FEATURE-SPEC-005)
+  if (available.si1145) readSi1145(si1145Values);       // New: SI1145 caching (FEATURE-SPEC-005)
   if (available.veml6075) readVeml6075(veml6075Values);
   if (available.veml6070) readVeml6070(veml6070Values);
   if (available.scd30 && scd30Ready()) readScd30(scd30Values);
@@ -647,10 +797,14 @@ void readIna219At50Hz()
   }
 
   ina219Values.lastSampleUs = nowUs;
+  uint32_t readStartUs = micros();
   ina219Values.shunt = -ina219.getShuntVoltage_mV();
   ina219Values.bus = ina219.getBusVoltage_V();
   ina219Values.current = -ina219.getCurrent_mA();
   ina219Values.power = ina219.getPower_mW();
+  uint32_t readEndUs = micros();
+  uint32_t readDuration = readEndUs - readStartUs;
+  Serial.printf("INA219 read time: %lu µs\n", readDuration);
   ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
 }
 
@@ -710,15 +864,11 @@ void pageVeml6075()
 void pageTsl2591()
 {
   if (!available.tsl2591) return unavailable("TSL2591", "0x29", "I2C address:");
-  uint32_t luminosity = tsl2591.getFullLuminosity();
-  uint16_t ir = luminosity >> 16;
-  uint16_t full = luminosity & 0xFFFF;
-  int32_t visible = max(0L, (long)full - (long)ir);
-  float lux = tsl2591.calculateLux(full, ir);
-  row(56, "Full spectrum:", String(full), TFT_GREEN);
-  row(80, "Infrared:", String(ir), TFT_GREEN);
-  row(104, "Visible:", String((long)visible), TFT_ORANGE);
-  row(128, "Lux:", String(lux, 2), TFT_CYAN);
+  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
+  row(56, "Full spectrum:", String(tsl2591Values.fullSpectrum), TFT_GREEN);
+  row(80, "Infrared:", String(tsl2591Values.infrared), TFT_GREEN);
+  row(104, "Visible:", String(tsl2591Values.visible), TFT_ORANGE);
+  row(128, "Lux:", String(tsl2591Values.lux, 2), TFT_CYAN);
   footer("Y/A: Seite wechseln | TSL2591");
 }
 
@@ -748,13 +898,11 @@ void pageVeml6070()
 void pageSi1145()
 {
   if (!available.si1145) return unavailable("SI1145", "0x60", "I2C address:");
-  uint32_t visible = si1145.readVisible();
-  uint32_t infrared = si1145.readIR();
-  uint16_t uv = si1145.readUV();
-  row(56, "Visible:", String((unsigned long)visible), TFT_GREEN);
-  row(80, "Infrared:", String((unsigned long)infrared), TFT_GREEN);
-  row(104, "UV raw:", String(uv), TFT_ORANGE);
-  row(128, "UV index:", String(uv / 100.0f, 2), TFT_CYAN);
+  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
+  row(56, "Visible:", String(si1145Values.visible), TFT_GREEN);
+  row(80, "Infrared:", String(si1145Values.infrared), TFT_GREEN);
+  row(104, "UV raw:", String(si1145Values.uv), TFT_ORANGE);
+  row(128, "UV index:", String(si1145Values.uvIndex, 2), TFT_CYAN);
   footer("Y/A: Seite wechseln | SI1145");
 }
 
@@ -770,16 +918,12 @@ void pageScd30()
 void pageBme280()
 {
   if (!available.bme280) return unavailable("BME280", "0x77", "I2C address:");
-  float temp = bme280.readTemperature();
-  float humidity = bme280.readHumidity();
-  float pressure = bme280.readPressure() / 100.0f;
-  float altitude = bme280.readAltitude(1013.25f);
-  float dewPoint = temp - ((100.0f - humidity) / 5.0f);
-  row(56, "Temperature:", String(temp, 2) + " C", TFT_GREEN);
-  row(80, "Humidity:", String(humidity, 2) + " %", TFT_GREEN);
-  row(104, "Pressure:", String(pressure, 2) + " hPa", TFT_ORANGE);
-  row(128, "Altitude:", String(altitude, 1) + " m", TFT_CYAN);
-  row(152, "Dew point:", String(dewPoint, 2) + " C", TFT_CYAN);
+  // Read from cache (no direct I2C), updated every 500ms in readSensors() (FEATURE-SPEC-005)
+  row(56, "Temperature:", String(bme280Values.temperature, 2) + " C", TFT_GREEN);
+  row(80, "Humidity:", String(bme280Values.humidity, 2) + " %", TFT_GREEN);
+  row(104, "Pressure:", String(bme280Values.pressure, 2) + " hPa", TFT_ORANGE);
+  row(128, "Altitude:", String(bme280Values.altitude, 1) + " m", TFT_CYAN);
+  row(152, "Dew point:", String(bme280Values.dewPoint, 2) + " C", TFT_CYAN);
   footer("Y/A: Seite wechseln | BME280");
 }
 
@@ -932,8 +1076,31 @@ void detectSensors()
   }
 }
 
-
-
+// Initialize sensor caches with NaN values for floats (FEATURE-SPEC-005)
+// Distinguishes "uninitialized" from "real measurement = 0"
+void initializeSensorCaches()
+{
+  // BME280 cache
+  bme280Values.temperature = NAN;
+  bme280Values.humidity = NAN;
+  bme280Values.pressure = NAN;
+  bme280Values.altitude = NAN;
+  bme280Values.dewPoint = NAN;
+  
+  // TSL2591 cache (only float fields get NaN; uint32_t fields initialized to 0)
+  tsl2591Values.fullSpectrum = 0;       // uint32_t, initialized to 0
+  tsl2591Values.infrared = 0;           // uint32_t, initialized to 0
+  tsl2591Values.visible = 0;            // uint32_t, initialized to 0
+  tsl2591Values.lux = NAN;              // float, initialized to NaN
+  tsl2591Values.gain = 0;               // uint16_t, initialized to 0
+  tsl2591Values.integrationTime = 0;    // uint16_t, initialized to 0
+  
+  // SI1145 cache (only float fields get NaN; uint16_t fields initialized to 0)
+  si1145Values.visible = 0;   // uint16_t, initialized to 0
+  si1145Values.infrared = 0;  // uint16_t, initialized to 0
+  si1145Values.uv = 0;        // uint16_t, initialized to 0
+  si1145Values.uvIndex = NAN; // float, initialized to NaN
+}
 
 void setup()
 {
@@ -944,6 +1111,7 @@ void setup()
   tft.setRotation(3);
   drawHeader("Sensor Dashboard");
   detectSensors();
+  initializeSensorCaches();  // Initialize sensor caches with NaN (FEATURE-SPEC-005)
   if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
   readSensors();
   drawCurrentPage(true);
