@@ -3,6 +3,10 @@
 .venv/
 .env
 
+# Machine-specific backups (excluded from rslsync, kept only locally)
+.pio.majestix-backup/
+.venv.majestix-backup/
+
 # IDE
 .vscode/
 *.swp

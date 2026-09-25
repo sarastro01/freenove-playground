@@ -952,7 +952,7 @@ if ((int32_t)(now - deadline) >= 0) {
 
 ---
 
-## 15.1 Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006) — **NEW**
+## 15.1 Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006)
 
 ### Problem: Blocking Sensor Reads
 
@@ -970,95 +970,148 @@ readSensors():
 
 **Issue:** Long sensor reads (TSL2591 integration + DS18B20 conversion) blocked the main loop for 500+ ms, preventing responsive input.
 
-**Solution: Rotated Polling Schedule**
+**Solution: Rotated Polling with Phase-Based Organization**
 
-Split all slow I2C sensor reads into a 7-slot rotation with one sensor per 200 ms slot:
+Split all slow I2C sensor reads into a 10-slot rotation (2000ms cycle) organized into three phases: START async → READ sync → CHECK async.
 
-```
-Slot  Time   Sensor         Operation             Duration   Max Latency
-───────────────────────────────────────────────────────────────────────────
- 0    0 ms   BME280         Read temp/humidity    ~2.2 ms    2.2 ms
- 1    200    TSL2591        START async measure   ~0 ms      0 ms
- 2    400    SI1145         Read visible/IR       ~0.7 ms    0.7 ms
- 3    600    VEML6075       Read UV A/B           ~? ms      ? ms
- 4    800    VEML6070       Read UV level         ~? ms      ? ms
- 5    1000   SCD30          Read CO2 (CRC8)       ~? ms      ? ms
- 6    1200   DS18B20        START 1-Wire conv     ~0 ms      0 ms
- 7    1400   Async check    READ TSL2591 + DS18  ~? ms      ? ms
-                             (if ready)
-```
+### 10-Slot Rotating Schedule (2000ms Cycle)
 
-**Cycle Time:** 7 slots × 200 ms = 1.4 seconds (vs 500 ms prior)
+**Phase 1: START ASYNC (Slots 0-1, 0-200ms)**
+Trigger asynchronous measurements without blocking:
+
+| Slot | Time | Operation | Function | Duration | State Change |
+|------|------|-----------|----------|----------|--------------|
+| 0 | 0 ms | Start TSL2591 measurement | `startTsl2591Measurement()` | ~0 ms | tsl2591State: IDLE → MEASURING |
+| 1 | 200 ms | Start DS18B20 conversion | `startDs18b20Conversion()` | ~0 ms | ds18b20State: IDLE → CONVERTING |
+
+**Phase 2: READ SYNC (Slots 2-7, 400-1400ms)**
+Read synchronous sensors while async sensors complete in background:
+
+| Slot | Time | Sensor | Function | Duration | Notes |
+|------|------|--------|----------|----------|-------|
+| 2 | 400 ms | BME280 | `readBme280()` | ~2 ms | Temperature, pressure, humidity |
+| 3 | 600 ms | SI1145 | `readSi1145()` | ~1 ms | Visible light, infrared, UV |
+| 4 | 800 ms | VEML6075 | `readVeml6075()` | ~1 ms | UVA/UVB sensors |
+| 5 | 1000 ms | VEML6070 | `readVeml6070()` | ~1 ms | UV level |
+| 6 | 1200 ms | SCD30 | `readScd30()` | ~5-10 ms | CO2 with CRC8 validation |
+| 7 | 1400 ms | DS2484 Scan | `performDs2484Scan()` | ~10 ms | 1-Wire bus discovery (every 60s) |
+
+**Phase 3: CHECK ASYNC (Slots 8-9, 1600-1800ms)**
+Read async sensor results (guaranteed to be ready):
+
+| Slot | Time | Operation | Function | Timing Guarantee |
+|------|------|-----------|----------|------------------|
+| 8 | 1600 ms | Check TSL2591 result | `checkTsl2591Async()` | Started at 0ms, needs 200ms → **1400ms margin** ✓ |
+| 9 | 1800 ms | Check DS18B20 result | `checkDs18b20Async()` | Started at 200ms, needs 750ms → **850ms margin** ✓ |
+
+**Cycle Time:** 10 slots × 200 ms = **2000 ms** (vs 1400ms previously documented, 500ms before architecture change)
+
+**Why 2000ms (not 1400ms)?**
+- DS18B20 conversion at 12-bit precision requires 750ms minimum wait
+- Start time: Slot 1 (200ms)
+- Check time: Slot 9 (1800ms)
+- Elapsed: 1800 - 200 = 1600ms ✓ (>750ms, safe margin)
+- Extra 600ms buffer for unexpected delays
 
 ### Async Measurement Patterns
 
 **TSL2591 (200 ms integration time):**
 ```
 Timeline (ms):
-0 ────────── Start measurement (Slot 1)
-200 ──────── Measurement complete, result available
-1400 ─────── Read result (Slot 7, ~1200 ms later)
+  0 ──────────── Start measurement (Slot 0)
+200 ──────────── Measurement complete in hardware
+1600 ─────────── Read result (Slot 8, ~1400ms after completion)
 
 Non-blocking: Start → Wait in background → Read when ready
+Guarantee: 1600ms > 200ms integration ✓
 ```
 
-**DS18B20 (750 ms conversion time):**
+**DS18B20 (750 ms conversion time at 12-bit):**
 ```
 Timeline (ms):
-1200 ────── Start 1-Wire conversion (Slot 6)
-1950 ────── Conversion complete (~750 ms later)
-2800 ────── Read result (Slot 7 in next cycle, ~1600 ms later)
+200 ──────────── Start 1-Wire conversion (Slot 1)
+950 ──────────── Conversion complete (~750ms later)
+1800 ─────────── Read result (Slot 9, ~850ms after completion)
 
 Non-blocking: Start → Wait in background → Read when ready
+Guarantee: 1600ms elapsed > 750ms conversion ✓
 ```
 
-### Guaranteed Performance
+### Slot Dispatch Algorithm (Time-Based)
 
-| Metric | Value | Guarantee |
-|--------|-------|-----------|
-| **Max blocked time per slot** | 200 ms | ≤ 1 sensor read per slot |
-| **Input response latency** | < 200 ms | Gamepad/Encoder independent of sensors |
-| **Sensor freshness** | ≤ 1.4 s | Each sensor read once per cycle |
-| **Display refresh** | Event-driven | Only when values change |
+Slots determined by elapsed time using modulo arithmetic (startup-safe, no state counting):
+
+```cpp
+uint32_t currentSensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
+
+// With SENSOR_SLOT_INTERVAL_MS = 200, SLOT_COUNT = 10:
+// t=0-199ms:    slot 0
+// t=200-399ms:  slot 1
+// t=400-599ms:  slot 2
+// ...
+// t=1800-1999ms: slot 9
+// t=2000-2199ms: slot 0 (cycle repeats)
+```
+
+**Main loop dispatch:**
+```cpp
+static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
+uint32_t currentSensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
+if (currentSensorSlot != lastSensorSlotDispatched) {
+  rotatedReadSensor(currentSensorSlot);
+  lastSensorSlotDispatched = currentSensorSlot;
+}
+```
+
+**Benefits:**
+- Automatic synchronization with wallclock
+- Startup-safe (no need to initialize slot counter)
+- Robust across sleep/wake cycles
+- Prevents slot skipping or double-execution
 
 ### State Machines for Async Sensors
 
-**TSL2591State:**
+**TSL2591State (Enum):**
 ```cpp
-enum Tsl2591State { IDLE, MEASURING, READY };
-static Tsl2591State tsl2591State = IDLE;
+enum class Tsl2591State { IDLE = 0, MEASURING = 1 };
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
 static uint32_t tsl2591MeasureStartMs = 0;
 
-Slot 1: startTsl2591Measurement()
-  → tsl2591State = MEASURING
-  → tsl2591MeasureStartMs = millis()
-  → Return (no blocking)
+// Slot 0: startTsl2591Measurement()
+//   → Set tsl2591State = MEASURING
+//   → Record tsl2591MeasureStartMs = millis()
+//   → Trigger ADC on hardware
+//   → Return immediately (non-blocking)
 
-Slot 7: readTsl2591Async()
-  → if (millis() - tsl2591MeasureStartMs >= TSL2591_INTEGRATION_TIME_MS)
-      → readTsl2591(tsl2591Values)  // Cache result
-      → tsl2591State = IDLE
-    else
-      → Return (not ready, retry next cycle)
+// Slot 8: checkTsl2591Async()
+//   → if ((millis() - tsl2591MeasureStartMs) >= 200):
+//     → Read hardware ADC result
+//     → Update tsl2591Values cache
+//     → Set tsl2591State = IDLE
+//   → else:
+//     → Return early (not ready yet, retry next cycle)
 ```
 
-**Ds18b20State:**
+**Ds18b20State (Enum):**
 ```cpp
-enum Ds18b20State { IDLE, CONVERTING, READY };
-static Ds18b20State ds18b20State = IDLE;
+enum class Ds18b20State { IDLE = 0, CONVERTING = 1 };
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
 static uint32_t ds18b20ConvertStartMs = 0;
 
-Slot 6: startDs18b20Conversion()
-  → ds18b20State = CONVERTING
-  → ds18b20ConvertStartMs = millis()
-  → Return (no blocking)
+// Slot 1: startDs18b20Conversion()
+//   → For each discovered sensor: send 1-Wire Convert T (0x44)
+//   → Set ds18b20State = CONVERTING
+//   → Record ds18b20ConvertStartMs = millis()
+//   → Return immediately (non-blocking)
 
-Slot 7+ : readDs18b20Async()
-  → if (millis() - ds18b20ConvertStartMs >= DS18B20_CONVERSION_TIME_MS)
-      → readDs2484Temperatures(ds2484Values)  // Cache result
-      → ds18b20State = IDLE
-    else
-      → Return (not ready, retry next cycle)
+// Slot 9: checkDs18b20Async()
+//   → if ((millis() - ds18b20ConvertStartMs) >= 750):
+//     → For each sensor: read temperature scratchpad via 1-Wire
+//     → Update ds2484Values.sensors[i].temperature
+//     → Apply three-strike lockout (errorCount >= 3 → available = false)
+//     → Set ds18b20State = IDLE
+//   → else:
+//     → Return early (not ready yet, retry next cycle)
 ```
 
 ### Display Update Optimization (On-Change Only)
@@ -1083,19 +1136,28 @@ if (currentPage != lastPage) {
 
 **Benefit:** Eliminates flicker, reduces SPI load, responsive UI.
 
+### Guaranteed Performance
+
+| Metric | Value | Guarantee |
+|--------|-------|-----------|
+| **Max blocked time per slot** | <100 ms | Single sensor read per slot |
+| **Input response latency** | <100 ms | Gamepad/Encoder independent of sensors |
+| **Sensor freshness** | ≤ 2000 ms | Each sensor read once per cycle |
+| **Display refresh** | Event-driven | Only when values change |
+| **Loop frequency** | 50-100 Hz | Responsive UI, not blocked |
+
 ### Configuration
 
 ```cpp
 // Timing constraints (immutable)
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;
-constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;
+#define ENABLE_STATS_REPORTING 1                       // 1=enabled, 0=disabled
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // Slot interval
+constexpr uint32_t SLOT_COUNT = 10;                   // Slots per cycle
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // Stats reporting period
 
-// Sensor-specific (adjustable)
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit (can use 95/375 for faster)
-
-// Feature toggles
-#define ENABLE_STATS_REPORTING 1  // 1 = enabled, 0 = disabled
+// Sensor-specific timing (adjustable)
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Integration time for async wait
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // 12-bit precision (95ms=10-bit, 375ms=11-bit)
 ```
 
 ---

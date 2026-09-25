@@ -274,59 +274,90 @@ This handles ESP32 timer wrap-around correctly (millis wraps every ~49 days, mic
 
 ---
 
-## Non-Blocking Rotated Sensor Architecture Configuration (FEATURE-SPEC-006) — **NEW**
+## Non-Blocking Rotated Sensor Architecture Configuration (FEATURE-SPEC-006)
 
-### Rotation Timing
+### Slot Dispatcher Configuration
 
-**Immutable Constraint:**
+**Immutable Constraints (do not change without architectural redesign):**
 ```cpp
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (do not change)
+#define ENABLE_STATS_REPORTING 1                       // 1=enabled (default), 0=disabled
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // Slot interval (200ms per slot)
+constexpr uint32_t SLOT_COUNT = 10;                   // Number of slots per cycle
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // Stats reporting interval (1s)
 ```
 
-**Rotation Cycle:** 7 slots × 200 ms = 1.4 seconds per full cycle (vs 500 ms prior)
+**Rotation Cycle:** 10 slots × 200 ms = **2000 ms per full cycle**
 
-**Slot Allocation:**
+**Slot Schedule (Phase-Based Organization):**
 
-| Slot | Time | Sensor | Max Duration |  State |
-|------|------|--------|--------------|---------|
-| 0 | 0 ms | BME280 | ~2.2 ms | Read |
-| 1 | 200 ms | TSL2591 | ~0 ms | Async START |
-| 2 | 400 ms | SI1145 | ~0.7 ms | Read |
-| 3 | 600 ms | VEML6075 | ~? ms | Read |
-| 4 | 800 ms | VEML6070 | ~? ms | Read |
-| 5 | 1000 ms | SCD30 | ~? ms | Read (CRC8) |
-| 6 | 1200 ms | DS18B20 | ~0 ms | Async START |
-| 7 | 1400 ms | Async Check | ~? ms | TSL2591 + DS18B20 |
+**Phase 1: START ASYNC (Slots 0-1, 0-200ms)**
 
-### Sensor-Specific Timing
+| Slot | Time | Operation | Max Duration | State Change |
+|------|------|-----------|--------------|--------------|
+| 0 | 0 ms | startTsl2591Measurement() | ~0 ms | tsl2591State: IDLE → MEASURING |
+| 1 | 200 ms | startDs18b20Conversion() | ~0 ms | ds18b20State: IDLE → CONVERTING |
 
-**TSL2591 Integration Time (Measurement Duration):**
+**Phase 2: READ SYNC (Slots 2-7, 400-1400ms)**
+
+| Slot | Time | Sensor | Function | Max Duration |
+|------|------|--------|----------|--------------|
+| 2 | 400 ms | BME280 | readBme280() | ~2 ms |
+| 3 | 600 ms | SI1145 | readSi1145() | ~1 ms |
+| 4 | 800 ms | VEML6075 | readVeml6075() | ~1 ms |
+| 5 | 1000 ms | VEML6070 | readVeml6070() | ~1 ms |
+| 6 | 1200 ms | SCD30 | readScd30() | ~5-10 ms |
+| 7 | 1400 ms | DS2484 Scan | performDs2484Scan() (60s interval) | ~10 ms |
+
+**Phase 3: CHECK ASYNC (Slots 8-9, 1600-1800ms)**
+
+| Slot | Time | Operation | Timing Guarantee |
+|------|------|-----------|------------------|
+| 8 | 1600 ms | checkTsl2591Async() | Started at 0ms, needs 200ms → 1400ms margin ✓ |
+| 9 | 1800 ms | checkDs18b20Async() | Started at 200ms, needs 750ms → 850ms margin ✓ |
+
+### Sensor-Specific Timing Configuration
+
+**TSL2591 Integration Time (Async Measurement Duration):**
 ```cpp
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Adjustable at compile or runtime
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;  // Adjustable (default 200ms)
 ```
+
+**Description:**
+- Measurement triggered in Slot 0 (0 ms)
+- Result checked in Slot 8 (1600 ms)
+- Elapsed time: 1600 ms > 200 ms integration ✓ (1400ms margin)
 
 **Typical values:**
 - 100 ms (faster, less sensitivity)
-- 200 ms (standard, balanced)
+- 200 ms (standard, balanced, default)
 - 400 ms (slower, higher sensitivity)
 
-**Effect:** Measurement starts in Slot 1 (200 ms); must complete before Slot 7 (1400 ms) reads result (~1200 ms delay).
+**Effect on timing:** Does not affect cycle time (measurement happens in background). Only affects how long integration runs.
 
-**Configuration:** Edit value in src/main.cpp, rebuild, upload.
+**Configuration:** Edit value in `src/main.cpp`, rebuild, upload.
 
-**DS18B20 Conversion Time (1-Wire Temperature):**
+---
+
+**DS18B20 Conversion Time (1-Wire Async Conversion Duration):**
 ```cpp
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // 12-bit resolution (adjustable)
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // Adjustable (12-bit default)
 ```
 
-**Resolution options:**
-- 8-bit: 95 ms (fastest, ±0.5°C)
-- 10-bit: 375 ms (medium, ±0.25°C)
-- 12-bit: 750 ms (slowest, ±0.0625°C, default)
+**Description:**
+- Conversion triggered in Slot 1 (200 ms)
+- Result checked in Slot 9 (1800 ms)
+- Elapsed time: 1600 ms > 750 ms conversion ✓ (850ms margin)
 
-**Effect:** Conversion starts in Slot 6 (1200 ms); must complete before next cycle Slot 7 (~2100 ms, ~900 ms delay).
+**Resolution options (change to trade precision for speed):**
+- 8-bit: 95 ms (±0.5°C, fastest)
+- 10-bit: 375 ms (±0.25°C, medium)
+- 12-bit: 750 ms (±0.0625°C, slowest, default)
 
-**Configuration:** Edit value in src/main.cpp for different precision/speed trade-off.
+**Effect on timing:** Changing this value does NOT change cycle time (remains 2000ms). Only affects margin available for conversion to complete.
+
+**Configuration:** Edit value in `src/main.cpp` (search for `DS18B20_CONVERSION_TIME_MS`), rebuild, upload.
+
+**Warning:** If conversion time reduced below ~95ms, may get incomplete reads or CRC errors. If increased above ~750ms, may get timeout errors (should still work, but less margin).
 
 ### Input Statistics & Reporting
 
@@ -337,13 +368,175 @@ constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;  // 1 second (immutable)
 
 **Feature Toggle:**
 ```cpp
-#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled (compile-time)
+#define ENABLE_STATS_REPORTING 1  // 1=enabled (default), 0=disabled (compile-time)
 ```
 
 **When ENABLED (default):**
-- Per-sensor timing always logged to Serial (format: `"SensorName read time: XXX µs"`)
-- Aggregated statistics printed every 1 second (format shown below)
-- Example output:
+- Per-sensor timing logged to Serial after each read
+- Aggregated statistics printed every 1 second
+- Useful for performance monitoring and debugging
+
+**Example output:**
+```
+[STATS] Gamepad Stats (1s): Count=40, MinTime=4800, MaxTime=5234, SumTime=201456
+[STATS] Encoder Stats (1s): Count=50, MinTime=987, MaxTime=1156, SumTime=50123
+[STATS] INA219 Stats (1s): Count=50, MinTime=1100, MaxTime=1289, SumTime=61234
+[STATS] Slot 0 (TSL2591 START): avg=45µs
+[STATS] Slot 1 (DS18B20 START): avg=23µs
+[STATS] Slot 2 (BME280): avg=2156µs
+[STATS] Slot 8 (TSL2591 CHECK): avg=1045µs
+[STATS] Slot 9 (DS18B20 CHECK): avg=1234µs
+```
+
+**When DISABLED:**
+- No per-sensor timing output
+- Slightly reduced Serial I/O load
+- Performance measurement still happens internally (not printed)
+
+---
+
+## DS2484 1-Wire Adapter Configuration
+
+### Hardware Setup
+
+**DS2484 I2C-to-1-Wire Bridge:**
+```cpp
+#define DS2484_ADDR 0x18              // I2C address (Adafruit breakout, hardcoded)
+#define DS2484_MAX_SENSORS 3          // Hardware limit (QWIIC connector)
+```
+
+**Library:**
+```
+Adafruit_DS248x @ 1.2.0 (automatically via lib_deps)
+OneWire library @ compatible version
+```
+
+**I2C Bus Configuration:**
+- Address: 0x18 (fixed, matches Adafruit DS2484 breakout board)
+- Bus: Same I2C as all other sensors (SDA=GPIO32, SCL=GPIO25, 400kHz)
+- Detection: Boot-time only via `available.ds2484` flag
+
+### 1-Wire Temperature Sensor Discovery
+
+**Discovery Mechanism:**
+```cpp
+// At boot (setup()):
+void detectSensors() {
+  available.ds2484 = ds2484Master.begin(&Wire, 0x18);
+  if (available.ds2484) {
+    performDs2484Scan();  // Discover all attached sensors
+  }
+}
+
+// Periodic scanning (every 60 seconds or on demand):
+void performDs2484Scan() {
+  // Runs in Slot 7 (every cycle, gated to 60s via internal counter)
+  // Resets sensor array and runs OneWireSearch()
+  // Validates ROM addresses via CRC7
+  // Updates ds2484Values.sensorCount
+}
+```
+
+**Discovery Frequency:**
+- **At boot:** Immediate scan in `setup()`
+- **In loop:** Every 2000ms in Slot 7, but only executes scan every 60 seconds (internal gate)
+- **On demand:** If `ds2484Values.sensorCount == 0`, scan is re-triggered immediately
+
+**Supported Sensor Types (1-Wire):**
+- DS18B20 (Family Code 0x28) — Standard digital thermometer
+- DS1822 (Family Code 0x22) — Digital thermometer variant
+- DS1820 (Family Code 0x10) — Legacy digital thermometer
+- Other Dallas Semiconductor temperature sensors with compatible protocol
+
+**Maximum Sensors:** 3 per adapter (hardware limitation of Adafruit breakout QWIIC connector)
+
+### Temperature Conversion Configuration
+
+**Polling Frequency:**
+- Conversion initiated: Every Slot 1 (once per 2000ms cycle)
+- Results checked: Every Slot 9 (once per 2000ms cycle, ~1600ms after start)
+- Update rate: 2000ms per sensor (consistent with other sensors)
+
+**Conversion Precision:**
+```cpp
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;  // Adjustable
+```
+
+Configure in `src/main.cpp`. Options:
+- **95 ms** (8-bit, ±0.5°C) — Fast but coarse
+- **375 ms** (10-bit, ±0.25°C) — Medium precision
+- **750 ms** (12-bit, ±0.0625°C, default) — Full precision
+
+**Cycle time remains 2000ms regardless of conversion time.**
+
+### Sensor Availability & Error Handling
+
+**Online/Offline Status:**
+```cpp
+struct Ds18b20Sensor {
+  uint8_t address[8];        // 1-Wire ROM address
+  float temperature;         // Latest reading in °C
+  bool available;            // Online flag
+  uint8_t errorCount;        // Error counter (0-3)
+  uint32_t lastReadMs;       // Last successful read timestamp
+};
+```
+
+**Three-Strike Lockout:**
+- After 3 consecutive read failures: `available = false`
+- Locked-out sensors no longer polled
+- Page 9 (DS2484) displays "Disconnected" status
+- Recovery: Restart system to reset flags and re-scan bus
+
+**Example Display (Page 9):**
+```
+DS2484 1-Wire (Page 9):
+────────────────────────
+Sensor 0: 28 AB CD EF 01 23 45 67  ← ROM ID (hex)
+          Temperature: 23.45°C
+
+Sensor 1: 28 12 34 56 78 9A BC DE
+          Disconnected (locked out after 3 errors)
+
+Sensor 2: [Not found]
+```
+
+### 1-Wire ROM Address Validation
+
+**CRC7 Checksum:**
+- ROM address is 8 bytes: Family (1) + Serial (6) + CRC (1)
+- CRC7 validates ROM address integrity
+- Failed CRC: Sensor rejected from discovery
+- Passed CRC: Sensor added to poll list
+
+**Example ROM Address:**
+```
+28 AB CD EF 01 23 45 67
+├─ 28: Family code (DS18B20)
+├─ AB CD EF 01 23 45: Serial number (unique per sensor)
+└─ 67: CRC7 checksum
+```
+
+### Temperature Data Format
+
+**Raw Value (16-bit):**
+```
+Byte 0 (temp MSB): Whole °C (-55 to +125)
+Byte 1 (temp LSB): Fractional °C (0, 0.0625, 0.125, ... 0.9375)
+```
+
+**Conversion Formula:**
+```cpp
+float temperature = ((int16_t)(msb << 8 | lsb)) * 0.0625;
+// Example: raw 0x0140 = (0x14 << 8 | 0x00) * 0.0625 = 20.0°C
+```
+
+**Precision:**
+- 12-bit default: Resolution = 0.0625°C, Range = -55 to +125°C
+- 10-bit: Resolution = 0.25°C
+- 8-bit: Resolution = 1°C
+
+---
 ```
 BME280 read time: 2156 µs
 TSL2591 async START time: 45 µs

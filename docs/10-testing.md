@@ -1679,121 +1679,143 @@ Run these tests before every release:
 
 ---
 
-## Test Cases: Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006) — **NEW**
+## Test Cases: Non-Blocking Rotated Sensor Architecture (FEATURE-SPEC-006)
 
-### TC-Rotated-001: Sensor Rotation Scheduling (7-Slot Cycle)
+### TC-Rotated-001: Sensor Rotation Scheduling (10-Slot Cycle, 2000ms)
 
 **Setup:** Device powered on, all sensors detected at boot. Monitor main loop execution via Serial output and timing measurements.
 
 **Action:**
 1. Power on device.
-2. Observe Serial output for 5 full cycles (~7 seconds = 7 slots × 1 second per cycle).
+2. Observe Serial output for 3-5 full cycles (~6-10 seconds = 10 slots × 200ms × 3-5 cycles).
 3. Note timestamps for each sensor read operation.
 4. Verify timing gates and slot transitions.
+5. Verify phase-based organization (START async → READ sync → CHECK async).
 
 **Expected Result:**
-- Serial output shows sensor reads in rotation:
+- Serial output shows sensor reads in phase-based rotation:
   ```
-  [0 ms] BME280 read time: 2156 µs
-  [200 ms] TSL2591 async START time: 45 µs
-  [400 ms] SI1145 read time: 689 µs
-  [600 ms] VEML6075 read time: XXX µs
-  [800 ms] VEML6070 read time: XXX µs
-  [1000 ms] SCD30 read time: XXX µs
-  [1200 ms] DS18B20 async START time: 50 µs
-  [1400 ms] (Async check for TSL2591/DS18B20)
-  [2000 ms] <- New cycle starts
+  **Phase 1: START ASYNC (Slots 0-1, 0-200ms)**
+  [0 ms]   Slot 0: TSL2591 async START time: 45 µs
+  [200 ms] Slot 1: DS18B20 async START time: 50 µs
+  
+  **Phase 2: READ SYNC (Slots 2-7, 400-1400ms)**
+  [400 ms]   Slot 2: BME280 read time: 2156 µs
+  [600 ms]   Slot 3: SI1145 read time: 689 µs
+  [800 ms]   Slot 4: VEML6075 read time: XXX µs
+  [1000 ms]  Slot 5: VEML6070 read time: XXX µs
+  [1200 ms]  Slot 6: SCD30 read time: XXX µs
+  [1400 ms]  Slot 7: DS2484 Scan (60s gate, or skipped)
+  
+  **Phase 3: CHECK ASYNC (Slots 8-9, 1600-1800ms)**
+  [1600 ms] Slot 8: TSL2591 async result read time: 1045 µs
+  [1800 ms] Slot 9: DS18B20 async result read time: 2345 µs
+  
+  [2000 ms] <- New cycle starts at Slot 0
   ```
-- Each slot executes within 200 ms interval
-- No blocking > 200 ms observed (no stalled output)
-- Full cycle completes every 1.4 seconds
+- Each slot executes within 200 ms interval (or less for async operations)
+- No blocking > 100 ms observed (no stalled output)
+- Full cycle completes every 2000 ms (2.0 seconds)
+- Phase-based organization clearly visible
 
 **Verification:**
-- Capture Serial output for 10 seconds
-- Calculate slot timing: `(timestamp2 - timestamp1) % 1400 should ≈ expected slot time`
-- Verify rotation order matches schedule (0→2→4→..., then 1→3→5→6→...)
+- Capture Serial output for 20+ seconds
+- Calculate slot timing: verify each slot fires at expected time ±10ms
+- Verify 10 slots per cycle (not 7)
+- Verify cycle time is 2000ms (not 1400ms)
+- Verify phase order: Phase 1 (slots 0-1) → Phase 2 (slots 2-7) → Phase 3 (slots 8-9)
 - No skipped slots or double executions
 
 **Error Condition:**
 - If slot timing exceeds 200 ms: Sensor read is too slow (timing violation)
-- If cycle time ≠ 1.4 s: Slot counter may be miscalculated
+- If cycle time ≠ 2000 ms: Slot counter may be miscalculated or using old 1400ms values
 - If Serial output stalls: Main loop may be blocked (critical failure)
+- If only 7 slots observed: Code still using old architecture (must rebuild)
 
 ---
 
-### TC-Rotated-002: TSL2591 Async Measurement (Two-Phase Read)
+### TC-Rotated-002: TSL2591 Async Measurement (Two-Phase Read, Slot 0 → Slot 8)
 
 **Setup:** Device with TSL2591 detected at boot (`available.tsl2591 = true`). Monitor TSL2591 page and Serial output.
 
 **Action:**
 1. Power on device and navigate to TSL2591 page (page 6).
-2. Observe Serial output for 3-4 full rotation cycles (~5 seconds).
-3. Note TSL2591 async START and async READ operations.
-4. Verify lux values update after async completion.
+2. Observe Serial output for 3-4 full rotation cycles (~8 seconds).
+3. Note TSL2591 async START (Slot 0) and async CHECK (Slot 8) operations.
+4. Verify timing: START at 0ms, CHECK at 1600ms (1600ms > 200ms integration ✓).
+5. Verify lux values update after async completion.
 
 **Expected Result:**
 - Serial output shows async pattern:
   ```
-  Slot 1 (200 ms):  TSL2591 async START time: 45 µs
-  Slot 7 (1400 ms): TSL2591 read time: 12345 µs
-  (Next cycle)
-  Slot 1 (2200 ms): TSL2591 async START time: 45 µs
-  Slot 7 (3400 ms): TSL2591 read time: 12345 µs
+  Slot 0 (0 ms):     TSL2591 async START time: 45 µs
+  Slot 8 (1600 ms):  TSL2591 async result read time: 1045 µs
+  (Next cycle, ~2000ms later)
+  Slot 0 (2000 ms):  TSL2591 async START time: 45 µs
+  Slot 8 (3600 ms):  TSL2591 async result read time: 1045 µs
   ```
-- Start timestamp ~1200 ms before read timestamp
-- Lux value on page updates only when async read completes (~1200+ ms after START)
-- No blocking observed (display remains responsive)
+- Time from START to CHECK: ~1600 ms (> 200ms integration time required ✓)
+- Lux value on page updates only when async CHECK completes (Slot 8)
+- No blocking observed (display remains responsive during measurement)
 - User can change pages while TSL2591 measurement in progress
 
 **Verification:**
-- Measure time difference: `read_timestamp - start_timestamp ≈ 1200 ms`
-- Verify `tsl2591State` transitions: `IDLE → MEASURING (Slot 1) → IDLE (Slot 7)`
-- Check lux value in `tsl2591Values` cache after async read
+- Measure time difference: `check_timestamp - start_timestamp ≈ 1600 ms ±50ms`
+- Verify 1600ms > 200ms integration time (margin = 1400ms)
+- Verify `Tsl2591State` transitions: `IDLE → MEASURING (Slot 0) → IDLE (Slot 8)`
+- Check lux value in `tsl2591Values` cache increases after Slot 8 check
 - Ensure page navigation not blocked during async measurement
+- Verify lux changes are proportional to light level
 
 **Error Condition:**
-- If async read called before measurement complete: Garbage lux value
+- If CHECK time < START time + 200ms: Measurement not complete (garbage value)
 - If state machine stuck in MEASURING: Next measurement cannot start (deadlock)
 - If readiness check bypassed: 200 ms blocking (violates non-blocking requirement)
+- If lux value is 0 always: Async result not being used (check readiness logic)
 
 ---
 
-### TC-Rotated-003: DS18B20 Async Conversion (Two-Phase Read)
+### TC-Rotated-003: DS18B20 Async Conversion (Two-Phase Read, Slot 1 → Slot 9)
 
-**Setup:** Device with DS2484 detected at boot (`available.ds2484 = true`) and at least 1 DS18B20 sensor discovered. Monitor DS18B20 page and Serial output.
+**Setup:** Device with DS2484 detected at boot (`available.ds2484 = true`) and at least 1 DS18B20 sensor discovered. Monitor DS18B20 page (page 9) and Serial output.
 
 **Action:**
 1. Power on device and navigate to DS18B20 page (page 9).
-2. Observe Serial output for 2-3 full rotation cycles (~3 seconds).
-3. Note DS18B20 async START and async READ operations.
-4. Verify temperature values update after async completion.
-5. Disconnect one DS18B20 sensor mid-measurement to test error handling.
+2. Observe Serial output for 2-3 full rotation cycles (~6 seconds).
+3. Note DS18B20 async START (Slot 1) and async CHECK (Slot 9) operations.
+4. Verify timing: START at 200ms, CHECK at 1800ms (1600ms elapsed > 750ms conversion ✓).
+5. Verify temperature values update after async completion.
+6. Disconnect one DS18B20 sensor mid-measurement to test error handling.
 
 **Expected Result:**
 - Serial output shows async pattern:
   ```
-  Slot 6 (1200 ms):  DS18B20 async START time: 50 µs
-  Next cycle:
-  Slot 7 (2100 ms): DS18B20 read time: 2345 µs
-  (Next cycle)
-  Slot 6 (2200 ms): DS18B20 async START time: 50 µs
-  Slot 7 (3100 ms): DS18B20 read time: 2345 µs
+  Slot 1 (200 ms):   DS18B20 async START time: 50 µs
+  Slot 9 (1800 ms):  DS18B20 async result read time: 2345 µs
+  (Next cycle, ~2000ms later)
+  Slot 1 (2200 ms):  DS18B20 async START time: 50 µs
+  Slot 9 (3800 ms):  DS18B20 async result read time: 2345 µs
   ```
-- Start timestamp ~900 ms before read timestamp (750 ms conversion + margin)
-- Temperature values on page update only after async read completes
-- Disconnected sensor shows "Disconnected" status after read attempt
-- No blocking observed (display remains responsive)
+- Time from START to CHECK: ~1600 ms (750ms conversion + 850ms margin ✓)
+- Temperature values on page update only after async CHECK completes (Slot 9)
+- Disconnected sensor shows "Disconnected" status after 3 consecutive read failures
+- Page refresh remains responsive (<100ms latency)
 
 **Verification:**
-- Measure time difference: `read_timestamp - start_timestamp ≈ 900+ ms`
-- Verify `ds18b20State` transitions: `IDLE → CONVERTING (Slot 6) → IDLE (Slot 7+)`
-- Check temperature values in `ds2484Values.sensors[].temperature` after async read
-- Verify error handling for missing sensors
+- Measure time difference: `check_timestamp - start_timestamp ≈ 1600 ms ±50ms`
+- Verify 1600ms > 750ms conversion time at 12-bit precision
+- Verify `Ds18b20State` transitions: `IDLE → CONVERTING (Slot 1) → IDLE (Slot 9)`
+- Check temperature values in `ds2484Values.sensors[].temperature` after Slot 9
+- Verify three-strike lockout: after 3 errors, sensor.available = false
+- Verify locked-out sensor does not appear in poll loop (no retry attempts)
+- Verify temperature changes are realistic (<10°C/sec typically)
 
 **Error Condition:**
-- If async read called before conversion complete: Stale temperature value
+- If CHECK time < START time + 750ms: Conversion not complete (stale temperature)
 - If state machine stuck in CONVERTING: Next conversion cannot start (deadlock)
-- If readiness check bypassed: 750 ms blocking (critical, violates latency requirement)
+- If readiness check bypassed: 750 ms blocking (CRITICAL, violates latency requirement)
+- If three-strike not working: Locked-out sensor keeps getting polled (wastes I2C)
+- If sensor not re-enabled after reconnect: Requires reboot (expected behavior)
 
 ---
 

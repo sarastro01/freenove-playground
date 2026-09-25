@@ -1908,16 +1908,24 @@ void readSensors() {
   // ... (blocking, up to 250+ ms total)
 }
 
-// NEW (FEATURE-SPEC-006): Rotated read every 200 ms, one sensor per slot
+// NEW (FEATURE-SPEC-006): Rotated read every 200 ms, phase-based, 10-slot cycle
 void rotatedReadSensor(uint32_t slot) {
   switch (slot) {
-    case 0: readBme280(bme280Values); break;
-    case 1: startTsl2591Measurement(); break;
-    case 2: readSi1145(si1145Values); break;
-    case 3: readVeml6075(veml6075Values); break;
-    case 4: readVeml6070(veml6070Values); break;
-    case 5: readScd30(scd30Values); break;
-    case 6: startDs18b20Conversion(); checkTsl2591Async(); break;
+    // Phase 1: START ASYNC (Slots 0-1)
+    case 0: startTsl2591Measurement(); break;          // TSL2591 integration starts
+    case 1: startDs18b20Conversion(); break;            // DS18B20 conversion starts
+    
+    // Phase 2: READ SYNC (Slots 2-7)
+    case 2: readBme280(bme280Values); break;
+    case 3: readSi1145(si1145Values); break;
+    case 4: readVeml6075(veml6075Values); break;
+    case 5: readVeml6070(veml6070Values); break;
+    case 6: readScd30(scd30Values); break;
+    case 7: performDs2484Scan(); break;                 // 1-Wire bus scan (60s gate)
+    
+    // Phase 3: CHECK ASYNC (Slots 8-9)
+    case 8: checkTsl2591Async(); break;                 // Read TSL2591 result (1600ms after start)
+    case 9: checkDs18b20Async(); break;                 // Read DS18B20 result (1600ms after start)
   }
 }
 ```
@@ -1938,8 +1946,11 @@ if ((int32_t)(now - nextSensorMs) >= 0) {
   nextSensorMs = now + 500;
 }
 
-// NEW:
-uint32_t sensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % 7;
+// NEW (10-slot, time-based modulo, startup-safe):
+uint32_t sensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
+// With SENSOR_SLOT_INTERVAL_MS=200, SLOT_COUNT=10: cycle time = 2000ms
+
+static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Initialize to invalid
 if (sensorSlot != lastSensorSlot) {
   rotatedReadSensor(sensorSlot);
   lastSensorSlot = sensorSlot;
@@ -1954,32 +1965,37 @@ if ((int32_t)(now - nextStatsMs) >= 0) {
 
 **New state machines:**
 ```cpp
-// TSL2591 async state
-enum Tsl2591State { IDLE, MEASURING, READY };
-static Tsl2591State tsl2591State = IDLE;
+// TSL2591 async state machine
+enum class Tsl2591State { IDLE = 0, MEASURING = 1 };
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
 static uint32_t tsl2591MeasureStartMs = 0;
 
-// DS18B20 async state
-enum Ds18b20State { IDLE, CONVERTING, READY };
-static Ds18b20State ds18b20State = IDLE;
+// DS18B20 async state machine
+enum class Ds18b20State { IDLE = 0, CONVERTING = 1 };
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
 static uint32_t ds18b20ConvertStartMs = 0;
 ```
 
 **New constants (in main.cpp):**
 ```cpp
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;    // Immutable
-constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;   // Immutable
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;   // Adjustable
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;    // Adjustable
-#define ENABLE_STATS_REPORTING 1                      // Compile-time toggle
+// Timing constraints (IMMUTABLE)
+#define ENABLE_STATS_REPORTING 1                       // 1=enabled (default), 0=disabled
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // 200ms per slot (immutable)
+constexpr uint32_t SLOT_COUNT = 10;                   // 10 slots per cycle (immutable)
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // 1 second (immutable)
+
+// Sensor-specific timing (ADJUSTABLE)
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Default 200ms (can adjust)
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // Default 750ms at 12-bit (can adjust)
 ```
 
 **Testing requirements:**
-- TC-Rotated-001: Verify 7-slot rotation schedule
-- TC-Rotated-002: Verify TSL2591 async pattern (start → wait → read)
-- TC-Rotated-003: Verify DS18B20 async pattern (start → wait → read)
-- TC-Rotated-006: Verify stats reporting toggle (ENABLE_STATS_REPORTING)
-- Serial output must show slot transitions and async events
+- TC-Rotated-001: Verify 10-slot rotation schedule (2000ms cycle, not 1400ms)
+- TC-Rotated-002: Verify TSL2591 async pattern (Slot 0 START → Slot 8 CHECK, 1600ms apart)
+- TC-Rotated-003: Verify DS18B20 async pattern (Slot 1 START → Slot 9 CHECK, 1600ms apart)
+- TC-Rotated-004: Verify display updates only on value change
+- TC-Rotated-005: Verify input latency < 100 ms (worst case)
+- Serial output must show slot transitions, phase organization, and async event timing
 
 ### Modifications to Phase 7: Frontend/UI
 
@@ -2041,63 +2057,73 @@ lastPage = currentPage;
 After completing Phase 6 modifications:
 
 1. **Code Review Verification:**
-   - [ ] `rotatedReadSensor()` dispatches all 7 slots correctly
+   - [ ] `rotatedReadSensor()` dispatches all 10 slots correctly
+   - [ ] Slot 0-1: async START phase working
+   - [ ] Slot 2-7: sync READ phase working
+   - [ ] Slot 8-9: async CHECK phase working
    - [ ] `startTsl2591Measurement()` and `checkTsl2591Async()` implement two-phase pattern
-   - [ ] `startDs18b20Conversion()` and `checkDs18b20Async()` implement two-phase pattern
-   - [ ] State machines transition correctly (IDLE ↔ MEASURING/CONVERTING ↔ READY/IDLE)
-   - [ ] Main loop calls `rotatedReadSensor()` once per 200 ms slot
+   - [ ] `startDs18b20Conversion()` and `checkDs18b20Async()` implement two-phase pattern with three-strike lockout
+   - [ ] State machines transition correctly (IDLE → MEASURING/CONVERTING → IDLE)
+   - [ ] Main loop uses time-based modulo (not state counting): `(millis() / 200) % 10`
    - [ ] Display refresh logic gates on value changes, not time
 
 2. **Compilation:**
    - [ ] Clean build: `pio run -t clean && pio run`
    - [ ] No compiler warnings or errors
-   - [ ] Flash usage ≤ 28.5% (from FEATURE-SPEC-005 baseline)
+   - [ ] Verify 10 slots used, not 7: Check rotatedReadSensor() has cases 0-9
 
-3. **Hardware Testing (5–10 minutes):**
-   - [ ] TC-Rotated-001: Sensor rotation scheduling (7-slot cycle)
-   - [ ] TC-Rotated-002: TSL2591 async measurement
-   - [ ] TC-Rotated-003: DS18B20 async conversion
+3. **Hardware Testing (10–15 minutes):**
+   - [ ] TC-Rotated-001: Sensor rotation scheduling (10-slot, 2000ms cycle)
+   - [ ] TC-Rotated-002: TSL2591 async measurement (Slot 0 → Slot 8, 1600ms)
+   - [ ] TC-Rotated-003: DS18B20 async conversion (Slot 1 → Slot 9, 1600ms)
    - [ ] TC-Rotated-004: Display updates only on value change
-   - [ ] TC-Rotated-005: Input latency < 200 ms guaranteed
-   - [ ] TC-Rotated-006: Stats reporting (ENABLE_STATS_REPORTING toggle)
+   - [ ] TC-Rotated-005: Input latency < 100 ms guaranteed
+   - [ ] Verify three-strike lockout: Disconnect DS18B20, verify "Disconnected" after 3 errors
    - [ ] Visual inspection: Display responsive, no flicker, pages transition smoothly
 
 4. **Regression Testing:**
-   - [ ] All 10 page renderers still work (FEATURE-SPEC-005 regression)
+   - [ ] All 10 page renderers still work
    - [ ] Page navigation (Y/A buttons) still works
    - [ ] Gamepad page (page 1) responsive
    - [ ] Encoder page (page 4) responsive
+   - [ ] DS2484 page (page 9) displays sensors correctly
    - [ ] Large display mode (INA219 page 2) still works
    - [ ] Error pages (missing sensors) still display correctly
 
 5. **Performance Validation:**
-   - [ ] Max blocked time per loop < 200 ms (measured via Serial output)
-   - [ ] Input response latency < 200 ms (button press to page change)
-   - [ ] Sensor freshness ≤ 1.4 seconds per full cycle
-   - [ ] Display refresh rate on value change (event-driven, not 500 ms constant)
+   - [ ] Max blocked time per slot < 100 ms (measured via Serial output)
+   - [ ] Input response latency < 100 ms (button press to page change)
+   - [ ] Sensor freshness = 2000 ms per full cycle (consistent)
+   - [ ] Display refresh rate on value change (event-driven, not constant)
+   - [ ] Verify slot timing at every 200ms interval ±10ms
 
 6. **Documentation Updates:**
-   - [ ] README.md: Note FEATURE-SPEC-006 is now implemented
-   - [ ] 01-requirements.md: FR-014 added (non-blocking architecture)
-   - [ ] 02-architecture.md: Section 15.1 (non-blocking rotated architecture)
-   - [ ] 05-api.md: New functions documented (rotatedReadSensor, async helpers)
-   - [ ] 06-business-rules.md: BR-SC-005 through BR-SC-010 added
-   - [ ] 09-configuration.md: New config constants documented
-   - [ ] 10-testing.md: TC-Rotated-001 through TC-Rotated-006 added
-   - [ ] FEATURE-SPEC-006*.md files: Updated with user clarifications (completed in this session)
+   - [ ] README.md: Note FEATURE-SPEC-006 is implemented (10-slot)
+   - [ ] 01-requirements.md: FR-014 references 10-slot, 2000ms design
+   - [ ] 02-architecture.md: Section 15.1 describes 10-slot phases and timing
+   - [ ] 05-api.md: Document rotatedReadSensor() and async functions
+   - [ ] 06-business-rules.md: BR-SC-005 through BR-SC-010 use 10-slot design
+   - [ ] 09-configuration.md: SLOT_COUNT=10, cycle 2000ms documented
+   - [ ] 10-testing.md: TC-Rotated tests updated for 10-slot, correct slot timing
+   - [ ] FEATURE-SPEC-006.md: Updated to 10-slot design (completed in this session)
 
 ### Estimated Effort
 
-- **Code Implementation:** 4–6 hours
-  - Refactor `readSensors()` into 7-slot rotation: 1 hour
-  - Implement async state machines (TSL2591, DS18B20): 2 hours
+- **Code Implementation:** 5–7 hours
+  - Refactor `readSensors()` into 10-slot rotation: 1.5 hours
+  - Implement async state machines (TSL2591, DS18B20) with margins: 2 hours
   - Update display logic (value change detection): 1 hour
   - Stats reporting (configurable): 1 hour
+  - Three-strike lockout for DS18B20: 0.5 hour
 
 - **Testing:** 2–3 hours
-  - Unit tests (timing gates, state machines): 1 hour
+  - Unit tests (timing gates, state machines, slot calculation): 1 hour
   - Hardware integration tests (all 6 test cases): 1.5 hours
   - Regression testing (existing features): 0.5 hour
+
+- **Documentation:** 1–2 hours
+  - Update all 7 documentation files: 1 hour
+  - Rebuild consistency audit: 0.5–1 hour
 
 - **Documentation:** 1 hour
   - Update existing docs with FEATURE-SPEC-006 details (already completed)

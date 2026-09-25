@@ -132,10 +132,18 @@ Sensor polling shall not block the main loop or delay user input responsiveness.
 - INA219: 50 Hz sampling via high-precision `micros()` timer
 - SCD30: Guarded by `scd30Ready()` status check before read
 - VEML sensors: Simple register reads (no conversion wait)
+- TSL2591: Asynchronous two-phase measurement (start in Slot 0, read in Slot 8 after 1600ms)
+- DS18B20: Asynchronous two-phase conversion (start in Slot 1, read in Slot 9 after 1600ms)
+
+**Async Measurement Guarantee:**
+- TSL2591 integration time: 200ms (start 0ms, check 1600ms = 1400ms margin)
+- DS18B20 conversion time: 750ms at 12-bit precision (start 200ms, check 1800ms = 850ms margin)
 
 **Evidence:**
 - INA219 timing: line 648, 20µs gate
 - SCD30 guard: line 602, `if (available.scd30 && scd30Ready())`
+- TSL2591 async: startTsl2591Measurement(), checkTsl2591Async(), rotatedReadSensor()
+- DS18B20 async: startDs18b20Conversion(), checkDs18b20Async(), rotatedReadSensor()
 
 ---
 
@@ -303,63 +311,99 @@ BME280, TSL2591, and SI1145 sensors shall use the same caching architecture as o
 
 ---
 
-### FR-014: Non-Blocking Rotated Sensor Polling Architecture — **NEW (FEATURE-SPEC-006)**
+### FR-014: Non-Blocking Rotated Sensor Polling Architecture (FEATURE-SPEC-006)
 
 **Requirement:**  
 All slow I2C sensors (BME280, TSL2591, SI1145, VEML6075, VEML6070, SCD30, DS18B20) shall be polled in a rotating schedule to eliminate blocking on the main loop and guarantee responsive user input.
 
 **Details:**
-- **Rotation cycle:** 7 slots × 200 ms = 1.4 seconds per full cycle
-- **Slot allocation:**
-  - Slot 0 (0 ms): BME280 read (~2.2 ms)
-  - Slot 1 (200 ms): TSL2591 async START (~0 ms, integration continues in background)
-  - Slot 2 (400 ms): SI1145 read (~0.7 ms)
-  - Slot 3 (600 ms): VEML6075 read (~? ms)
-  - Slot 4 (800 ms): VEML6070 read (~? ms)
-  - Slot 5 (1000 ms): SCD30 read (~? ms with CRC validation)
-  - Slot 6 (1200 ms): DS18B20 1-Wire async START (~0 ms, conversion continues in background)
-  - Slot 7 (1400 ms): Check async results (TSL2591, DS18B20) and read when ready
 
-- **Async Measurement Patterns:**
-  - **TSL2591:** `startTsl2591Measurement()` in Slot 1 → `readTsl2591Async()` checks readiness in Slot 7+ (~200 ms later)
-  - **DS18B20:** `startDs18b20Conversion()` in Slot 6 → `readDs18b20Async()` checks readiness (~750 ms later, handles 12-bit conversion time)
+**Architecture:** 10-slot rotating dispatcher with phase-based organization
+- **Rotation cycle:** 10 slots × 200 ms = 2000 ms per full cycle
+- **Slot dispatch:** Time-based modulo arithmetic (startup-safe, no state counting)
 
-- **Guaranteed Performance:**
-  - Maximum blocked time per loop: 200 ms (≤ 1 sensor read per slot)
-  - Input response: Always < 200 ms (gamepad/encoder read independent of sensor rotation)
-  - Sensor freshness: Each sensor read at least once per 1.4 seconds (acceptable for slow sensors)
+**Phase 1: START ASYNC (Slots 0-1, 0-200ms)**
+| Slot | Time | Operation | Duration |
+|------|------|-----------|----------|
+| 0 | 0 ms | startTsl2591Measurement() | ~0 ms |
+| 1 | 200 ms | startDs18b20Conversion() | ~0 ms |
 
-- **High-Frequency Inputs (Independent):**
-  - Gamepad: 40 Hz polling (25 ms gate), unaffected by sensor schedule
-  - Encoder: 50 Hz polling (20 ms gate, CONTINUOUSLY — not page-conditional), unaffected by sensor schedule
-  - INA219: 50 Hz polling (20 µs via micros), unaffected by sensor schedule
+**Phase 2: READ SYNC (Slots 2-7, 400-1400ms)**
+| Slot | Time | Sensor | Duration |
+|------|------|--------|----------|
+| 2 | 400 ms | readBme280() | ~2 ms |
+| 3 | 600 ms | readSi1145() | ~1 ms |
+| 4 | 800 ms | readVeml6075() | ~1 ms |
+| 5 | 1000 ms | readVeml6070() | ~1 ms |
+| 6 | 1200 ms | readScd30() | ~5-10 ms |
+| 7 | 1400 ms | performDs2484Scan() | ~10 ms (60s interval) |
 
-- **Display Update Behavior:**
-  - Full redraw: On page change only (< 20 ms)
-  - Partial redraw: Only when sensor values actually change (≤ 200 ms after sensor read)
-  - Timer update: Every 1 second for INA219 page (timer field must refresh)
-  - No-op redraw: If values unchanged since last read (saves CPU, eliminates flicker)
+**Phase 3: CHECK ASYNC (Slots 8-9, 1600-1800ms)**
+| Slot | Time | Operation | Guarantee |
+|------|------|-----------|-----------|
+| 8 | 1600 ms | checkTsl2591Async() | Started 1600ms ago, needs 200ms → 1400ms margin ✓ |
+| 9 | 1800 ms | checkDs18b20Async() | Started 1600ms ago, needs 750ms → 850ms margin ✓ |
+
+**Async Measurement Patterns:**
+- **TSL2591:** `startTsl2591Measurement()` in Slot 0 → `checkTsl2591Async()` in Slot 8 (1600ms later, >200ms integration time)
+- **DS18B20:** `startDs18b20Conversion()` in Slot 1 → `checkDs18b20Async()` in Slot 9 (1600ms later, >750ms conversion time)
+
+**Guaranteed Performance:**
+- Maximum blocked time per slot: <100 ms (single sensor read)
+- Input response: Always <100 ms (gamepad/encoder independent of sensor rotation)
+- Sensor freshness: Each sensor read exactly once per 2000 ms (consistent, predictable)
+- Loop frequency: 50-100 Hz (responsive)
+
+**High-Frequency Inputs (Independent of Slots):**
+- Gamepad: 40 Hz polling (25 ms gate)
+- Encoder: 50 Hz polling (20 ms gate, CONTINUOUSLY — not page-conditional)
+- INA219: 50 Hz polling (20 µs via micros)
+
+**Slot Calculation Algorithm:**
+```cpp
+uint32_t currentSensorSlot = (millis() / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
+// SENSOR_SLOT_INTERVAL_MS = 200, SLOT_COUNT = 10
+// Result: Automatic sync with wallclock, startup-safe
+```
 
 **Configuration:**
 ```cpp
-#define ENABLE_STATS_REPORTING 1              // 1 = aggregated stats, 0 = off (compile-time)
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // Slot interval (do not change)
-constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // Stats reporting interval
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Async measurement wait time
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // 12-bit 1-Wire conversion time
+#define ENABLE_STATS_REPORTING 1                       // 1=enabled, 0=disabled
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;     // Immutable: slot duration
+constexpr uint32_t SLOT_COUNT = 10;                   // Immutable: slots per cycle
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;    // Immutable: stats period
+static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Adjustable: async wait time
+static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // Adjustable: 12-bit precision timing
 ```
 
+**State Machines:**
+```cpp
+enum class Tsl2591State { IDLE = 0, MEASURING = 1 };
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+enum class Ds18b20State { IDLE = 0, CONVERTING = 1 };
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+```
+
+**Display Update Behavior:**
+- Full redraw: On page change only (< 20 ms)
+- Partial redraw: Only when sensor values actually change (≤ 200 ms after sensor read)
+- Timer update: Every 1 second for INA219 page (timer field must refresh)
+- No-op redraw: If values unchanged since last read (saves CPU, eliminates flicker)
+
 **Performance Benefits:**
-- Eliminates 250 ms blocking on TSL2591 integration time (FEATURE-SPEC-005 issue)
-- Guarantees < 200 ms input latency (hardware-bound)
-- Reduces unnecessary display redraws (saves power)
-- Maintains sensor accuracy with acceptable freshness
+- Eliminates 250 ms blocking on TSL2591 integration time
+- Eliminates 750 ms blocking on DS18B20 conversion time
+- Guarantees < 100 ms input latency (independent of sensor timing)
+- Improves display responsiveness (event-driven updates)
+- Consistent 2000 ms sensor freshness (predictable for monitoring)
 
 **Evidence:**
-- FEATURE-SPEC-006.md (full specification document)
-- Async state machines: `Tsl2591State`, `Ds18b20State` enums
-- Rotation logic: `rotatedReadSensor()` function dispatches to slot handler
-- Display change detection: Value comparison before `drawCurrentPage()` call
+- FEATURE-SPEC-006-NON-BLOCKING-ARCHITECTURE.md (full specification document)
+- rotatedReadSensor() function at line ~1539
+- Main loop dispatch at line ~2494: `if (currentSensorSlot != lastSensorSlotDispatched)`
 
 ---
 

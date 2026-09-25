@@ -52,6 +52,7 @@
 
 constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
+constexpr uint32_t SLOT_COUNT = 10;  // 10 slots × 200ms = 2000ms cycle (1600ms gap between DS18B20 start→check)
 constexpr uint32_t INPUT_REFRESH_MS = 10;    // 100 Hz for responsive buttons
 constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUTTON_Y) |
                                   (1UL << GAMEPAD_BUTTON_A) | (1UL << GAMEPAD_BUTTON_B) |
@@ -1068,7 +1069,7 @@ void performDs2484Scan()
   bool firstScan = ds2484Values.sensorCount == 0;
   if (!firstScan && (int32_t)(nowMs - ds2484Values.lastScanMs) < 60000) return;
   
-  // Serial.println("DS2484: Scanning 1-Wire bus...");
+  Serial.println("[DS2484] Scanning 1-Wire bus...");
   
   // Reset sensor count and clear all sensors
   ds2484Values.sensorCount = 0;
@@ -1095,11 +1096,12 @@ void performDs2484Scan()
     sensor.temperature = 0.0f;
     sensor.lastReadMs = nowMs;
     
-    // Serial.printf("DS2484: Found sensor %d: %s\n", ds2484Values.sensorCount, formatRomId(address).c_str());
+    Serial.printf("[DS2484] Found sensor %d: Family=%02X, Address=%02X%02X%02X%02X%02X%02X%02X%02X\n", 
+      ds2484Values.sensorCount, address[0], address[1], address[2], address[3], address[4], address[5], address[6], address[7]);
     ds2484Values.sensorCount++;
   }
   
-  // Serial.printf("DS2484: Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
+  Serial.printf("[DS2484] Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
   ds2484Values.lastScanMs = nowMs;
 }
 
@@ -1362,26 +1364,132 @@ void checkTsl2591Async()
   Serial.printf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", duration, elapsedMs);
 }
 
-/// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~0 ms)
-/// Sends 1-Wire conversion command to all DS18B20 sensors on the bus and records start time.
-/// The result must be checked later via checkDs18b20Async() after DS18B20_CONVERSION_TIME_MS.
+/// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~1 ms)
+/// Sends 1-Wire conversion command to all DS18B20 sensors on the bus via DS2484.
+/// Includes: Reset, Skip ROM (0xCC), Convert T (0x44).
+/// Result must be checked later via readDs18b20Results() after DS18B20_CONVERSION_TIME_MS.
 void startDs18b20Conversion()
 {
-  if (!available.ds2484) return;
+  if (!available.ds2484 || ds2484Values.sensorCount == 0) return;
   
   uint32_t startTime = micros();
+  Serial.printf("[DS18B20] Starting conversion for %d sensors...\n", ds2484Values.sensorCount);
   
-  // Set state machine to CONVERTING
+  // Send Convert T command to all devices (0x44 via Skip ROM 0xCC)
+  if (!ds2484Master.OneWireReset()) {
+    Serial.println("[DS18B20] ERROR: OneWire Reset failed");
+    return;
+  }
+  
+  if (!ds2484Master.OneWireWriteByte(0xCC)) {  // Skip ROM
+    Serial.println("[DS18B20] ERROR: Skip ROM write failed");
+    return;
+  }
+  
+  if (!ds2484Master.OneWireWriteByte(0x44)) {  // Convert T
+    Serial.println("[DS18B20] ERROR: Convert T write failed");
+    return;
+  }
+  
+  // Set state machine to CONVERTING (750ms conversion time will elapse)
   ds18b20State = Ds18b20State::CONVERTING;
   ds18b20ConvertStartMs = millis();
   
-  // Send 1-Wire "Convert T" command (0x44) to all sensors via DS2484 adapter
-  // Implementation: Send skip ROM (0xCC) followed by convert command (0x44)
-  // Note: For current implementation using readDs2484Temperatures() which handles this,
-  // we may need to refactor to split the command send from the result read.
+  uint32_t endTime = micros();
+  Serial.printf("[DS18B20] Conversion started (took %lu µs)\n", endTime - startTime);
+}
+
+/// @brief Read DS18B20 temperature results from all discovered sensors (blocking, ~X ms)
+/// Assumes conversion was started earlier via startDs18b20Conversion().
+/// Does NOT check timing - caller must enforce minimum delay of DS18B20_CONVERSION_TIME_MS.
+/// Updates sensor.temperature and error counters; marks offline after 3 failures.
+void readDs18b20Results()
+{
+  if (!available.ds2484 || ds2484Values.sensorCount == 0) return;
+  
+  const uint32_t nowMs = millis();
+  uint32_t startTime = micros();
+  Serial.printf("[DS18B20] Reading results from %d sensors...\n", ds2484Values.sensorCount);
+  
+  uint8_t successCount = 0;
+  // Read temperature for each discovered sensor
+  for (uint8_t i = 0; i < ds2484Values.sensorCount; i++) {
+    Ds18b20Sensor &sensor = ds2484Values.sensors[i];
+    
+    // Skip if already offline after 3 errors
+    if (sensor.errorCount >= 3) {
+      sensor.available = false;
+      Serial.printf("[DS18B20] Sensor %d: OFFLINE (3+ errors)\n", i);
+      continue;
+    }
+    
+    // Reset and select device using Match ROM
+    if (!ds2484Master.OneWireReset()) {
+      sensor.errorCount++;
+      Serial.printf("[DS18B20] Sensor %d: Reset failed (error %d/3)\n", i, sensor.errorCount);
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Match ROM (0x55) command
+    if (!ds2484Master.OneWireWriteByte(0x55)) {
+      sensor.errorCount++;
+      Serial.printf("[DS18B20] Sensor %d: Match ROM failed (error %d/3)\n", i, sensor.errorCount);
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Send 8-byte ROM address
+    bool romWriteOk = true;
+    for (uint8_t j = 0; j < 8; j++) {
+      if (!ds2484Master.OneWireWriteByte(sensor.address[j])) {
+        romWriteOk = false;
+        break;
+      }
+    }
+    
+    if (!romWriteOk) {
+      sensor.errorCount++;
+      Serial.printf("[DS18B20] Sensor %d: ROM address write failed (error %d/3)\n", i, sensor.errorCount);
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Read Scratchpad command (0xBE)
+    if (!ds2484Master.OneWireWriteByte(0xBE)) {
+      sensor.errorCount++;
+      Serial.printf("[DS18B20] Sensor %d: Read Scratchpad failed (error %d/3)\n", i, sensor.errorCount);
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Read 2 bytes of temperature data (LSB, MSB)
+    uint8_t tempLsb, tempMsb;
+    if (!ds2484Master.OneWireReadByte(&tempLsb) || !ds2484Master.OneWireReadByte(&tempMsb)) {
+      sensor.errorCount++;
+      Serial.printf("[DS18B20] Sensor %d: Temperature read failed (error %d/3)\n", i, sensor.errorCount);
+      if (sensor.errorCount >= 3) sensor.available = false;
+      continue;
+    }
+    
+    // Convert raw bytes to temperature
+    // DS18B20: 12-bit resolution, 0.0625°C per LSB
+    int16_t rawTemp = (int16_t)((tempMsb << 8) | tempLsb);
+    sensor.temperature = rawTemp * 0.0625f;
+    sensor.errorCount = 0;
+    sensor.available = true;
+    sensor.lastReadMs = nowMs;
+    successCount++;
+    
+    Serial.printf("[DS18B20] Sensor %d: TEMP = %.2f°C\n", i, sensor.temperature);
+  }
   
   uint32_t endTime = micros();
-  // Serial.printf("DS18B20 async START time: %lu µs\n", endTime - startTime);
+  uint32_t duration = endTime - startTime;
+  Serial.printf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs\n", successCount, ds2484Values.sensorCount, duration);
+  
+  // Reset state machine to IDLE for next conversion cycle
+  ds18b20State = Ds18b20State::IDLE;
 }
 
 /// @brief Check if DS18B20 conversion is complete; read results if ready (non-blocking if not ready)
@@ -1397,19 +1505,20 @@ void checkDs18b20Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < DS18B20_CONVERSION_TIME_MS) {
-    // Serial.printf("DS18B20 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
+    Serial.printf("[DS18B20] Waiting: %lu ms elapsed (need %lu ms)\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
     return;
   }
   
+  Serial.println("[DS18B20] Conversion ready, reading results...");
   // Ready to read; call blocking read function
   uint32_t startTime = micros();
-  readDs2484Temperatures();
+  readDs18b20Results();
   uint32_t endTime = micros();
   
   // State machine back to IDLE
   ds18b20State = Ds18b20State::IDLE;
   
-  Serial.printf("DS18B20 async READ time: %lu µs (waited %lu ms)\n", endTime - startTime, elapsedMs);
+  Serial.printf("[DS18B20] Complete: read took %lu µs, total wait was %lu ms\n", endTime - startTime, elapsedMs);
 }
 
 /// @brief Rotated sensor read dispatcher (FEATURE-SPEC-006 non-blocking architecture)
@@ -1427,49 +1536,88 @@ void checkDs18b20Async()
 void rotatedReadSensor(uint32_t slot)
 {
   // Clamp slot to valid range
-  slot = slot % 7;
+  slot = slot % SLOT_COUNT;
   
-  // Serial.printf("Sensor Slot %lu starting...\n", slot);
+  // FEATURE-SPEC-006: Optimized slot schedule (200 ms intervals, 2000 ms total cycle with 10 slots)
+  // Structure: START async → READ sync → CHECK async (when conversion is guaranteed complete)
+  //
+  //   Phase 1: START ASYNC (Slots 0-1, 0-200ms)
+  //   Slot 0 (0 ms):    Start TSL2591 measurement (async, needs ~200ms)
+  //   Slot 1 (200 ms):  Start DS18B20 conversion (async, needs ~750ms)
+  //
+  //   Phase 2: READ SYNC (Slots 2-7, 400-1400ms)
+  //   Slot 2 (400 ms):  BME280 read (synchronous, ~2ms)
+  //   Slot 3 (600 ms):  SI1145 read (synchronous, ~1ms)
+  //   Slot 4 (800 ms):  VEML6075 read (synchronous, ~1ms)
+  //   Slot 5 (1000 ms): VEML6070 read (synchronous, ~1ms)
+  //   Slot 6 (1200 ms): SCD30 read (synchronous, ~5-10ms)
+  //   Slot 7 (1400 ms): DS2484 bus scan (synchronous, ~10ms, runs every 60 seconds)
+  //
+  //   Phase 3: CHECK ASYNC (Slots 8-9, 1600-1800ms)
+  //   Slot 8 (1600 ms): Check TSL2591 result (started 1600ms ago, guaranteed complete at 200ms ✓)
+  //   Slot 9 (1800 ms): Check DS18B20 result (started 1800ms ago, guaranteed complete at 750ms ✓)
+  //
+  // Cycle Time: 10 slots × 200ms = 2000ms
   
   switch (slot) {
+    // ========== PHASE 1: START ASYNC MEASUREMENTS ==========
     case 0:
+      // Start TSL2591 asynchronous light measurement
+      // Will be checked in Slot 8 (~1600ms later, well after 200ms needed)
+      startTsl2591Measurement();
+      break;
+      
+    case 1:
+      // Start DS18B20 asynchronous temperature conversion on all discovered sensors
+      // Will be checked in Slot 9 (~1800ms later, well after 750ms needed)
+      if (available.ds2484 && ds2484Values.sensorCount > 0) {
+        startDs18b20Conversion();
+      }
+      break;
+      
+    // ========== PHASE 2: READ SYNCHRONOUS SENSORS ==========
+    case 2:
       // BME280: Fast synchronous read (~2 ms)
       if (available.bme280) readBme280(bme280Values);
       break;
       
-    case 1:
-      // Start TSL2591 async measurement (~0 ms to start, ~200 ms to complete)
-      startTsl2591Measurement();
-      break;
-      
-    case 2:
+    case 3:
       // SI1145: Fast synchronous read (~1 ms)
       if (available.si1145) readSi1145(si1145Values);
       break;
       
-    case 3:
+    case 4:
       // VEML6075: Fast synchronous read (~1 ms)
       if (available.veml6075) readVeml6075(veml6075Values);
       break;
       
-    case 4:
+    case 5:
       // VEML6070: Fast synchronous read (~1 ms)
       if (available.veml6070) readVeml6070(veml6070Values);
       break;
       
-    case 5:
+    case 6:
       // SCD30: Moderate synchronous read (~5-10 ms)
       if (available.scd30 && scd30Ready()) readScd30(scd30Values);
       break;
       
-    case 6:
-      // Start DS18B20 async conversion (~0 ms to start, ~750 ms to complete)
-      startDs18b20Conversion();
+    case 7:
+      // DS2484 periodic bus scan (60-second interval) to detect new/removed 1-Wire sensors
+      if (available.ds2484) {
+        performDs2484Scan();
+      }
+      break;
       
-      // Check if TSL2591 result is ready (started in Slot 1, checking ~600 ms later)
+    // ========== PHASE 3: CHECK ASYNC RESULTS ==========
+    case 8:
+      // Check TSL2591 result (started 1600ms ago in Slot 0)
+      // TSL2591 needs ~200ms, so definitely complete now
       checkTsl2591Async();
+      break;
       
-      // Check if DS18B20 result is ready (might complete from previous cycle)
+    case 9:
+      // Check DS18B20 result (started 1800ms ago in Slot 1)
+      // DS18B20 needs ~750ms, so definitely complete now
       checkDs18b20Async();
       break;
   }
@@ -2112,16 +2260,21 @@ void detectSensors()
   if (available.gamepad) gamepad.setGPIOInterrupts(BUTTON_MASK, true);
   
   // Probe DS2484 I2C-to-1-Wire adapter at 0x18
-  // Serial.println("Probing DS2484 at 0x18...");
+  Serial.println("[SETUP] Probing DS2484 at 0x18...");
   available.ds2484 = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (available.ds2484) {
-    // Serial.println("DS2484: FOUND");
+    Serial.println("[SETUP] DS2484: FOUND, initializing...");
     initDs2484();  // Initialize DS2484
     ds2484Values.masterPresent = true;
     ds2484Values.lastScanMs = 0;  // Trigger immediate bus scan
     ds2484Values.lastConversionMs = 0;
+    
+    // Perform initial 1-Wire bus scan to discover sensors
+    Serial.println("[SETUP] Starting initial DS2484 bus scan...");
+    performDs2484Scan();
+    Serial.printf("[SETUP] Initial scan complete: found %d sensor(s)\n", ds2484Values.sensorCount);
   } else {
-    // Serial.println("DS2484: NOT FOUND");
+    Serial.println("[SETUP] DS2484: NOT FOUND at 0x18");
   }
 }
 
@@ -2149,21 +2302,54 @@ void initializeSensorCaches()
   si1145Values.infrared = 0;  // uint16_t, initialized to 0
   si1145Values.uv = 0;        // uint16_t, initialized to 0
   si1145Values.uvIndex = NAN; // float, initialized to NaN
+  
+  // DS2484 sensor cache initialization
+  for (uint8_t i = 0; i < 3; i++) {
+    ds2484Values.sensors[i].temperature = 0.0f;
+    ds2484Values.sensors[i].available = false;
+    ds2484Values.sensors[i].errorCount = 0;
+  }
 }
 
 void setup()
 {
   Serial.begin(115200);
+  delay(100);  // Give serial time to init
+  Serial.println("\n\n[SETUP] ========== BOOT START ==========");
+  
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
   tft.init();
   tft.setRotation(3);
   drawHeader("Sensor Dashboard");
+  
+  Serial.println("[SETUP] Detecting sensors...");
   detectSensors();
-  initializeSensorCaches();  // Initialize sensor caches with NaN (FEATURE-SPEC-005)
-  // if (!available.gamepad) Serial.println("WARNING: Gamepad QT not found at 0x50");
+  
+  Serial.println("[SETUP] Initializing sensor caches...");
+  initializeSensorCaches();
+  
+  Serial.println("[SETUP] Performing initial sensor reads...");
   readSensors();
+  
+  // Start initial DS18B20 conversion if sensors were found
+  if (available.ds2484 && ds2484Values.sensorCount > 0) {
+    Serial.printf("[SETUP] Starting initial DS18B20 conversion (%d sensors)...\n", ds2484Values.sensorCount);
+    startDs18b20Conversion();
+    
+    // Wait for conversion to complete (750ms + buffer)
+    Serial.println("[SETUP] Waiting 1000ms for initial DS18B20 conversion...");
+    delay(1000);
+    
+    // Read the results
+    Serial.println("[SETUP] Reading initial DS18B20 results...");
+    readDs18b20Results();
+  }
+  
+  Serial.println("[SETUP] Drawing initial page...");
   drawCurrentPage(true);
+  
+  Serial.println("[SETUP] ========== BOOT COMPLETE ==========");
 }
 
 void loop()
@@ -2292,9 +2478,11 @@ void loop()
 
   // PRIORITY 5: Rotated sensor read dispatch (FEATURE-SPEC-006 non-blocking architecture)
   // Every SENSOR_SLOT_INTERVAL_MS (200 ms), dispatch the appropriate sensor(s) for current slot
+  // With 10 slots, cycle = 10 × 200ms = 2000ms, giving DS18B20 1600ms between start and check
   static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
-  uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % 7;
+  uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
   if (currentSensorSlot != lastSensorSlotDispatched) {
+    // Serial.printf("[LOOP] Slot %lu starting\n", currentSensorSlot);
     rotatedReadSensor(currentSensorSlot);
     lastSensorSlotDispatched = currentSensorSlot;
   }
