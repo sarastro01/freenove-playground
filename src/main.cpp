@@ -1250,11 +1250,43 @@ void readDs2484Temperatures()
   ds2484Values.lastConversionMs = nowMs;
 }
 
+/// @brief Update encoder LED color and brightness based on display mode (FEATURE-SPEC-011)
+/// Standard mode: LED color reflects current page (10-color map), full brightness (255)
+/// Large Display mode: LED color reflects page, brightness scales 50-100% with value index
 void updateEncoderLed()
 {
   if (!available.encoder) return;
-  encoderLed.setBrightness(encoderBrightness);
-  encoderLed.setPixelColor(0, encoderColors[encoderColorIndex]);
+
+  // FEATURE-SPEC-011: 10-color page map for encoder LED feedback
+  const uint32_t pageColors[] = {
+    0xFF0000,  // Page 0 (BME280): Red
+    0xFF7F00,  // Page 1 (Gamepad): Orange
+    0xFFFF00,  // Page 2 (INA219): Yellow
+    0x00FF00,  // Page 3 (Encoder): Green
+    0x00FFFF,  // Page 4 (SCD30): Cyan
+    0x0000FF,  // Page 5 (SI1145): Blue
+    0x7F00FF,  // Page 6 (TSL2591): Purple
+    0xFFFFFF,  // Page 7 (VEML6070): White
+    0xFF1493,  // Page 8 (VEML6075): Pink
+    0x87CEEB   // Page 9 (DS2484): Sky Blue
+  };
+
+  uint32_t ledColor = pageColors[currentPage];
+  uint8_t ledBrightness = 255;  // Default: full brightness in standard mode
+
+  // FEATURE-SPEC-011: Adjust brightness in Large Display Mode
+  if (largeDisplayMode.active) {
+    uint8_t paramCount = getPageValueCount(largeDisplayMode.currentPage);
+    // Linear brightness scale: 50% (128) to 100% (255) based on value index
+    if (paramCount > 0) {
+      ledBrightness = 128 + (largeDisplayMode.valueIndex * 127 / paramCount);
+    } else {
+      ledBrightness = 128;  // Safety fallback to 50%
+    }
+  }
+
+  encoderLed.setBrightness(ledBrightness);
+  encoderLed.setPixelColor(0, ledColor);
   encoderLed.show();
 }
 
@@ -1268,16 +1300,12 @@ void readEncoderAt50Hz()
   encoderLastPosition = position;
   encoderValues.position = position;
   encoderValues.pressed = encoder.digitalRead(ENCODER_BUTTON_PIN) == LOW;
-  if (encoderValues.pressed && !encoderLastPressed) {
-    encoderPressCount++;
-    encoderColorIndex = (encoderColorIndex + 1) % 4;
-    updateEncoderLed();
-  }
-  if (encoderValues.delta != 0) {
-    const int32_t nextBrightness = (int32_t)encoderBrightness + encoderValues.delta * 8;
-    encoderBrightness = (uint8_t)constrain(nextBrightness, 0, 255);
-    updateEncoderLed();
-  }
+
+  // FEATURE-SPEC-011: Encoder button press tracking (debounce via rising-edge detection)
+  // Note: LED updates are now handled by updateEncoderLed() in navigation context,
+  // and navigation logic is in handleButtons() in the main loop.
+  // This function only tracks state; state changes are processed in handleButtons().
+
   if (encoderValues.pressed && !encoderPressedSince) encoderPressedSince = millis();
   if (!encoderValues.pressed) encoderPressedSince = 0;
   encoderLastPressed = encoderValues.pressed;
@@ -2639,6 +2667,86 @@ void loop()
     nextGamepadMs = now + INPUT_REFRESH_MS;
   }
 
+  // FEATURE-SPEC-011: Encoder Navigation Handler
+  // Processes encoder rotation for page navigation (standard mode) or value scrolling (Large Display mode)
+  // Processes encoder button press for Large Display mode toggling
+  // Note: Encoder continues to poll at 50 Hz via readEncoderAt50Hz() below
+  if (available.encoder) {
+    // We need to track the last delta-processed position separately to avoid reprocessing
+    static int32_t lastEncoderNavigationPosition = 0;
+    int32_t currentNavigationDelta = encoderValues.position - lastEncoderNavigationPosition;
+    
+    const int ENCODER_DELTA_THRESHOLD = 1;  // Minimum steps to trigger navigation
+
+    // Standard Mode: Page Navigation via Encoder Rotation
+    if (!largeDisplayMode.active) {
+      if (currentNavigationDelta >= ENCODER_DELTA_THRESHOLD) {
+        // Clockwise rotation: next page
+        currentPage = (currentPage + 1) % PAGE_COUNT;
+        lastEncoderNavigationPosition = encoderValues.position;
+      } else if (currentNavigationDelta <= -ENCODER_DELTA_THRESHOLD) {
+        // Counter-clockwise rotation: previous page
+        currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+        lastEncoderNavigationPosition = encoderValues.position;
+      }
+    }
+    // Large Display Mode: Value Scrolling via Encoder Rotation
+    else {
+      uint8_t paramCount = getPageValueCount(largeDisplayMode.currentPage);
+      if (paramCount > 0) {
+        if (currentNavigationDelta >= ENCODER_DELTA_THRESHOLD) {
+          // Clockwise rotation: next parameter value
+          largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex + 1) % paramCount;
+          largeDisplayMode.needsFullRedraw = true;
+          lastEncoderNavigationPosition = encoderValues.position;
+        } else if (currentNavigationDelta <= -ENCODER_DELTA_THRESHOLD) {
+          // Counter-clockwise rotation: previous parameter value
+          largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + paramCount) % paramCount;
+          largeDisplayMode.needsFullRedraw = true;
+          lastEncoderNavigationPosition = encoderValues.position;
+        }
+      }
+    }
+
+    // Encoder Button Press: Toggle Large Display Mode (Rising-Edge Debounce)
+    bool encoderPressed = encoderValues.pressed == 0;  // active-low
+    if (encoderPressed && !encoderLastPressed) {
+      // Rising edge: button just pressed
+      if (!largeDisplayMode.active) {
+        // Enter Large Display Mode for current page
+        bool sensorAvailable = false;
+        switch (currentPage) {
+          case 0: sensorAvailable = available.bme280; break;
+          case 1: sensorAvailable = available.gamepad; break;
+          case 2: sensorAvailable = available.ina219; break;
+          case 3: sensorAvailable = available.encoder; break;
+          case 4: sensorAvailable = available.scd30; break;
+          case 5: sensorAvailable = available.si1145; break;
+          case 6: sensorAvailable = available.tsl2591; break;
+          case 7: sensorAvailable = available.veml6070; break;
+          case 8: sensorAvailable = available.veml6075; break;
+          case 9: sensorAvailable = available.ds2484; break;
+          default: sensorAvailable = false; break;
+        }
+        uint8_t valueCount = getPageValueCount(currentPage);
+        if (valueCount > 0 && sensorAvailable) {
+          largeDisplayMode.active = true;
+          largeDisplayMode.currentPage = currentPage;
+          largeDisplayMode.valueIndex = 0;
+          largeDisplayMode.needsFullRedraw = true;
+          largeDisplayMode.lastDisplayedValue = "";
+        }
+      } else if (largeDisplayMode.currentPage == currentPage) {
+        // Exit Large Display Mode - return to standard view
+        largeDisplayMode.active = false;
+        largeDisplayMode.valueIndex = 0;
+        // Trigger full redraw via drawCurrentPage to prevent artifacts
+        drawCurrentPage(true);
+      }
+    }
+    encoderLastPressed = encoderPressed;
+  }
+
   // PRIORITY 2: IMMEDIATE draw if page changed (no delay!)
   if (currentPage != lastPage) {
     // Safety: Reset large display mode when navigating to different page (FEATURE-SPEC-007)
@@ -2654,6 +2762,8 @@ void loop()
   // PRIORITY 3: Read encoder input (always, for stats aggregation)
   if (available.encoder && (int32_t)(now - nextEncoderMs) >= 0) {
     readEncoderAt50Hz();
+    // FEATURE-SPEC-011: Update LED based on current mode and page every 50 Hz
+    updateEncoderLed();
     nextEncoderMs = now + INPUT_REFRESH_MS;
   }
 
