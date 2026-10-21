@@ -10,6 +10,8 @@
 #include <Adafruit_DS248x.h>
 #include <OneWire.h>
 #include <SparkFun_SCD30_Arduino_Library.h>  // FEATURE-SPEC-009: Upgraded to SparkFun library
+#include <SparkFun_VEML6075_Arduino_Library.h>  // FEATURE-SPEC-010: Upgraded to SparkFun library
+#include <Adafruit_VEML6070.h>  // FEATURE-SPEC-010: Upgraded to Adafruit library
 #include <math.h>
 #include <string.h>
 
@@ -75,6 +77,10 @@ Adafruit_seesaw gamepad;
 Adafruit_seesaw encoder;
 seesaw_NeoPixel encoderLed(1, ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800, &Wire);
 SCD30 scd30Sensor;  // FEATURE-SPEC-009: SparkFun SCD30 Library instance
+
+// FEATURE-SPEC-010: UV Sensors upgraded to libraries
+VEML6075 veml6075Sensor;  // SparkFun VEML6075 instance
+Adafruit_VEML6070 veml6070Sensor;  // Adafruit VEML6070 instance
 
 // DS2484 I2C-to-1-Wire adapter via Adafruit library
 Adafruit_DS248x ds2484Master;
@@ -173,7 +179,9 @@ struct {
   bool active;              // Large display mode currently active
   uint8_t currentPage;      // Page index where mode was entered (0-9)
   uint8_t valueIndex;       // Current value being displayed (0 to pageValueCount-1)
-} largeDisplayMode = {false, 0, 0};
+  bool needsFullRedraw;     // Redraw entire screen (not just incremental update)
+  String lastDisplayedValue; // Track last displayed value to detect changes
+} largeDisplayMode = {false, 0, 0, false, ""};
 
 int32_t encoderLastPosition = 0;
 uint32_t encoderPressCount = 0;
@@ -665,8 +673,19 @@ void renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex) {
     default: return;
   }
   
-  // Render layout (identical for all pages)
-  tft.fillScreen(TFT_BLACK);
+  // Track if full redraw needed (before modifying the flag)
+  bool doFullRedraw = largeDisplayMode.needsFullRedraw || value != largeDisplayMode.lastDisplayedValue;
+  
+  // Only clear screen if value changed or full redraw requested
+  if (doFullRedraw) {
+    tft.fillScreen(TFT_BLACK);
+    largeDisplayMode.lastDisplayedValue = value;
+  } else {
+    // Value unchanged - only update the value text area
+    // Clear just the value area to avoid flicker
+    tft.fillRect(30, 130, 420, 60, TFT_BLACK);
+  }
+  
   tft.setTextDatum(MC_DATUM);  // Middle-center alignment
   
   // Get page title for display
@@ -685,24 +704,30 @@ void renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex) {
     default: pageTitle = "Unknown"; break;
   }
   
-  // Draw layout components
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString(pageTitle, 240, 18, 4);          // Title (Font 4, Cyan, top)
+  // Draw layout components (on full redraw)
+  if (doFullRedraw) {
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString(pageTitle, 240, 18, 4);          // Title (Font 4, Cyan, top)
+    
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawFastHLine(6, 48, 468, TFT_DARKGREY);   // Separator line
+    
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString(label ? label : "???", 240, 70, 4);  // Label (Font 4, Cyan)
+    
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(unit ? unit : "", 240, 240, 4); // Unit (Font 4, White)
+    
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("B:next X:prev Y:exit", 240, 295, 2);  // Footer (Font 2, Dark Grey)
+  }
   
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawFastHLine(6, 48, 468, TFT_DARKGREY);   // Separator line
-  
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString(label ? label : "???", 240, 70, 4);  // Label (Font 4, Cyan)
-  
+  // Always update the value (might change color)
   tft.setTextColor(color, TFT_BLACK);
   tft.drawString(value, 240, 160, 8);             // Value (Font 8, color-coded, focal point)
   
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString(unit ? unit : "", 240, 240, 4); // Unit (Font 4, White)
-  
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawString("B:next X:prev Y:exit", 240, 295, 2);  // Footer (Font 2, Dark Grey)
+  // Clear needsFullRedraw after render
+  largeDisplayMode.needsFullRedraw = false;
   
   tft.setTextDatum(TL_DATUM);  // Reset to default
 }
@@ -847,73 +872,25 @@ String ds2484_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, con
 
 // ==================== END LARGE DISPLAY MODE HELPERS ====================
 
-bool readReg16(uint8_t address, uint8_t reg, uint16_t &value)
-{
-  Wire.beginTransmission(address);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0 || Wire.requestFrom((int)address, 2) != 2) return false;
-  uint8_t lsb = Wire.read();
-  uint8_t msb = Wire.read();
-  value = ((uint16_t)msb << 8) | lsb;
-  return true;
-}
+// ==================== END LARGE DISPLAY MODE HELPERS ====================
 
-bool writeReg16(uint8_t address, uint8_t reg, uint16_t value)
-{
-  Wire.beginTransmission(address);
-  Wire.write(reg);
-  Wire.write(value & 0xFF);
-  Wire.write(value >> 8);
-  return Wire.endTransmission() == 0;
-}
+// FEATURE-SPEC-010: Helper functions removed - now using libraries for UV sensors
 
-uint8_t scd30Crc(const uint8_t *data, size_t length)
-{
-  uint8_t crc = 0xFF;
-  for (size_t i = 0; i < length; i++) {
-    crc ^= data[i];
-    for (uint8_t bit = 0; bit < 8; bit++) crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
-  }
-  return crc;
-}
 
-bool scd30Command(uint16_t command)
-{
-  Wire.beginTransmission(SCD30_ADDR);
-  Wire.write(command >> 8);
-  Wire.write(command & 0xFF);
-  return Wire.endTransmission() == 0;
-}
-
-bool scd30Ready()
-{
-  if (!scd30Command(SCD30_CMD_READY) || Wire.requestFrom(SCD30_ADDR, 3) != 3) return false;
-  uint8_t data[3];
-  data[0] = (uint8_t)Wire.read();
-  data[1] = (uint8_t)Wire.read();
-  data[2] = (uint8_t)Wire.read();
-  return scd30Crc(data, 2) == data[2] && (((uint16_t)data[0] << 8) | data[1]) == 1;
-}
-
-float scd30Float(const uint8_t *data)
-{
-  uint8_t bytes[4] = {data[3], data[2], data[1], data[0]};
-  float value;
-  memcpy(&value, bytes, sizeof(value));
-  return value;
-}
+// FEATURE-SPEC-010: Legacy SCD30 functions removed (scd30Crc, scd30Command, scd30Ready, scd30Float)
+// - SparkFun library handles all I2C protocol and CRC validation internally
 
 bool readScd30(Scd30Values &values)
 {
   uint32_t startTime = micros();
   
-  if (!scd30Command(SCD30_CMD_READ) || Wire.requestFrom(SCD30_ADDR, 18) != 18) return false;
-  uint8_t raw[18];
-  for (uint8_t i = 0; i < 18; i++) raw[i] = Wire.read();
-  for (uint8_t i = 0; i < 18; i += 3) if (scd30Crc(&raw[i], 2) != raw[i + 2]) return false;
-  values.co2 = scd30Float(&raw[0]);
-  values.temp = scd30Float(&raw[6]);
-  values.humidity = scd30Float(&raw[12]);
+  // FEATURE-SPEC-010: Use SparkFun SCD30 Library methods instead of raw I2C reads
+  // BUGFIX: Always read values (don't check dataAvailable first) to prevent flickering
+  // The library caches values internally, so reading when no new data is available
+  // just returns the last measurement, preventing display flicker
+  values.co2 = scd30Sensor.getCO2();
+  values.temp = scd30Sensor.getTemperature();
+  values.humidity = scd30Sensor.getHumidity();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -954,11 +931,14 @@ bool readVeml6075(Veml6075Values &values)
 {
   uint32_t startTime = micros();
   
-  if (!readReg16(VEML6075_ADDR, VEML6075_REG_UVA, values.uva) || !readReg16(VEML6075_ADDR, VEML6075_REG_UVB, values.uvb) ||
-      !readReg16(VEML6075_ADDR, VEML6075_REG_COMP1, values.comp1) || !readReg16(VEML6075_ADDR, VEML6075_REG_COMP2, values.comp2)) return false;
-  values.uvaComp = max(0.0f, (float)values.uva - 2.22f * values.comp1 - 1.33f * values.comp2);
-  values.uvbComp = max(0.0f, (float)values.uvb - 2.95f * values.comp1 - 1.74f * values.comp2);
-  values.index = ((values.uvaComp * 0.001461f) + (values.uvbComp * 0.002591f)) * 0.5f;
+  // FEATURE-SPEC-010: Use SparkFun VEML6075 Library for robust I2C communication
+  values.uva = veml6075Sensor.rawUva();
+  values.uvb = veml6075Sensor.rawUvb();
+  values.comp1 = veml6075Sensor.uvComp1();
+  values.comp2 = veml6075Sensor.uvComp2();
+  values.uvaComp = veml6075Sensor.uva();
+  values.uvbComp = veml6075Sensor.uvb();
+  values.index = veml6075Sensor.index();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -970,11 +950,11 @@ bool readVeml6070(Veml6070Values &values)
 {
   uint32_t startTime = micros();
   
-  if (Wire.requestFrom(VEML6070_ADDR_LSB, 1) != 1) return false;
-  values.lsb = Wire.read();
-  if (Wire.requestFrom(VEML6070_ADDR_MSB, 1) != 1) return false;
-  values.msb = Wire.read();
-  values.raw = ((uint16_t)values.msb << 8) | values.lsb;
+  // FEATURE-SPEC-010: Use Adafruit VEML6070 Library for robust I2C communication
+  uint16_t raw = veml6070Sensor.readUV();
+  values.raw = raw;
+  values.lsb = raw & 0xFF;
+  values.msb = (raw >> 8) & 0xFF;
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1329,7 +1309,8 @@ void readSensors()
   if (available.si1145) readSi1145(si1145Values);       // New: SI1145 caching (FEATURE-SPEC-005)
   if (available.veml6075) readVeml6075(veml6075Values);
   if (available.veml6070) readVeml6070(veml6070Values);
-  if (available.scd30 && scd30Ready()) readScd30(scd30Values);
+  // FEATURE-SPEC-010: Use SparkFun SCD30 dataAvailable() instead of scd30Ready()
+  if (available.scd30 && scd30Sensor.dataAvailable()) readScd30(scd30Values);
   if (available.ds2484) {
     performDs2484Scan();      // 60-second bus scan
     // NOTE: DS18B20 is async - conversion starts in rotatedReadSensor(), results checked later
@@ -1381,25 +1362,13 @@ void checkTsl2591Async()
   }
   
   // Ready to read; measure ONLY the actual I2C read time (NOT library overhead)
-  // Read directly from TSL2591 I2C registers: DATA0 (visible+IR) and DATA1 (IR only)
+  // FEATURE-SPEC-010: Use Adafruit TSL2591 library getFullLuminosity() instead of direct Wire calls
   uint32_t startTime = micros();
   
-  // Read DATA0 (0x14/0x15) and DATA1 (0x16/0x17) registers via direct I2C
-  Wire.beginTransmission(0x29);  // TSL2591 I2C address
-  Wire.write(0x14);               // DATA0_LOW register (with auto-increment in I2C)
-  Wire.endTransmission();
-  
-  // Read 4 bytes: DATA0_LOW, DATA0_HIGH, DATA1_LOW, DATA1_HIGH
-  Wire.requestFrom(0x29, 4);
-  uint16_t data0 = 0, data1 = 0;
-  if (Wire.available() >= 4) {
-    uint8_t data0_low = Wire.read();
-    uint8_t data0_high = Wire.read();
-    uint8_t data1_low = Wire.read();
-    uint8_t data1_high = Wire.read();
-    data0 = (data0_high << 8) | data0_low;
-    data1 = (data1_high << 8) | data1_low;
-  }
+  // Read luminosity data using library method
+  uint32_t lum = tsl2591.getFullLuminosity();
+  uint16_t data0 = (uint16_t)(lum >> 16);
+  uint16_t data1 = (uint16_t)(lum & 0xFFFF);
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1661,7 +1630,8 @@ void rotatedReadSensor(uint32_t slot)
       
     case 6:
       // SCD30: Moderate synchronous read (~5-10 ms) + optional ASC status query
-      if (available.scd30 && scd30Ready()) readScd30(scd30Values);
+      // FEATURE-SPEC-010: Use SparkFun SCD30 Library - always read to prevent flickering
+      if (available.scd30) readScd30(scd30Values);
       
       // FEATURE-SPEC-009: Query ASC status with adaptive timing
       // SparkFun library handles I2C timing and delays internally
@@ -1755,10 +1725,11 @@ bool valuesChanged()
     return true;
   }
   
-  // SCD30 changed?
-  if (scd30Values.co2 != lastScd30Values.co2 ||
-      scd30Values.temp != lastScd30Values.temp ||
-      scd30Values.humidity != lastScd30Values.humidity) {
+  // SCD30 changed? Use tolerance to avoid flickering from tiny sensor variations
+  // Tolerance: CO2 ±1 ppm, Temp ±0.1°C, Humidity ±0.5%
+  if (fabs(scd30Values.co2 - lastScd30Values.co2) > 1.0f ||
+      fabs(scd30Values.temp - lastScd30Values.temp) > 0.1f ||
+      fabs(scd30Values.humidity - lastScd30Values.humidity) > 0.5f) {
     return true;
   }
   
@@ -2173,7 +2144,7 @@ void pageSi1145()
   footer("Y/A: Change page | SI1145");
 }
 
-void pageScd30()
+void pageScd30(bool pageChanged)
 {
   if (!available.scd30) return unavailable("SCD30", "0x61", "I2C address:");
   
@@ -2182,13 +2153,15 @@ void pageScd30()
     return;
   }
 
-  // FEATURE-SPEC-009: Draw header with ASC status badge
-  // SparkFun library always returns valid status, no need to check validity
-  String ascStatus = scd30_getAscStatus();
-  bool ascEnabled = available.scd30 ? scd30Sensor.getAutoSelfCalibration() : false;
-  uint16_t badgeColor = available.scd30 ? (ascEnabled ? TFT_GREEN : TFT_ORANGE) : TFT_DARKGREY;
-  drawHeaderWithBadge("SCD30 (0x61)", ascStatus.c_str(), badgeColor);
-  
+  // BUGFIX: Only redraw header when page changes to prevent screen flicker
+  // The header includes fillScreen() which causes visible flicker if done every frame
+  if (pageChanged) {
+    String ascStatus = scd30_getAscStatus();
+    bool ascEnabled = scd30Sensor.getAutoSelfCalibration();
+    uint16_t badgeColor = ascEnabled ? TFT_GREEN : TFT_ORANGE;
+    drawHeaderWithBadge("SCD30 (0x61)", ascStatus.c_str(), badgeColor);
+  }
+
   // Display all SCD30 parameters using central definition (FEATURE-SPEC-008)
   displaySensorPage(scd30_params, SCD30_PARAM_COUNT, scd30_getValue);
   footer("X: Toggle ASC | Y/A: Change page | SCD30");
@@ -2303,8 +2276,13 @@ void drawCurrentPage(bool pageChanged)
       "VEML6075 (0x10)",
       "DS2484 1-Wire (0x18)"
     };
-    // FEATURE-SPEC-009: Skip header for SCD30 (pageScd30 draws its own with ASC badge)
-    if (currentPage != 4) {
+    // FEATURE-SPEC-009: Draw header for SCD30 with ASC badge only when page changes
+    if (currentPage == 4) {
+      String ascStatus = scd30_getAscStatus();
+      bool ascEnabled = available.scd30 ? scd30Sensor.getAutoSelfCalibration() : false;
+      uint16_t badgeColor = available.scd30 ? (ascEnabled ? TFT_GREEN : TFT_ORANGE) : TFT_DARKGREY;
+      drawHeaderWithBadge("SCD30 (0x61)", ascStatus.c_str(), badgeColor);
+    } else {
       drawHeader(titles[currentPage]);
     }
   }
@@ -2313,7 +2291,7 @@ void drawCurrentPage(bool pageChanged)
     case 1: pageGamepad(); break;
     case 2: pageIna219(); break;
     case 3: pageEncoder(); break;
-    case 4: pageScd30(); break;
+    case 4: pageScd30(pageChanged); break;
     case 5: pageSi1145(); break;
     case 6: pageTsl2591(); break;
     case 7: pageVeml6070(); break;
@@ -2322,17 +2300,104 @@ void drawCurrentPage(bool pageChanged)
   }
 }
 
+/// @brief Scan I2C bus and display results on screen
+void scanI2CBus()
+{
+  Serial.println("\n[SETUP] ========== I2C BUS SCAN ==========");
+  
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(0, 0);
+  tft.println("I2C Bus Scan:");
+  tft.println("");
+  
+  uint8_t count = 0;
+  uint8_t addresses[128];
+  
+  // Scan all 127 possible I2C addresses
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t error = Wire.endTransmission();
+    
+    if (error == 0) {
+      addresses[count++] = addr;
+      Serial.printf("[SETUP] Found device at 0x%02X\n", addr);
+      
+      // Display on screen (max 14 lines on 320x240 display with text size 2)
+      if (count <= 14) {
+        tft.printf("0x%02X ", addr);
+        if (count % 3 == 0) tft.println("");
+      }
+    }
+  }
+  
+  tft.setTextSize(1);
+  if (count == 0) {
+    tft.println("\nNo devices found!");
+    Serial.println("[SETUP] No I2C devices found!");
+  } else {
+    tft.printf("\nTotal: %d device(s)", count);
+    Serial.printf("[SETUP] Total devices found: %d\n", count);
+  }
+  
+  // Map found devices to known sensors
+  Serial.println("\n[SETUP] Device identification:");
+  tft.println("\nIdentified:");
+  
+  for (uint8_t i = 0; i < count; i++) {
+    uint8_t addr = addresses[i];
+    const char* name = "Unknown";
+    
+    switch (addr) {
+      case 0x10: name = "VEML6075 (UV)"; break;
+      case 0x18: name = "DS2484 (1-Wire)"; break;
+      case 0x29: name = "TSL2591 (Light)"; break;
+      case 0x36: name = "Encoder/LED"; break;
+      case 0x38: name = "VEML6070 LSB (UV)"; break;
+      case 0x39: name = "VEML6070 MSB (UV)"; break;
+      case 0x3C: name = "SCD30 (CO2)"; break;
+      case 0x40: name = "INA219 (Power)"; break;
+      case 0x50: name = "Gamepad"; break;
+      case 0x60: name = "SI1145 (Light/UV)"; break;
+      case 0x77: name = "BME280 (Env)"; break;
+    }
+    
+    Serial.printf("[SETUP]   0x%02X: %s\n", addr, name);
+    tft.printf("0x%02X: %s\n", addr, name);
+  }
+  
+  Serial.println("[SETUP] ========== SCAN COMPLETE ==========\n");
+  delay(3000);  // Show scan results for 3 seconds
+}
+
 void detectSensors()
 {
-  uint16_t veml6075DeviceId = 0;
+  Serial.println("[SETUP] INA219: Probing...");
   available.ina219 = ina219.begin(&Wire);
-  available.veml6075 = readReg16(VEML6075_ADDR, VEML6075_REG_ID, veml6075DeviceId);
-  if (available.veml6075) writeReg16(VEML6075_ADDR, VEML6075_REG_CONF, 0x0000);
+  Serial.printf("[SETUP] INA219: %s\n", available.ina219 ? "FOUND" : "NOT FOUND");
+  
+  // FEATURE-SPEC-010: Use SparkFun VEML6075 Library
+  Serial.println("[SETUP] VEML6075: Probing...");
+  if (veml6075Sensor.begin(Wire) == VEML6075_ERROR_SUCCESS) {
+    available.veml6075 = true;
+    Serial.println("[SETUP] VEML6075: FOUND, using SparkFun library");
+  } else {
+    available.veml6075 = false;
+    Serial.println("[SETUP] VEML6075: NOT FOUND");
+  }
+  
+  Serial.println("[SETUP] TSL2591: Probing...");
   available.tsl2591 = tsl2591.begin();
   if (available.tsl2591) {
     tsl2591.setGain(TSL2591_GAIN_MED);
     tsl2591.setTiming(TSL2591_INTEGRATIONTIME_200MS);
+    Serial.println("[SETUP] TSL2591: FOUND");
+  } else {
+    Serial.println("[SETUP] TSL2591: NOT FOUND");
   }
+  
+  Serial.println("[SETUP] Encoder: Probing...");
   available.encoder = encoder.begin(ENCODER_ADDR);
   if (available.encoder) {
     encoder.pinMode(ENCODER_BUTTON_PIN, INPUT_PULLUP);
@@ -2340,14 +2405,26 @@ void detectSensors()
     encoderLed.begin(ENCODER_ADDR);
     encoderLed.setBrightness(encoderBrightness);
     updateEncoderLed();
+    Serial.println("[SETUP] Encoder: FOUND");
+  } else {
+    Serial.println("[SETUP] Encoder: NOT FOUND");
   }
+  
+  // FEATURE-SPEC-010: Use Adafruit VEML6070 Library
+  Serial.println("[SETUP] VEML6070: Probing...");
+  veml6070Sensor.begin(VEML6070_HALF_T, &Wire);
   Wire.beginTransmission(VEML6070_ADDR_LSB);
-  Wire.write(0x02);
-  available.veml6070 = Wire.endTransmission() == 0 && Wire.requestFrom(VEML6070_ADDR_MSB, 1) == 1;
+  available.veml6070 = Wire.endTransmission() == 0;
+  Serial.printf("[SETUP] VEML6070: %s, using Adafruit library\n", available.veml6070 ? "FOUND" : "NOT FOUND");
+  
+  Serial.println("[SETUP] SI1145: Probing...");
   available.si1145 = si1145.begin();
+  Serial.printf("[SETUP] SI1145: %s\n", available.si1145 ? "FOUND" : "NOT FOUND");
   
   // FEATURE-SPEC-009: Initialize SCD30 with SparkFun library
+  Serial.println("[SETUP] SCD30: Probing...");
   available.scd30 = scd30Sensor.begin();
+  Serial.printf("[SETUP] SCD30: %s\n", available.scd30 ? "FOUND" : "NOT FOUND");
   if (available.scd30) {
     scd30Sensor.beginMeasuring();  // Start continuous measurement
     scd30State.lastAscQuery = 0;    // Will be queried by polling loop after 3+ seconds
@@ -2420,8 +2497,18 @@ void setup()
   
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
+  
+  // FEATURE-SPEC-010: Set I2C timeout to prevent hangs on missing sensors
+  // Default is 20ms, set to 100ms for slower sensors and long distances
+  Wire.setTimeOut(100);
+  
   tft.init();
   tft.setRotation(3);
+  
+  // FEATURE-SPEC-010: Scan I2C bus and display results
+  Serial.println("[SETUP] Scanning I2C bus...");
+  scanI2CBus();
+  
   drawHeader("Sensor Dashboard");
   
   Serial.println("[SETUP] Detecting sensors...");
@@ -2500,11 +2587,14 @@ void loop()
           largeDisplayMode.active = true;
           largeDisplayMode.currentPage = currentPage;
           largeDisplayMode.valueIndex = 0;
+          largeDisplayMode.needsFullRedraw = true;
+          largeDisplayMode.lastDisplayedValue = "";
         }
       } else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
         // Cycle forward in large display mode
         uint8_t valueCount = getPageValueCount(currentPage);
         largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex + 1) % valueCount;
+        largeDisplayMode.needsFullRedraw = true;
       }
     }
     
@@ -2515,36 +2605,22 @@ void loop()
         bool currentAsc = scd30Sensor.getAutoSelfCalibration();
         setAsc(!currentAsc);
       }
-      // Cycle backward in large display mode (unchanged)
+      // Cycle backward in large display mode
       else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
         uint8_t valueCount = getPageValueCount(currentPage);
         largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + valueCount) % valueCount;
+        largeDisplayMode.needsFullRedraw = true;
       }
     }
     
     // Button Y: Exit mode or navigate to previous page
     if (yPressed && !lastY) {
       if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
-        // Exit large display mode - clear screen to avoid artifacts
+        // Exit large display mode - force full page redraw to prevent artifacts
         largeDisplayMode.active = false;
         largeDisplayMode.valueIndex = 0;
-        // Force screen clear and header redraw to prevent display artifacts (FEATURE-SPEC-007)
-        const char *titles[] = {
-          "BME280 (0x77)",
-          "Gamepad QT (0x50)",
-          "INA219 (0x40)",
-          "Rotary Encoder (0x36)",
-          "SCD30 (0x61)",
-          "SI1145 (0x60)",
-          "TSL2591 (0x29)",
-          "VEML6070 (0x38/0x39)",
-          "VEML6075 (0x10)",
-          "DS2484 1-Wire (0x18)"
-        };
-        // FEATURE-SPEC-009: Skip header for SCD30 (pageScd30 draws it with ASC badge)
-        if (currentPage != 4) {
-          drawHeader(titles[currentPage]);
-        }
+        // Trigger full redraw via drawCurrentPage with pageChanged=true
+        drawCurrentPage(true);
       } else {
         // Normal page navigation
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
