@@ -3318,6 +3318,190 @@ When Large Display Mode is active on the SCD30 page (Page 4), the Y button behav
 
 ---
 
+### BR-ENC-NAV-001: Encoder Position Delta for Page Navigation — **NEW (FEATURE-SPEC-011)**
+
+**Rule:** Page navigation via encoder rotation shall use delta-based stepping (position change per cycle), not absolute position mapping.
+
+**Details:**
+- **Delta calculation:** `encoderDelta = encoderValues.position - lastEncoderPosition`; update `lastEncoderPosition` each cycle
+- **Threshold:** Minimum 1 encoder position unit per cycle (`ENCODER_DELTA_THRESHOLD = 1`)
+- **Page increment:** When `encoderDelta >= ENCODER_DELTA_THRESHOLD`: `currentPage = (currentPage + 1) % 10`
+- **Page decrement:** When `encoderDelta <= -ENCODER_DELTA_THRESHOLD`: `currentPage = (currentPage - 1 + 10) % 10`
+- **Rationale:** Discrete stepping matches gamepad button feel; predictable one-step-per-rotation behavior
+- **No absolute position mapping:** Encoder position not directly mapped to page (e.g., position 0→10 not mapped to pages 0→1)
+
+**Scope:** Standard mode page navigation (Section 1, Navigation Topology)
+
+**Invocation:** `handleButtons()` function processes encoder delta every 20 ms
+
+**Validation:**
+- Rotating encoder clockwise advances page 0→1→2...→9→0
+- Rotating encoder counter-clockwise goes back 9→8→7...→0→9
+- Each rotation step equals exactly one page change
+- No skipped or double pages
+
+**Related Rules:** BR-012 (Gamepad button page navigation); FR-020 (Requirements)
+
+**Confidence:** HIGH (FEATURE-SPEC-011 decision confirmed)
+
+---
+
+### BR-ENC-NAV-002: Encoder Button Debounce (No-Repeat) — **NEW (FEATURE-SPEC-011)**
+
+**Rule:** Encoder button press shall trigger mode transition only on rising edge (NOT pressed → pressed); held button shall not repeat transitions.
+
+**Details:**
+- **Debounce mechanism:** Track `bool lastEncoderPressed` flag (initialized `false`)
+- **Rising edge detection:** 
+  ```cpp
+  bool encoderPressed = (encoderValues.pressed == 0);  // Active LOW
+  if (encoderPressed && !lastEncoderPressed) {
+      // Transition occurs here (enter/exit Large Display Mode)
+  }
+  lastEncoderPressed = encoderPressed;
+  ```
+- **No-repeat behavior:** Once transition triggered (e.g., enter Large Display Mode), held button produces no further transitions
+- **Release required:** User must release button (NOT pressed) and press again for next transition
+- **Rationale:** Prevents unintended rapid mode toggles from long presses or electrical noise
+- **Consistency:** Matches gamepad Y/B button debounce pattern (edge detection, no repeat)
+
+**Scope:** Encoder button control of Large Display Mode (FR-021)
+
+**Invocation:** `handleButtons()` function detects press every 20 ms
+
+**Validation:**
+- Single press → single mode toggle
+- Held press for 500 ms → still only one toggle
+- Release and re-press → second toggle occurs
+
+**Related Rules:** BR-019 (Gamepad button state encoding active-low); FR-021 (Requirements)
+
+**Confidence:** HIGH (FEATURE-SPEC-011 decision confirmed)
+
+---
+
+### BR-ENC-NAV-003: Encoder LED Page Color Mapping — **NEW (FEATURE-SPEC-011)**
+
+**Rule:** In standard mode, encoder LED color shall reflect the current page index (10-color map).
+
+**Details:**
+- **Color map by page:**
+  | Page | Title | Color | Hex |
+  |------|-------|-------|-----|
+  | 0 | BME280 | Red | 0xFF0000 |
+  | 1 | Gamepad QT | Orange | 0xFF7F00 |
+  | 2 | INA219 | Yellow | 0xFFFF00 |
+  | 3 | Encoder | Green | 0x00FF00 |
+  | 4 | SCD30 | Cyan | 0x00FFFF |
+  | 5 | SI1145 | Blue | 0x0000FF |
+  | 6 | TSL2591 | Purple | 0x7F00FF |
+  | 7 | VEML6070 | White | 0xFFFFFF |
+  | 8 | VEML6075 | Pink | 0xFF1493 |
+  | 9 | DS2484 | Light Blue | 0x87CEEB |
+
+- **Implementation:** Array indexed by `currentPage`: `uint32_t pageColors[10] = { 0xFF0000, 0xFF7F00, ... }`
+- **Brightness:** Fixed at full brightness (255) in standard mode
+- **Update:** `updateEncoderLed()` sets LED color in every refresh cycle when not in Large Display Mode
+- **Active mode:** Only applies in standard mode; Large Display Mode uses value-based brightness (BR-ENC-NAV-004)
+
+**Scope:** Encoder LED color control in standard page navigation
+
+**Invocation:** `updateEncoderLed()` function
+
+**Validation:**
+- Page 0 displays red LED
+- Page 5 displays blue LED
+- Rotating to next page changes LED color immediately
+- LED provides visual feedback of current page
+
+**Related Rules:** BR-010 (Encoder LED color cycling); FR-004, FR-020 (Requirements)
+
+**Confidence:** HIGH (FEATURE-SPEC-011 decision confirmed)
+
+---
+
+### BR-ENC-NAV-004: Encoder LED Brightness in Large Display Mode — **NEW (FEATURE-SPEC-011)**
+
+**Rule:** In Large Display Mode, encoder LED brightness shall scale linearly with parameter value index (50-100% range).
+
+**Details:**
+- **Brightness formula:**
+  ```cpp
+  uint8_t brightness = 128 + (largeDisplayMode.valueIndex * 127 / max(paramCount[currentPage], 1));
+  ```
+  - `valueIndex = 0` → brightness 128 (50%)
+  - `valueIndex = N` (last) → brightness 255 (100%)
+  - Smooth gradient across all values
+
+- **Color:** LED hue remains same as page color (from BR-ENC-NAV-003); only brightness changes
+- **Minimum brightness:** 50% (128/255) ensures LED remains visible even at lowest value
+- **Maximum brightness:** 100% (255/255) at last parameter value
+- **Update frequency:** `updateEncoderLed()` recalculates brightness every 20 ms based on `largeDisplayMode.valueIndex`
+- **Purpose:** Visual feedback for parameter scrolling position; brightness increases as user scrolls through values
+
+**Scope:** Encoder LED brightness control in Large Display Mode
+
+**Invocation:** `updateEncoderLed()` function when `largeDisplayMode.active == true`
+
+**Validation:**
+- Entering Large Display Mode at first value shows ~50% brightness
+- Rotating encoder to last value shows ~100% brightness
+- Each rotation step produces proportional brightness increase
+- Brightness updates smoothly without flicker
+
+**Related Rules:** BR-010 (Encoder LED brightness adjustment); BR-ENC-NAV-003 (Page color mapping); FR-021 (Requirements)
+
+**Confidence:** HIGH (FEATURE-SPEC-011 decision confirmed)
+
+---
+
+### BR-ENC-NAV-005: Encoder Navigation Input Redundancy (Simultaneous Gamepad & Encoder) — **NEW (FEATURE-SPEC-011)**
+
+**Rule:** Encoder navigation and gamepad button navigation shall be fully redundant; both input methods shall remain active simultaneously with no mutual exclusion.
+
+**Details:**
+- **Simultaneous operation:** Both encoder and gamepad buttons process independently in `handleButtons()` function
+- **No blocking logic:** Encoder navigation does not disable gamepad buttons
+- **No priority logic:** No 500ms cooldowns or input priority switching
+- **Page navigation redundancy:**
+  - Gamepad Y button: previous page (FR-003)
+  - Gamepad A button: next page (FR-003)
+  - Encoder rotation: page navigation (FR-020)
+  - All three active simultaneously; user can mix input methods
+  
+- **Large Display Mode redundancy:**
+  - Gamepad B button: next value (FR-017)
+  - Gamepad X button: previous value (FR-017)
+  - Gamepad Y button: exit mode (FR-016)
+  - Encoder rotation: value scrolling (FR-021)
+  - Encoder button press: exit mode (FR-021)
+  - All five active simultaneously
+  
+- **No conflicts:** If user rotates encoder and presses gamepad button simultaneously:
+  - Both actions queued and processed (order determined by polling sequence)
+  - Display updates reflect both changes (if they both affect state)
+  - No undefined behavior or exceptions
+
+**Rationale:**
+- Maximizes user flexibility and accessibility
+- Each input method works independently; no dependencies
+- Matches principle of least surprise (disabling buttons would be unintuitive)
+- No implementation complexity for exclusion logic
+
+**Scope:** All input handling in `handleButtons()` function
+
+**Validation:**
+- User can navigate pages using encoder while holding gamepad Y button (both work)
+- User can scroll parameters using encoder while pressing gamepad B (both work)
+- Rapid alternation between encoder and gamepad shows no conflict
+- State machine remains consistent regardless of input source
+
+**Related Rules:** BR-012 (Gamepad button page navigation); BR-SP-002/003/004 (Large Display Mode button behavior); FR-020, FR-021 (Requirements)
+
+**Confidence:** HIGH (FEATURE-SPEC-011 decision confirmed)
+
+---
+
 ## Ambiguities & [UNKNOWN] Items
 
 | Item | Impact | Note |

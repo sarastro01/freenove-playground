@@ -1286,10 +1286,14 @@ Implement automated test suite for all business logic, verify hardware integrati
 - `test/test_led_color.cpp` — LED color cycling
 - `test/test_uv_compensation.cpp` — UV compensation formulas
 - `test/test_gamepad_edge.cpp` — Button falling-edge detection
+- `test/test_encoder_navigation.cpp` — Encoder delta-based page navigation (FEATURE-SPEC-011)
+- `test/test_encoder_button_debounce.cpp` — Encoder button press debounce (FEATURE-SPEC-011)
+- `test/test_encoder_large_display.cpp` — Encoder value scrolling in Large Display Mode (FEATURE-SPEC-011)
 - Plus integration tests (require hardware)
 
 **Updates to existing files:**
 - `platformio.ini` — Add test environment configuration
+- `docs/10-testing.md` — Encoder navigation test cases (TC-ENC-NAV-001 through TC-ENC-INT-004, TAC-ENC-001 through TAC-ENC-008)
 
 ### Dependencies
 
@@ -1299,7 +1303,7 @@ Implement automated test suite for all business logic, verify hardware integrati
 - Phase 5 (business logic algorithms)
 - Phase 7 (UI renderering, if testing visual output)
 - Phase 9 (hardware integration, if hardware tests)
-- [10-testing.md](docs/10-testing.md) (complete test strategy and test cases)
+- [10-testing.md](docs/10-testing.md) (complete test strategy and test cases, including FEATURE-SPEC-011 encoder navigation tests)
 
 **Enables Phase(s):**
 - Phase 11 (build system includes tests)

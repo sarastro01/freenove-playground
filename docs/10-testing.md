@@ -2672,3 +2672,549 @@ ASSERT_EQUAL(result, "--");
 
 ---
 
+## Test Cases: Encoder Navigation (FEATURE-SPEC-011) — **NEW**
+
+### Unit Tests: Encoder Navigation Logic
+
+#### TC-ENC-NAV-001: Encoder Position Delta for Page Increment
+
+**Requirement:** FR-020, BR-ENC-NAV-001
+
+**Purpose:** Verify delta-based page increment logic
+
+**Setup:**
+- Current page: 0
+- Last encoder position: 100
+- Current encoder position: 105 (delta = +5)
+- ENCODER_DELTA_THRESHOLD: 1
+
+**Action:**
+Call page navigation logic: `if (delta >= ENCODER_DELTA_THRESHOLD) { page++ }`
+
+**Expected Result:**
+- ✅ currentPage = 1 (increment succeeded)
+- ✅ lastEncoderPosition updated to 105
+- ✅ Multiple deltas in same cycle all process (no queuing)
+
+**Verification:**
+- Page changed from 0 to 1
+- No skipped pages
+
+**Error Condition:**
+- ❌ Page remains 0
+- ❌ Page becomes 2 (double increment)
+- ❌ lastEncoderPosition not updated
+
+---
+
+#### TC-ENC-NAV-002: Encoder Position Delta for Page Decrement
+
+**Requirement:** FR-020, BR-ENC-NAV-001
+
+**Purpose:** Verify delta-based page decrement logic
+
+**Setup:**
+- Current page: 5
+- Last encoder position: 100
+- Current encoder position: 95 (delta = -5)
+- ENCODER_DELTA_THRESHOLD: 1
+
+**Action:**
+Call page navigation logic: `if (delta <= -ENCODER_DELTA_THRESHOLD) { page-- }`
+
+**Expected Result:**
+- ✅ currentPage = 4 (decrement succeeded)
+- ✅ lastEncoderPosition updated to 95
+- ✅ Negative delta correctly detected
+
+**Verification:**
+- Page changed from 5 to 4
+- No skipped pages
+
+**Error Condition:**
+- ❌ Page remains 5
+- ❌ Page becomes 3 (double decrement)
+
+---
+
+#### TC-ENC-NAV-003: Encoder Position Wrapping (Page 0 Counter-Clockwise)
+
+**Requirement:** FR-020, BR-ENC-NAV-001
+
+**Purpose:** Verify circular wrapping when decrementing from page 0
+
+**Setup:**
+- Current page: 0
+- Delta: -1
+
+**Action:**
+Call: `currentPage = (currentPage - 1 + 10) % 10`
+
+**Expected Result:**
+- ✅ currentPage = 9 (wraps around)
+
+**Verification:**
+- Page 0 - 1 = 9 (not -1)
+
+**Error Condition:**
+- ❌ currentPage = -1 or 65535 (unsigned underflow)
+
+---
+
+#### TC-ENC-NAV-004: Encoder Position Wrapping (Page 9 Clockwise)
+
+**Requirement:** FR-020, BR-ENC-NAV-001
+
+**Purpose:** Verify circular wrapping when incrementing from page 9
+
+**Setup:**
+- Current page: 9
+- Delta: +1
+
+**Action:**
+Call: `currentPage = (currentPage + 1) % 10`
+
+**Expected Result:**
+- ✅ currentPage = 0 (wraps around)
+
+**Verification:**
+- Page 9 + 1 = 10 % 10 = 0
+
+**Error Condition:**
+- ❌ currentPage = 10 (no modulo)
+
+---
+
+#### TC-ENC-NAV-005: Encoder Button Debounce (Rising Edge Detection)
+
+**Requirement:** FR-021, BR-ENC-NAV-002
+
+**Purpose:** Verify mode transition triggers only on rising edge (NOT pressed → pressed)
+
+**Setup:**
+- largeDisplayMode.active = false (standard mode)
+- encoderValues.pressed = 1 (NOT pressed, active LOW)
+- lastEncoderPressed = false
+
+**Action:**
+1. Set encoderValues.pressed = 0 (pressed)
+2. Call debounce: `if (pressed && !lastEncoderPressed) { toggle_mode() }`
+3. Update: `lastEncoderPressed = pressed`
+
+**Expected Result:**
+- ✅ Mode transition triggered (largeDisplayMode.active = true)
+- ✅ lastEncoderPressed updated to true
+
+**Verification:**
+- Single transition on rising edge
+- Mode is now active
+
+**Error Condition:**
+- ❌ No transition
+- ❌ Multiple transitions in single cycle
+
+---
+
+#### TC-ENC-NAV-006: Encoder Button Hold Produces No Repeat Transitions
+
+**Requirement:** FR-021, BR-ENC-NAV-002
+
+**Purpose:** Verify held button does not repeat mode transitions (no-repeat behavior)
+
+**Setup:**
+- largeDisplayMode.active = false
+- encoderValues.pressed = 0 (pressed)
+- lastEncoderPressed = true (already registered press)
+
+**Action:**
+Call debounce loop 5 times (simulating held button, 100 ms):
+```
+for (i = 0; i < 5; i++) {
+    if (pressed && !lastEncoderPressed) { toggle_count++ }
+    lastEncoderPressed = pressed
+}
+```
+
+**Expected Result:**
+- ✅ toggle_count = 0 (no transition, even though button held)
+- ✅ largeDisplayMode.active remains false (unchanged)
+
+**Verification:**
+- Held button does not produce repeated toggles
+- State machine remains stable
+
+**Error Condition:**
+- ❌ toggle_count > 0
+- ❌ Mode toggled multiple times while holding
+
+---
+
+#### TC-ENC-NAV-007: Encoder Large Display Value Increment (Clockwise Rotation)
+
+**Requirement:** FR-021, BR-ENC-NAV-001
+
+**Purpose:** Verify value index increments in Large Display Mode
+
+**Setup:**
+- largeDisplayMode.active = true
+- largeDisplayMode.valueIndex = 0
+- paramCount[page] = 5 (5 values available)
+- encoderDelta = +1
+
+**Action:**
+Call: `valueIndex = (valueIndex + 1) % paramCount`
+
+**Expected Result:**
+- ✅ largeDisplayMode.valueIndex = 1
+
+**Verification:**
+- Value index incremented
+- Modulo constraint satisfied
+
+**Error Condition:**
+- ❌ valueIndex unchanged
+- ❌ valueIndex > paramCount
+
+---
+
+#### TC-ENC-NAV-008: Encoder Large Display Value Decrement (Counter-Clockwise)
+
+**Requirement:** FR-021, BR-ENC-NAV-001
+
+**Purpose:** Verify value index decrements in Large Display Mode
+
+**Setup:**
+- largeDisplayMode.active = true
+- largeDisplayMode.valueIndex = 2
+- paramCount[page] = 5
+- encoderDelta = -1
+
+**Action:**
+Call: `valueIndex = (valueIndex - 1 + paramCount) % paramCount`
+
+**Expected Result:**
+- ✅ largeDisplayMode.valueIndex = 1
+
+**Verification:**
+- Value index decremented correctly
+
+**Error Condition:**
+- ❌ valueIndex unchanged
+- ❌ valueIndex becomes negative
+
+---
+
+#### TC-ENC-NAV-009: Encoder LED Page Color (Page 0 = Red)
+
+**Requirement:** BR-ENC-NAV-003
+
+**Purpose:** Verify LED color reflects current page
+
+**Setup:**
+- currentPage = 0
+- largeDisplayMode.active = false
+
+**Action:**
+Call updateEncoderLed() with page color lookup
+
+**Expected Result:**
+- ✅ LED color set to 0xFF0000 (red)
+
+**Verification:**
+- Correct color for page 0
+
+**Error Condition:**
+- ❌ Wrong color
+- ❌ LED not updated
+
+---
+
+#### TC-ENC-NAV-010: Encoder LED Brightness in Large Display Mode
+
+**Requirement:** BR-ENC-NAV-004
+
+**Purpose:** Verify brightness scales with parameter index
+
+**Setup:**
+- largeDisplayMode.active = true
+- largeDisplayMode.valueIndex = 2 (middle value)
+- paramCount[page] = 5
+- Formula: `brightness = 128 + (valueIndex * 127 / paramCount)`
+
+**Action:**
+Calculate: `brightness = 128 + (2 * 127 / 5) = 128 + 50 = 178`
+
+**Expected Result:**
+- ✅ brightness = 178 (~70%)
+
+**Verification:**
+- Brightness between 128 (50%) and 255 (100%)
+- Linear scaling verified
+
+**Error Condition:**
+- ❌ brightness < 128 or > 255
+- ❌ Non-linear scaling
+
+---
+
+### Integration Tests: Encoder Navigation
+
+#### TC-ENC-INT-001: Simultaneous Encoder + Gamepad Input (Page Navigation)
+
+**Requirement:** BR-ENC-NAV-005
+
+**Purpose:** Verify encoder and gamepad inputs work simultaneously without conflict
+
+**Setup:**
+- Current page: 2
+- No input processing pending
+
+**Action:**
+1. User rotates encoder clockwise (delta = +1)
+2. Simultaneously, user presses gamepad A button
+3. Next handleButtons() cycle processes both inputs
+
+**Expected Result:**
+- ✅ Page advances (either from encoder or gamepad, or both)
+- ✅ No undefined behavior or crash
+- ✅ Display updates consistently
+
+**Verification:**
+- System remains responsive
+- Page navigation works from both inputs
+- No input is lost
+
+**Error Condition:**
+- ❌ One input cancels the other
+- ❌ Page skips or goes backward
+- ❌ System freeze or crash
+
+---
+
+#### TC-ENC-INT-002: Encoder Navigation Mode Transition Timing
+
+**Requirement:** FR-020, FR-021
+
+**Purpose:** Verify mode transition completes within <100ms (FR-001 constraint)
+
+**Setup:**
+- Standard mode active
+- Encoder read cycle starts at t=0
+
+**Action:**
+1. Poll encoder at t=0 (register button press)
+2. handleButtons() processes at t=5ms
+3. displayCurrentPage() updates display at t=30ms
+4. Measure time from press detection to display update
+
+**Expected Result:**
+- ✅ Display update completes by t=50ms (well within 100ms limit)
+
+**Verification:**
+- Serial log timestamp confirms <50ms latency
+
+**Error Condition:**
+- ❌ Display update >100ms after press
+- ❌ Display flickers during transition
+
+---
+
+#### TC-ENC-INT-003: Large Display Mode Value Scrolling Wrapping
+
+**Requirement:** FR-021, BR-ENC-NAV-001
+
+**Purpose:** Verify value wrapping works correctly (last value → first value)
+
+**Setup:**
+- largeDisplayMode.active = true
+- largeDisplayMode.valueIndex = 6 (last, paramCount = 7)
+- Encoder rotation clockwise (delta = +1)
+
+**Action:**
+Call: `valueIndex = (valueIndex + 1) % 7`
+
+**Expected Result:**
+- ✅ largeDisplayMode.valueIndex = 0 (wraps)
+
+**Verification:**
+- Scrolling continues seamlessly at list boundary
+
+**Error Condition:**
+- ❌ valueIndex becomes 7 (out of bounds)
+- ❌ valueIndex becomes -1 (underflow)
+
+---
+
+#### TC-ENC-INT-004: Sensor Data Integrity During Encoder Navigation
+
+**Requirement:** FR-020, FR-021
+
+**Purpose:** Verify sensor reads continue accurately while user navigates
+
+**Setup:**
+- INA219 sensor on page 2
+- User rapidly navigating through all pages with encoder
+
+**Action:**
+1. Start continuous sensor polling in background
+2. User rotates encoder rapidly (5 pages forward and back)
+3. Record sensor values before, during, and after navigation
+
+**Expected Result:**
+- ✅ Sensor values remain consistent (no data corruption)
+- ✅ Page navigation does not interfere with sensor polling
+- ✅ No dropped sensor reads
+
+**Verification:**
+- Compare sensor values across logs
+- Check that timestamp progression is smooth
+
+**Error Condition:**
+- ❌ Sensor values change unexpectedly
+- ❌ Sensor reads skip or show NaN
+- ❌ Page navigation causes sensor timeout
+
+---
+
+### Acceptance Tests: Encoder Navigation
+
+#### TAC-ENC-001: Rotate Encoder Clockwise Advances Pages
+
+**User Story:** "As a user, I want to rotate the encoder clockwise to move forward through sensor pages."
+
+**Acceptance Criteria:**
+- ✅ Page 0 → rotate CW → Page 1
+- ✅ Page 4 → rotate CW 3 times → Page 7 (sequential, no skipping)
+- ✅ Page 9 → rotate CW → Page 0 (wraps)
+- ✅ Display updates within 50ms of rotation
+
+**Test Method:** Manual on hardware; count rotations and verify page changes
+
+---
+
+#### TAC-ENC-002: Rotate Encoder Counter-Clockwise Goes Back
+
+**User Story:** "As a user, I want to rotate the encoder counter-clockwise to go backward through sensor pages."
+
+**Acceptance Criteria:**
+- ✅ Page 5 → rotate CCW → Page 4
+- ✅ Page 5 → rotate CCW 3 times → Page 2 (sequential backward)
+- ✅ Page 0 → rotate CCW → Page 9 (wraps)
+- ✅ Display updates within 50ms
+
+**Test Method:** Manual on hardware; count rotations and verify backward navigation
+
+---
+
+#### TAC-ENC-003: Press Encoder Button Enters Large Display Mode
+
+**User Story:** "As a user, I want to press the encoder button to zoom into a sensor value for closer reading."
+
+**Acceptance Criteria:**
+- ✅ In standard mode → press encoder → Large Display Mode activated
+- ✅ Display switches to large font (value centered, huge)
+- ✅ First parameter value (index 0) displayed
+- ✅ Footer shows instructions: "B:next  X:prev  Y:exit" OR encoder equivalents
+- ✅ Works on all 10 pages
+
+**Test Method:** Manual on hardware; press encoder button and verify display change
+
+---
+
+#### TAC-ENC-004: Rotate Encoder in Large Display Scrolls Values
+
+**User Story:** "As a user, I want to scroll through sensor values using the encoder dial without pressing buttons."
+
+**Acceptance Criteria:**
+- ✅ In Large Display Mode → rotate CW → next value displayed
+- ✅ Rotate CCW → previous value displayed
+- ✅ Each rotation step = one value (no skipping)
+- ✅ LED brightness increases as scroll forward (BR-ENC-NAV-004)
+- ✅ Value cycles: last → first (wrapping)
+
+**Test Method:** Manual on hardware; rotate encoder and count value changes
+
+---
+
+#### TAC-ENC-005: Press Encoder Button Exits Large Display Mode
+
+**User Story:** "As a user, I want to press the encoder button to exit zoom and return to normal page view."
+
+**Acceptance Criteria:**
+- ✅ In Large Display Mode → press encoder → returns to standard mode
+- ✅ Display returns to multi-value layout (same page as before zoom)
+- ✅ Original page index preserved (same page you zoomed in on)
+- ✅ No data loss or corruption
+
+**Test Method:** Manual on hardware; press encoder button in Large Display Mode and verify return
+
+---
+
+#### TAC-ENC-006: Encoder LED Shows Page Color in Standard Mode
+
+**User Story:** "As a user, I want to see the LED color change when I navigate to a different page, providing quick visual feedback."
+
+**Acceptance Criteria:**
+- ✅ Page 0 (BME280) → LED red
+- ✅ Page 3 (Encoder) → LED green
+- ✅ Page 5 (SI1145) → LED blue
+- ✅ Page 9 (DS2484) → LED light blue
+- ✅ LED color matches documentation (BR-ENC-NAV-003)
+
+**Test Method:** Manual on hardware; observe LED during navigation
+
+---
+
+#### TAC-ENC-007: Encoder LED Brightness Increases in Large Display Mode
+
+**User Story:** "As a user, I want the LED to provide visual feedback while I'm scrolling through parameter values."
+
+**Acceptance Criteria:**
+- ✅ Enter Large Display Mode (first value) → LED brightness ~50%
+- ✅ Scroll to middle value → LED brightness ~75%
+- ✅ Scroll to last value → LED brightness 100%
+- ✅ Brightness increases smoothly as scroll progress
+- ✅ Color remains same as page (only brightness changes)
+
+**Test Method:** Manual on hardware; observe LED brightness change during scrolling
+
+---
+
+#### TAC-ENC-008: Gamepad Buttons Still Work During Encoder Navigation
+
+**User Story:** "As a user, I want to be able to use gamepad buttons and encoder together interchangeably."
+
+**Acceptance Criteria:**
+- ✅ Use encoder to navigate 2 pages forward
+- ✅ Use gamepad A button to navigate 1 page forward (total 3 pages)
+- ✅ Use encoder to go back 1 page (total 2 pages from start)
+- ✅ Verify final page is correct
+- ✅ No conflicts or unexpected behavior
+
+**Test Method:** Manual on hardware; use mixed input methods
+
+---
+
+### Summary: Encoder Navigation Test Coverage
+
+**Total Test Cases:** 22
+- Unit Tests: 10 (TC-ENC-NAV-001 through TC-ENC-NAV-010)
+- Integration Tests: 4 (TC-ENC-INT-001 through TC-ENC-INT-004)
+- Acceptance Tests: 8 (TAC-ENC-001 through TAC-ENC-008)
+
+**Coverage:**
+- ✅ Delta-based page navigation (clockwise/counter-clockwise)
+- ✅ Circular wrapping (page 0 ↔ page 9)
+- ✅ Button debounce (no-repeat behavior)
+- ✅ Large Display Mode value scrolling
+- ✅ LED feedback (page colors + brightness scaling)
+- ✅ Input redundancy (encoder + gamepad simultaneous)
+- ✅ Mode transition timing (<100 ms)
+- ✅ Data integrity during navigation
+- ✅ User-facing workflows
+
+**Status:** Ready for implementation
+
+---
+
+

@@ -488,16 +488,30 @@ Each page-specific renderer has identical structure:
 | **Logic** | <pre>yPressed = !(buttons & (1UL << GAMEPAD_BUTTON_Y))  // active-low<br>aPressed = !(buttons & (1UL << GAMEPAD_BUTTON_A))<br><br>if yPressed && !lastY:  // falling edge<br>  currentPage = (currentPage + 9) % 10  // prev with wrap<br>if aPressed && !lastA:  // falling edge<br>  currentPage = (currentPage + 1) % 10  // next with wrap</pre> |
 | **Constraints** | Only checks gamepad if `available.gamepad`. Wrap-around is intentional (circular list of pages). |
 
-#### **Component: Encoder LED Control [in readEncoderAt50Hz()]**
+#### **Component: Encoder Navigation Handler [in handleButtons()] — **NEW (FEATURE-SPEC-011)**
 
 | Property | Value |
 |---|---|
-| **Responsibility** | On encoder button press: cycle LED color (blue → green → red → purple). On dial turn: adjust brightness. |
-| **Inputs** | Encoder position delta, button state. |
-| **Outputs** | Updated LED state via `updateEncoderLed()` (calls `encoderLed.setPixelColor()`, `encoderLed.show()`). |
-| **Color Cycle** | `encoderColorIndex` (0–3) wrapped modulo 4 on each press; stored color names for display. |
-| **Brightness Control** | `nextBrightness = brightness + delta * 8`, constrained to 0–255. |
-| **Constraints** | Only active when `available.encoder` and display is on encoder page or during page change. |
+| **Responsibility** | Process encoder rotation for page navigation (standard mode) and value scrolling (Large Display mode); handle encoder button press for mode toggling. |
+| **Inputs** | Encoder position delta and button state from `pollEncoder()`. |
+| **Outputs** | Updated `currentPage`, `largeDisplayMode.valueIndex`, or `largeDisplayMode.active`. |
+| **Page Navigation Logic** | <pre>encoderDelta = encoderValues.position - lastEncoderPosition<br>lastEncoderPosition = encoderValues.position<br><br>if !largeDisplayMode.active:<br>  if encoderDelta >= ENCODER_DELTA_THRESHOLD:<br>    currentPage = (currentPage + 1) % 10  // clockwise = next page<br>  if encoderDelta <= -ENCODER_DELTA_THRESHOLD:<br>    currentPage = (currentPage - 1 + 10) % 10  // counter-clockwise = prev page</pre> |
+| **Value Scrolling Logic** | <pre>if largeDisplayMode.active:<br>  paramCount = getParameterCount(currentPage)<br>  if encoderDelta >= ENCODER_DELTA_THRESHOLD:<br>    valueIndex = (valueIndex + 1) % paramCount  // clockwise = next value<br>  if encoderDelta <= -ENCODER_DELTA_THRESHOLD:<br>    valueIndex = (valueIndex - 1 + paramCount) % paramCount  // ccw = prev value</pre> |
+| **Button Press Logic** | <pre>encoderPressed = (encoderValues.pressed == 0)  // active-low<br>if encoderPressed && !lastEncoderPressed:  // rising edge<br>  if largeDisplayMode.active:<br>    largeDisplayMode.active = false  // exit Large Display<br>  else:<br>    largeDisplayMode.active = true   // enter Large Display<br>    largeDisplayMode.valueIndex = 0<br>lastEncoderPressed = encoderPressed</pre> |
+| **Constraints** | Delta-based stepping (not absolute position); rising-edge button press detection (no-repeat behavior); full input redundancy with gamepad (both active simultaneously). |
+| **References** | FR-020 (page navigation), FR-021 (Large Display mode toggling + value scrolling); BR-ENC-NAV-001 through BR-ENC-NAV-005 (business rules) |
+
+#### **Component: Encoder LED Control [in updateEncoderLed()] — **ENHANCED (FEATURE-SPEC-011)**
+
+| Property | Value |
+|---|---|
+| **Responsibility** | Update encoder LED color based on current page (standard mode) and brightness based on value index (Large Display mode). |
+| **Inputs** | Current page, Large Display mode status, value index, parameter count. |
+| **Outputs** | Updated LED state via `encoderLed.setPixelColor()` and `encoderLed.show()`. |
+| **Standard Mode** | <pre>pageColors[10] = {0xFF0000, 0xFF7F00, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0x7F00FF, 0xFFFFFF, 0xFF1493, 0x87CEEB}<br>setPixelColor(pageColors[currentPage])<br>setBrightness(255)  // full brightness</pre> |
+| **Large Display Mode** | <pre>hue = pageColors[currentPage]  // keep page color<br>brightness = 128 + (valueIndex * 127 / max(paramCount, 1))<br>setPixelColor(hue)<br>setBrightness(brightness)  // 50-100% scale</pre> |
+| **Constraints** | Only active when `available.encoder`. Update frequency: every 50 Hz (every encoder read). |
+| **References** | BR-ENC-NAV-003 (page color mapping), BR-ENC-NAV-004 (Large Display brightness scaling) |
 
 ---
 
@@ -740,6 +754,85 @@ loop() iteration
 ├─ nextGamepadMs = now + 25
 │
 └─ [After page update, drawCurrentPage() detects change and redraws]
+```
+
+### Use Case 6: Encoder Navigation — Page Switching & Mode Toggling (FEATURE-SPEC-011)
+
+**Scenario:** User rotates encoder dial to switch pages (standard mode) or scroll parameter values (Large Display mode); presses encoder button to toggle Large Display mode.
+
+```
+loop() iteration
+
+├─ available.encoder? YES
+├─ (int32_t)(now - nextEncoderMs) >= 0?  YES (50 Hz gate)
+│
+├─ handleButtons() — Encoder Navigation Handler
+│  │
+│  ├─ [Read encoder state from pollEncoder()]
+│  │  ├─ encoderDelta = currentPosition - lastEncoderPosition
+│  │  ├─ encoderPressed = (seesaw.digitalRead(ENCODER_BUTTON_PIN) == LOW)  // active-low
+│  │  └─ lastEncoderPosition = currentPosition
+│  │
+│  ├─ IF standard mode (largeDisplayMode.active == false):
+│  │  │
+│  │  ├─ IF encoderDelta >= ENCODER_DELTA_THRESHOLD (clockwise):
+│  │  │  └─ currentPage = (currentPage + 1) % 10  // Next page with wrap
+│  │  │
+│  │  ├─ IF encoderDelta <= -ENCODER_DELTA_THRESHOLD (counter-clockwise):
+│  │  │  └─ currentPage = (currentPage + 9) % 10  // Prev page with wrap (equiv. -1 mod 10)
+│  │  │
+│  │  ├─ IF encoderPressed && !lastEncoderPressed (rising edge):
+│  │  │  ├─ largeDisplayMode.active = true
+│  │  │  ├─ largeDisplayMode.valueIndex = 0
+│  │  │  └─ lastEncoderPressed = true
+│  │
+│  ├─ ELSE IF Large Display mode (largeDisplayMode.active == true):
+│  │  │
+│  │  ├─ paramCount = getParameterCount(currentPage)
+│  │  │
+│  │  ├─ IF encoderDelta >= ENCODER_DELTA_THRESHOLD (clockwise):
+│  │  │  └─ valueIndex = (valueIndex + 1) % paramCount  // Next parameter with wrap
+│  │  │
+│  │  ├─ IF encoderDelta <= -ENCODER_DELTA_THRESHOLD (counter-clockwise):
+│  │  │  └─ valueIndex = (valueIndex - 1 + paramCount) % paramCount  // Prev parameter with wrap
+│  │  │
+│  │  ├─ IF encoderPressed && !lastEncoderPressed (rising edge):
+│  │  │  └─ largeDisplayMode.active = false  // Exit Large Display mode
+│  │  │
+│  │  └─ lastEncoderPressed = encoderPressed
+│  │
+│  └─ [Note: Gamepad buttons remain active simultaneously, no mutual exclusion]
+│
+├─ updateEncoderLed() — LED Feedback
+│  │
+│  ├─ IF standard mode:
+│  │  ├─ pageColor = pageColorMap[currentPage]
+│  │  │   // Maps 10 pages to 10 colors: Red, Orange, Yellow, Lime, Cyan, Blue, Violet, White, Hot Pink, Sky Blue
+│  │  ├─ encoderLed.setPixelColor(pageColor)
+│  │  └─ encoderLed.setBrightness(255)  // Full brightness
+│  │
+│  ├─ ELSE IF Large Display mode:
+│  │  ├─ pageColor = pageColorMap[currentPage]
+│  │  ├─ brightness = 128 + (valueIndex * 127 / max(paramCount, 1))
+│  │  │   // Linear scaling: 50% at index 0, 100% at last index
+│  │  ├─ encoderLed.setPixelColor(pageColor)
+│  │  └─ encoderLed.setBrightness(brightness)
+│  │
+│  └─ encoderLed.show()  // Update NeoPixel via seesaw I2C command
+│
+├─ drawCurrentPage(false)  // Refresh display
+│  ├─ IF standard mode:
+│  │  └─ Show normal sensor page (pageTemperature, pageCO2, etc.)
+│  │
+│  └─ IF Large Display mode:
+│  │  └─ drawLargeDisplay()
+│  │      ├─ Large font parameter name and value
+│  │      ├─ Up/Down navigation hints (encoder or gamepad X/B)
+│  │      └─ Exit hint (encoder press or gamepad Y)
+│
+├─ nextEncoderMs = now + 20  // 50 Hz = 20 ms period
+│
+└─ [Both encoder and gamepad inputs active; no conflicts (full redundancy)]
 ```
 
 ---

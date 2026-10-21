@@ -109,16 +109,21 @@ The system shall process gamepad button and rotary encoder input in real-time.
 - Gamepad buttons read at 40 Hz (25 ms)
 - Encoder read at 50 Hz (20 ms) CONTINUOUSLY (not page-conditional)
   - Enables LED updates and stats aggregation even when encoder page not displayed
-- Button presses detected via falling-edge (0→1 transition)
+- Button presses detected via falling-edge (0→1 transition) for rising-edge detection (NOT pressed → pressed)
 - Encoder dial rotation tracked as delta (ticks per cycle)
+- Encoder position delta used for page navigation and value scrolling (see FR-020, FR-021)
+- Encoder button press used for Large Display Mode toggling (see FR-020, FR-021)
 - LED brightness updated immediately on dial rotation
 - LED color cycled immediately on button press
+- LED color updated based on current page (see BR-ENC-NAV-003)
+- LED brightness updated based on Large Display Mode value position (see BR-ENC-NAV-004)
 - Encoder read timing aggregated into `EncoderStats` for performance monitoring
 
 **Evidence:**
 - Gamepad read: `readGamepadAt40Hz()` with timing aggregation
 - Encoder read: `readEncoderAt50Hz()` called every 20 ms (not conditional on page)
 - LED update: `updateEncoderLed()` executed on every encoder read
+- Encoder navigation: `handleButtons()` processes encoder delta for navigation
 - Stats logging: `printEncoderStats()` prints aggregated stats every 1000 ms
 
 ---
@@ -568,6 +573,57 @@ The system shall implement large display rendering via single unified renderer f
 - FEATURE-SPEC-007 clarification: "Combine into single function"
 - Implementation approach: Progressive 5-phase rollout
 - Backward compatibility: Existing INA219 large display (FR-012) refactored to use unified renderer
+
+---
+
+### FR-020: Encoder Navigation — Standard Mode Page Switching — **NEW (FEATURE-SPEC-011)**
+
+**Requirement:**  
+The system shall enable page navigation using rotary encoder rotation as an alternative to gamepad buttons.
+
+**Details:**
+- **Navigation input:** Encoder position delta (rotation per cycle)
+- **Delta calculation:** `encoderDelta = encoderValues.position - lastEncoderPosition`
+- **Page increment:** When `encoderDelta >= ENCODER_DELTA_THRESHOLD` (default 1): `currentPage = (currentPage + 1) % 10`
+- **Page decrement:** When `encoderDelta <= -ENCODER_DELTA_THRESHOLD`: `currentPage = (currentPage - 1 + 10) % 10`
+- **Threshold:** Minimum 1 encoder position unit per cycle = ±1 page step (matches gamepad button feel)
+- **Circular wrapping:** Pages cycle 0→9→0 as user rotates encoder
+- **Redundancy:** Encoder rotation and gamepad Y/A buttons both active simultaneously (no mutual exclusion)
+- **Performance:** Navigation processed every 20 ms (encoder read frequency); display update subject to rate limiter
+
+**Evidence:**
+- FEATURE-SPEC-011 §12.1: Delta-based stepping confirmed as decision
+- Implementation location: `handleButtons()` function in src/main.cpp
+- Global state tracking: `lastEncoderPosition` variable for delta calculation
+
+---
+
+### FR-021: Encoder Navigation — Large Display Mode Value Scrolling & Mode Toggle — **NEW (FEATURE-SPEC-011)**
+
+**Requirement:**  
+The system shall enable Large Display Mode entry/exit via encoder button press, and value scrolling via encoder rotation.
+
+**Details:**
+- **Mode entry:** Encoder button press (rising edge: NOT pressed → pressed) while in standard mode
+  - Action: Activate `largeDisplayMode.active = true`, set `largeDisplayMode.valueIndex = 0`
+  - Display: Update to large display view for current page
+- **Mode exit:** Encoder button press while in large display mode
+  - Action: Deactivate `largeDisplayMode.active = false`, return to standard page view
+  - Display: Restore standard page layout
+- **Value scrolling in Large Display Mode:** Encoder rotation delta used for value navigation
+  - Forward: `encoderDelta >= ENCODER_DELTA_THRESHOLD` → `valueIndex = (valueIndex + 1) % paramCount[page]`
+  - Backward: `encoderDelta <= -ENCODER_DELTA_THRESHOLD` → `valueIndex = (valueIndex - 1 + paramCount[page]) % paramCount[page]`
+- **Button debounce:** Rising-edge detection with `lastEncoderPressed` flag (no-repeat behavior)
+  - Single press = one transition
+  - Held button ignored after first transition
+- **Redundancy:** Encoder button and gamepad B/X buttons both active (no mutual exclusion)
+- **Performance:** Button press detected every 20 ms (encoder read frequency); mode transition completes within single update cycle
+
+**Evidence:**
+- FEATURE-SPEC-011 §12.2: No-repeat button behavior confirmed
+- Implementation location: `handleButtons()` function in src/main.cpp
+- Global state tracking: `lastEncoderPressed` flag for debounce, `largeDisplayMode` struct for state
+- Relatedness to FR-016/FR-017: Reuses existing Large Display Mode infrastructure
 
 ---
 
