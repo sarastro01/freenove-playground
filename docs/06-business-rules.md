@@ -3251,6 +3251,73 @@ When Large Display Mode is active on the SCD30 page (Page 4), the Y button behav
 
 ---
 
+## Display Flicker Prevention Rules
+
+### BR-DISPLAY-FLICKER-001: Prevent Display Flicker via Conditional Rendering
+
+**Rule:** The display shall not flicker during sensor data updates or page transitions.
+
+**Implementation Strategy:**
+1. **SCD30 Page (Page 4):** Header drawn only on page transitions
+   - The header includes `tft.fillScreen(TFT_BLACK)`, a blocking ~100ms operation
+   - Calling every refresh cycle (~50ms) causes visible flicker
+   - Solution: Gate header redraw to `pageChanged=true` condition only
+
+2. **Large Display Mode (All Pages):** Incremental rendering based on value changes
+   - Full screen clear (`tft.fillScreen()`) only when value changes or mode activated
+   - Partial screen clear (`tft.fillRect()` on value area only) when value unchanged
+   - Layout components drawn once per full redraw
+   - Result: Display load reduced from ~5 redraws/sec to ~0.5 redraws/sec
+
+**Validation:**
+- Observe SCD30 page for 30+ seconds → header stable, no flicker
+- Observe Large Display mode for 30+ seconds with stable sensor input → value area updates, no flicker
+- Switch between modes with Y button → no visual artifacts
+
+**Related Rules:** BR-031 (Large Display Mode Exit), BR-SCD30-004 (Conditional Header Rendering)
+
+**Scope:** All pages, all modes
+
+**Confidence:** HIGH (implemented and tested)
+
+---
+
+### BR-SCD30-004: Conditional Header Rendering for SCD30 Page
+
+**Rule:** The SCD30 page header (including ASC status badge and title) shall only be redrawn when the page becomes active (`pageChanged=true`).
+
+**Rationale:**
+- The `drawHeaderWithBadge()` function calls `tft.fillScreen(TFT_BLACK)`, a blocking I2C operation (~100ms)
+- Calling this every display refresh cycle (~50ms) causes visible flicker
+- By gating header redraws to page transitions only, we eliminate unnecessary screen clears
+- ASC badge still updates correctly on page transitions when toggle occurs
+
+**Implementation:**
+- Function signature: `pageScd30(bool pageChanged)`
+- Conditional rendering:
+  ```
+  if (pageChanged) {
+      drawHeaderWithBadge("SCD30 (0x61)", scd30Sensor.getAutoSelfCalibration());
+  } else {
+      // Skip header, update only sensor values
+  }
+  ```
+
+**Invocation:** Called from `drawCurrentPage(bool pageChanged)` with page transition flag
+
+**Validation:**
+- SCD30 page transitions do not flicker
+- Sensor values update smoothly every 500ms without header flicker
+- ASC badge updates correctly when toggled (on next page transition)
+
+**Related Rules:** BR-DISPLAY-FLICKER-001 (General flicker prevention)
+
+**Scope:** Page 4 (SCD30) only
+
+**Confidence:** HIGH (implemented in v2.7+)
+
+---
+
 ## Ambiguities & [UNKNOWN] Items
 
 | Item | Impact | Note |

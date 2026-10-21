@@ -157,6 +157,39 @@ All libraries are **pinned to compatible versions** in `platformio.ini`. Version
 | **Flash Size** | ~20 KB |
 | **Heap Size** | ~200 bytes |
 
+#### 5a. SparkFun VEML6075 Library
+
+| Property | Value |
+|----------|-------|
+| **Package** | `sparkfun/SparkFun VEML6075 UV Index Library` |
+| **Version** | `^1.1.5` |
+| **Repository** | [sparkfun/SparkFun_VEML6075_Arduino_Library](https://github.com/sparkfun/SparkFun_VEML6075_Arduino_Library) |
+| **Purpose** | I2C UV sensor (UVA/UVB) measurements and UV index calculation (Page 7) |
+| **Hardware** | VEML6075 UV sensor @ 0x10 |
+| **Key Functions** | `begin(Wire)`, `readUVA()`, `readUVB()`, `readUVIndex()` |
+| **Wire Integration** | Accepts external Wire reference; eliminates I2C conflicts |
+| **Migration** | Replaced raw I2C I²C UV/A/B readouts (previously via direct Wire calls) |
+| **Flash Size** | ~3 KB |
+| **Heap Size** | ~20 bytes |
+| **Rationale** | Vendor-validated library for VEML6075; handles I2C protocol; no direct Wire calls in main.cpp |
+
+#### 5b. Adafruit VEML6070 Library
+
+| Property | Value |
+|----------|-------|
+| **Package** | `adafruit/Adafruit VEML6070 Library` |
+| **Version** | `^1.0.8` |
+| **Repository** | [adafruit/Adafruit_VEML6070](https://github.com/adafruit/Adafruit_VEML6070) |
+| **Purpose** | I2C dual-address UV sensor for lower UV index measurements (Page 7) |
+| **Hardware** | VEML6070 UV sensor @ 0x38 (data) + 0x39 (command) |
+| **Key Functions** | `begin(Wire, VEML6070_1_T)`, `readUV()` |
+| **Wire Integration** | Accepts external Wire reference; eliminates I2C conflicts |
+| **Migration** | Replaced raw I2C UV index readouts (previously via direct Wire calls) |
+| **Dual Address** | Uses two adjacent I2C addresses; both managed by library |
+| **Flash Size** | ~2 KB |
+| **Heap Size** | ~10 bytes |
+| **Rationale** | Vendor-validated library for VEML6070; supports dual-address protocol; no direct Wire calls in main.cpp |
+
 #### 6. Adafruit DS248x Library
 
 | Property | Value |
