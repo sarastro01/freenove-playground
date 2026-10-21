@@ -49,6 +49,8 @@
 #define SCD30_CMD_START 0x0010
 #define SCD30_CMD_READY 0x0202
 #define SCD30_CMD_READ 0x0300
+#define SCD30_CMD_GET_ASC 0x5301
+#define SCD30_CMD_SET_ASC 0x53DA
 
 constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
@@ -93,6 +95,14 @@ struct Ina219Values { float shunt; float bus; float load; float current; float p
 struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t comp2; float uvaComp; float uvbComp; float index; };
 struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
 struct Scd30Values { float co2; float temp; float humidity; };
+struct Scd30State {
+  bool ascEnabled;          // Current ASC status (true=ON, false=OFF)
+  bool ascStatusValid;      // Whether we successfully queried ASC status
+  uint32_t lastAscQuery;    // Timestamp of last ASC status query (ms)
+  bool pendingAscWrite;     // Whether an ASC toggle is in-flight
+  bool ascLastRead;         // Last read value (for hysteresis/debounce)
+  uint8_t ascDebounceCount; // Counter for consecutive stable reads (0-2)
+};
 struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
 struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
 
@@ -146,6 +156,7 @@ Ina219Values ina219Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
+Scd30State scd30State{};
 Bme280Values bme280Values{};       // BME280 cache
 Tsl2591Values tsl2591Values{};     // TSL2591 cache
 Si1145Values si1145Values{};       // SI1145 cache
@@ -513,6 +524,25 @@ void drawHeader(const char *title)
   tft.drawFastHLine(6, 38, 468, TFT_DARKGREY);
 }
 
+// FEATURE-SPEC-009: Draw header with optional status badge (e.g., ASC status for SCD30)
+void drawHeaderWithBadge(const char *title, const char *badgeText, uint16_t badgeColor)
+{
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  writeText(6, 8, title, TFT_CYAN, 4);
+  
+  // Draw ASC badge in top-right corner
+  if (badgeText && badgeText[0]) {
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(badgeColor, TFT_BLACK);
+    tft.drawString(String("ASC: ") + badgeText, 468, 12, 2);
+  }
+  
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawFastHLine(6, 38, 468, TFT_DARKGREY);
+  tft.setTextDatum(TL_DATUM);
+}
+
 void row(int y, const char *label, const String &value, uint16_t color = TFT_WHITE)
 {
   writeText(6, y, label, TFT_WHITE);
@@ -583,6 +613,11 @@ String tsl2591_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, co
 String veml6070_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
 String veml6075_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
 String ds2484_getLargeDisplayData(uint8_t valueIndex, const char** outLabel, const char** outUnit, uint16_t* outColor);
+
+// FEATURE-SPEC-009: Forward declarations for ASC control functions
+bool setAsc(bool enable);
+bool getAscStatus(bool& outEnabled);
+String scd30_getAscStatus();
 
 /// @brief Get the number of values available in large display mode for a given page
 /// @param pageIndex Page index (0-9)
@@ -885,6 +920,122 @@ bool readScd30(Scd30Values &values)
   uint32_t duration = endTime - startTime;
   Serial.printf("SCD30 read time: %lu µs\n", duration);
   return true;
+}
+
+// FEATURE-SPEC-009: Set ASC (Automatic Self Calibration) mode on SCD30
+bool setAsc(bool enable)
+{
+  if (!available.scd30) return false;
+  
+  uint8_t dataBytes[2] = {0x00, enable ? 0x01 : 0x00};
+  uint8_t crc = scd30Crc(dataBytes, 2);
+  
+  Wire.beginTransmission(SCD30_ADDR);
+  Wire.write(SCD30_CMD_SET_ASC >> 8);
+  Wire.write(SCD30_CMD_SET_ASC & 0xFF);
+  Wire.write(dataBytes[0]);
+  Wire.write(dataBytes[1]);
+  Wire.write(crc);
+  bool success = Wire.endTransmission() == 0;
+  
+  if (success) {
+    scd30State.ascEnabled = enable;
+    scd30State.pendingAscWrite = true;
+    // Small delay to ensure sensor processes the command before we query again
+    delayMicroseconds(100);
+  }
+  return success;
+}
+
+// FEATURE-SPEC-009: Query ASC status from SCD30
+bool getAscStatus(bool& outEnabled)
+{
+  if (!available.scd30) return false;
+  
+  // Send command
+  if (!scd30Command(SCD30_CMD_GET_ASC)) {
+    scd30State.ascStatusValid = false;
+    return false;
+  }
+  
+  // Small delay to ensure sensor prepares response (SCD30 responds slowly after I2C command)
+  delayMicroseconds(1000);  // 1ms - gives sensor time to prepare data
+  
+  // Read response with retry on bad data (0xDD is I2C NAK/error)
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (Wire.requestFrom(SCD30_ADDR, 3) != 3) {
+      if (attempt < 2) {
+        delayMicroseconds(50);
+        continue;
+      }
+      scd30State.ascStatusValid = false;
+      return false;
+    }
+    
+    uint8_t data[3];
+    data[0] = (uint8_t)Wire.read();
+    data[1] = (uint8_t)Wire.read();
+    data[2] = (uint8_t)Wire.read();
+    
+    // Check for I2C error pattern (all 0xDD means bus error)
+    if (data[0] == 0xDD && data[1] == 0xDD && data[2] == 0xDD) {
+      if (attempt < 2) {
+        delayMicroseconds(100);
+        continue;
+      }
+      scd30State.ascStatusValid = false;
+      return false;
+    }
+    
+    // Valid response received
+    if (scd30Crc(data, 2) != data[2]) {
+      scd30State.ascStatusValid = false;
+      return false;
+    }
+    
+    // FEATURE-SPEC-009: Hysteresis/Debounce logic
+    // The SCD30 may report slightly different byte patterns. Use debouncing:
+    // Only update display if same value read twice consecutively (debounceCount >= 2)
+    bool readValue = (data[1] & 0x01) != 0;
+    
+    // Check if sensor value is same as last read
+    if (readValue == scd30State.ascLastRead) {
+      // Value stable - increment debounce counter
+      if (scd30State.ascDebounceCount < 2) {
+        scd30State.ascDebounceCount++;
+      }
+      Serial.printf("[ASC QUERY] bytes: 0x%02X 0x%02X 0x%02X → %s (stable, debounce: %d/2)\n",
+                    data[0], data[1], data[2], readValue ? "ON" : "OFF", scd30State.ascDebounceCount);
+      
+      // Update display only after 2 stable reads
+      if (scd30State.ascDebounceCount >= 2 && readValue != scd30State.ascEnabled) {
+        Serial.printf("[ASC] Display update: %s → %s\n", 
+                      scd30State.ascEnabled ? "ON" : "OFF", readValue ? "ON" : "OFF");
+        scd30State.ascEnabled = readValue;
+      }
+    } else {
+      // Value changed - reset debounce counter
+      Serial.printf("[ASC QUERY] bytes: 0x%02X 0x%02X 0x%02X → %s (changed! reset debounce)\n",
+                    data[0], data[1], data[2], readValue ? "ON" : "OFF");
+      scd30State.ascLastRead = readValue;
+      scd30State.ascDebounceCount = 1;  // Start fresh counter
+    }
+    
+    scd30State.ascStatusValid = true;
+    scd30State.lastAscQuery = millis();
+    scd30State.pendingAscWrite = false;
+    outEnabled = scd30State.ascEnabled;  // Return debounced value
+    return true;
+  }
+  
+  return false;
+}
+
+// FEATURE-SPEC-009: Get ASC status string for display
+String scd30_getAscStatus()
+{
+  if (!scd30State.ascStatusValid) return "--";
+  return scd30State.ascEnabled ? "ON" : "OFF";
 }
 
 bool readVeml6075(Veml6075Values &values)
@@ -1597,8 +1748,28 @@ void rotatedReadSensor(uint32_t slot)
       break;
       
     case 6:
-      // SCD30: Moderate synchronous read (~5-10 ms)
+      // SCD30: Moderate synchronous read (~5-10 ms) + optional ASC status query
       if (available.scd30 && scd30Ready()) readScd30(scd30Values);
+      
+      // FEATURE-SPEC-009: Query ASC status with adaptive timing
+      // After toggle: query immediately (pendingAscWrite = true)
+      // After boot: first query after 3+ seconds (lastAscQuery = 0), then every 2 seconds
+      if (available.scd30) {
+        uint32_t timeSinceLastQuery = millis() - scd30State.lastAscQuery;
+        bool shouldQuery = scd30State.pendingAscWrite ||  // After toggle
+                          (scd30State.lastAscQuery == 0 && millis() >= 3000);  // After boot, wait 3s
+        if (!shouldQuery && !scd30State.pendingAscWrite) {
+          shouldQuery = (timeSinceLastQuery >= 2000);  // Regular polling every 2s
+        }
+        
+        if (shouldQuery) {
+          // IMPORTANT: Small delay between readScd30() and getAscStatus() to avoid
+          // I2C buffer conflicts. The previous 18-byte read needs time to settle.
+          delayMicroseconds(500);
+          bool ascEnabled;
+          getAscStatus(ascEnabled);  // Update scd30State with current ASC status
+        }
+      }
       break;
       
     case 7:
@@ -1886,7 +2057,7 @@ void printEncoderStats()
   if ((int32_t)(nowMs - lastEncoderStatsLogMs) < 1000) return;
   
   if (encoderStats.readCount > 0) {
-    Serial.printf("Encoder stats (1000ms):  reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    Serial.printf("Encoder stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
       encoderStats.readCount,
       encoderStats.minTime,
       encoderStats.maxTime,
@@ -1912,7 +2083,7 @@ void printIna219Stats()
   if ((int32_t)(nowMs - lastIna219StatsLogMs) < 1000) return;
   
   if (ina219Stats.readCount > 0) {
-    Serial.printf("INA219 stats (1000ms):  reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    Serial.printf("INA219  stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
       ina219Stats.readCount,
       ina219Stats.minTime,
       ina219Stats.maxTime,
@@ -2099,10 +2270,18 @@ void pageScd30()
     renderLargeDisplay(4, largeDisplayMode.valueIndex);
     return;
   }
+
+  // FEATURE-SPEC-009: Draw header with ASC status badge
+  String ascStatus = scd30_getAscStatus();
+  uint16_t badgeColor = TFT_DARKGREY;
+  if (scd30State.ascStatusValid) {
+    badgeColor = scd30State.ascEnabled ? TFT_GREEN : TFT_ORANGE;
+  }
+  drawHeaderWithBadge("SCD30 (0x61)", ascStatus.c_str(), badgeColor);
   
   // Display all SCD30 parameters using central definition (FEATURE-SPEC-008)
   displaySensorPage(scd30_params, SCD30_PARAM_COUNT, scd30_getValue);
-  footer("Y/A: Change page | SCD30");
+  footer("X: Toggle ASC | Y/A: Change page | SCD30");
 }
 
 void pageBme280()
@@ -2214,7 +2393,10 @@ void drawCurrentPage(bool pageChanged)
       "VEML6075 (0x10)",
       "DS2484 1-Wire (0x18)"
     };
-    drawHeader(titles[currentPage]);
+    // FEATURE-SPEC-009: Skip header for SCD30 (pageScd30 draws its own with ASC badge)
+    if (currentPage != 4) {
+      drawHeader(titles[currentPage]);
+    }
   }
   switch (currentPage) {
     case 0: pageBme280(); break;
@@ -2254,6 +2436,15 @@ void detectSensors()
   available.veml6070 = Wire.endTransmission() == 0 && Wire.requestFrom(VEML6070_ADDR_MSB, 1) == 1;
   available.si1145 = si1145.begin();
   available.scd30 = scd30Command(SCD30_CMD_START);
+  // FEATURE-SPEC-009: Initialize ASC state - will be queried by polling loop after 3+ seconds
+  if (available.scd30) {
+    scd30State.ascStatusValid = false;
+    scd30State.lastAscQuery = 0;
+    scd30State.ascEnabled = false;
+    scd30State.pendingAscWrite = false;
+    scd30State.ascLastRead = false;
+    scd30State.ascDebounceCount = 0;
+  }
   available.bme280 = bme280.begin(BME280_ADDR, &Wire);
   available.gamepad = gamepad.begin(GAMEPAD_ADDR);
   if (available.gamepad) gamepad.pinModeBulk(BUTTON_MASK, INPUT_PULLUP);
@@ -2407,10 +2598,17 @@ void loop()
       }
     }
     
-    // Button X: Cycle backward (only in large display mode)
-    if (xPressed && !lastX && largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
-      uint8_t valueCount = getPageValueCount(currentPage);
-      largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + valueCount) % valueCount;
+    // Button X: Toggle ASC (page 4, normal mode) or cycle backward (large display mode)
+    if (xPressed && !lastX) {
+      // FEATURE-SPEC-009: Toggle ASC on Page 4 in normal mode
+      if (currentPage == 4 && !largeDisplayMode.active && available.scd30) {
+        setAsc(!scd30State.ascEnabled);
+      }
+      // Cycle backward in large display mode (unchanged)
+      else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
+        uint8_t valueCount = getPageValueCount(currentPage);
+        largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + valueCount) % valueCount;
+      }
     }
     
     // Button Y: Exit mode or navigate to previous page
@@ -2432,7 +2630,10 @@ void loop()
           "VEML6075 (0x10)",
           "DS2484 1-Wire (0x18)"
         };
-        drawHeader(titles[currentPage]);
+        // FEATURE-SPEC-009: Skip header for SCD30 (pageScd30 draws it with ASC badge)
+        if (currentPage != 4) {
+          drawHeader(titles[currentPage]);
+        }
       } else {
         // Normal page navigation
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;

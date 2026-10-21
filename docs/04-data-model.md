@@ -379,6 +379,63 @@ Scd30Values scd30Values{};  // 12 bytes, zero-initialized
 
 ---
 
+### 2.5a Scd30State — **NEW (FEATURE-SPEC-009)**
+
+**Purpose:** Runtime configuration state for SCD30 ASC (Automatic Self Calibration) control and status tracking.
+
+**Lifecycle:** Initialized at boot; ASC status queried ~500ms after SCD30 START command; toggled on demand via Gamepad X button; re-verified after toggle.
+
+**Scope:** Global static, mutable. Separate from `Scd30Values` (measurements) to follow separation-of-concerns pattern.
+
+```cpp
+struct Scd30State {
+  bool ascEnabled;        // 1 byte  — ASC is currently ON (true) or OFF (false)
+  bool ascStatusValid;    // 1 byte  — Whether last ASC status query succeeded
+  uint32_t lastAscQuery;  // 4 bytes — Timestamp of last successful ASC query (millis())
+  bool pendingAscWrite;   // 1 byte  — Whether an ASC toggle is in-flight (I2C write pending)
+};
+Scd30State scd30State{};  // 7 bytes, zero-initialized (padding may add 1 byte, total ~8)
+```
+
+**Field Details:**
+
+| Field | Type | Set By | Range | Constraint | Persistence |
+|-------|------|--------|-------|-----------|---|
+| `ascEnabled` | bool | `getAscStatus()` or `setAsc()` | {0, 1} | Reflects actual sensor state after verification; optimistic before | Updated on successful query or toggle |
+| `ascStatusValid` | bool | `getAscStatus()` | {0, 1} | False if last query failed (CRC error, I2C error, etc.) | Set to true only on successful query; false if error |
+| `lastAscQuery` | uint32_t | `getAscStatus()` | 0 to 4.3B ms | Timestamp of last successful ASC status read from sensor | Overwrites on each successful query |
+| `pendingAscWrite` | bool | `setAsc()` | {0, 1} | Tracks whether I2C SET ASC command is pending; used to defer re-query | Set true before I2C write; cleared after completion |
+
+**Initialization:** All fields zero-initialized at boot.
+
+**ASC Status Query Flow** (`getAscStatus()`):
+1. **Guard**: Return false if `!available.scd30`
+2. **I2C Operation**: Send 0x5301 command; read 3 bytes (data high, data low, CRC)
+3. **CRC Validation**: Check CRC8; if invalid, set `ascStatusValid = false`, return false
+4. **Extract Status**: byte[1] & 0x01 → `ascEnabled` (1=ON, 0=OFF)
+5. **Update State**: Set `ascStatusValid = true`, `lastAscQuery = millis()`
+6. **Return**: true on success
+
+**ASC Toggle Flow** (`setAsc(enable)`):
+1. **Guard**: Return false if `!available.scd30`
+2. **Optimistic Update**: Set `ascEnabled = enable` (optimistic feedback for UI)
+3. **Set Pending**: `pendingAscWrite = true`
+4. **I2C Operation**: Send 0x53DA command with data (0x00 0x01 or 0x00 0x00) and CRC
+5. **Clear Pending**: `pendingAscWrite = false`
+6. **Return**: true if I2C succeeded, false if error
+
+**Eventual Consistency** (after toggle):
+- Display immediately shows `ascEnabled` value (optimistic)
+- Next ASC status query (~500ms later) verifies actual state
+- If verification shows different state: log warning, update display to reflect reality
+
+**Error Scenarios:**
+- **I2C CRC Error on Query**: `ascStatusValid = false`; display "ASC: --"
+- **I2C Write Fails on Toggle**: Return false; revert optimistic state from display; retry allowed
+- **Query Succeeds but State Differs**: Log warning (mismatch); display actual state
+
+---
+
 ### 2.6 EncoderValues
 
 **Purpose:** Cache of rotary encoder position, button state, and LED control (50 Hz read CONTINUOUSLY, not page-conditional — required for LED updates and stats aggregation).

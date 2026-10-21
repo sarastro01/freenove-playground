@@ -218,6 +218,34 @@ The system shall provide interactive control of a NeoPixel RGB LED via rotary en
 
 ---
 
+### FR-010: SCD30 ASC (Automatic Self Calibration) Control and Display
+
+**Requirement:**  
+The system shall display the current ASC status of the SCD30 sensor and allow toggling via Gamepad X button when viewing the SCD30 page.
+
+**Details:**
+- ASC status queryable via I2C command 0x5301 (GET ASC Status)
+- ASC toggleable via I2C command 0x53DA with data (SET ASC)
+  - 0x53DA 0x00 0x01 + CRC = Enable ASC
+  - 0x53DA 0x00 0x00 + CRC = Disable ASC
+- Status displayed on SCD30 page as "ASC: ON", "ASC: OFF", or "ASC: --" (unknown)
+- X button toggles ASC when on SCD30 page in normal (non-Large-Display) mode only
+- X button behavior in Large Display mode remains unchanged (cycles backward through parameters)
+- Y button behavior in Large Display mode remains unchanged (exits mode)
+- ASC status queries must not block sensor polling or display refresh (non-blocking I2C)
+- Status responses validated with CRC8 checksum (same algorithm as sensor data)
+- Eventual consistency: after toggle, status re-queried to verify actual state
+
+**Related Requirements:**
+- FR-007 (CRC8 validation) — Applied to ASC status responses
+- FR-006 (Input Handling) — X button now has dual function (toggle ASC in normal mode, cycle backward in Large Display)
+- FR-008 (Large Display Mode) — ASC toggle not available in Large Display
+
+**Evidence:**
+- Feature Specification: [FEATURE-SPEC-009-SCD30-ASC-CONTROL.md](feature-specs/FEATURE-SPEC-009-SCD30-ASC-CONTROL.md)
+
+---
+
 ### FR-010: 1-Wire Temperature Sensor Discovery & Monitoring
 
 **Requirement:**  

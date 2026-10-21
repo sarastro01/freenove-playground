@@ -592,7 +592,7 @@ raw = ((uint16_t)msb << 8) | lsb;
 
 #### Device 7: SCD30 CO₂ Sensor @ 0x61
 
-**Purpose:** Read CO₂/temperature/humidity with CRC8 validation (500 ms cycle).
+**Purpose:** Read CO₂/temperature/humidity with CRC8 validation (500 ms cycle); query and toggle ASC (Automatic Self Calibration) configuration.
 
 **Protocol:** Sensirion proprietary command + CRC8 checksums (not Adafruit library).
 
@@ -603,8 +603,10 @@ raw = ((uint16_t)msb << 8) | lsb;
 | START | 0x0010 | Start measurement |
 | READY | 0x0202 | Poll measurement ready status |
 | READ | 0x0300 | Fetch CO₂/temp/humidity (18 bytes) |
+| SET ASC | 0x53DA | Enable/Disable ASC (NEW — FEATURE-SPEC-009) |
+| GET ASC | 0x5301 | Query ASC status (NEW — FEATURE-SPEC-009) |
 
-**Response Format (18 bytes, 6 CRC checks):**
+**Response Format (READ command — 18 bytes, 6 CRC checks):**
 ```
 Bytes:  [0–1] CO₂ MSB:LSB    [2] CO₂ CRC
         [3–5] Temp MSB:LSB   [5] Temp CRC
@@ -641,6 +643,129 @@ for (size_t i = 0; i < length; i++) {
 ```
 
 **Failure Mode:** If any CRC checksum fails, `readScd30()` returns false; struct not updated.
+
+---
+
+### NEW: ASC Commands (FEATURE-SPEC-009)
+
+#### Command: SET ASC (Enable/Disable)
+
+**Purpose:** Send I2C command to enable or disable Automatic Self Calibration.
+
+**Signature:**
+```cpp
+bool setAsc(bool enable);
+```
+
+**Request Format:**
+```
+Wire.write(0x53);           // Command High Byte
+Wire.write(0xDA);           // Command Low Byte
+Wire.write(0x00);           // Data High Byte (always 0x00)
+Wire.write(enable ? 0x01 : 0x00);  // Data Low Byte (0x01=ON, 0x00=OFF)
+Wire.write(crc8(...));      // CRC8 over data bytes [0x00, 0x01/0x00]
+```
+
+**Response:** ACK or NAK (no data bytes returned).
+
+**Behavior:**
+1. Guard: Return false if `!available.scd30`
+2. Calculate CRC8 over bytes `[0x00, data_low]`
+3. Send I2C write sequence (Wire.beginTransmission + 4 Wire.write calls + Wire.endTransmission)
+4. Set `scd30State.pendingAscWrite = true` before transmission
+5. Clear `scd30State.pendingAscWrite = false` after transmission completes
+6. Set `scd30State.ascEnabled = enable` (optimistic feedback)
+7. Return true if I2C write succeeded (endTransmission == 0), false if error
+
+**Timing:** ~5 ms I2C operation
+
+**Error Handling:**
+- If I2C fails (endTransmission != 0): return false, revert optimistic state
+- Next ASC status query will verify actual state
+
+**Example Usage:**
+```cpp
+// Toggle ASC: query current state, then toggle
+if (xButtonPressed && currentPage == 4 && !largeDisplayMode.active) {
+  setAsc(!scd30State.ascEnabled);  // Toggle
+}
+```
+
+---
+
+#### Query: GET ASC Status
+
+**Purpose:** Query current ASC status from sensor.
+
+**Signature:**
+```cpp
+bool getAscStatus(bool& outEnabled);
+```
+
+**Request:**
+```
+Wire.write(0x53);           // Command High Byte
+Wire.write(0x01);           // Command Low Byte
+```
+
+**Response (3 bytes):**
+```
+Byte 0: Status Data High (usually 0x00)
+Byte 1: Status Data Low (0x01 = ASC ON, 0x00 = ASC OFF)
+Byte 2: CRC8 checksum over bytes 0–1
+```
+
+**Behavior:**
+1. Guard: Return false if `!available.scd30`
+2. Send I2C command (0x53 0x01)
+3. Request 3 bytes from sensor
+4. If fewer than 3 bytes received: return false
+5. Validate CRC8: `scd30Crc(data, 2) == data[2]`
+   - If CRC invalid: set `scd30State.ascStatusValid = false`, return false
+6. Extract status: `outEnabled = (data[1] & 0x01) != 0`
+7. On success:
+   - Set `scd30State.ascEnabled = outEnabled`
+   - Set `scd30State.ascStatusValid = true`
+   - Set `scd30State.lastAscQuery = millis()`
+8. Return true on success, false on any error
+
+**Timing:** ~5–10 ms I2C operation
+
+**Error Handling:**
+- I2C error: return false, don't modify `scd30State`
+- CRC invalid: set `ascStatusValid = false`, return false
+- Next query attempt will retry
+
+**Example Usage:**
+```cpp
+// Query ASC status at startup (~500ms after SCD30 START)
+bool enabled;
+if (getAscStatus(enabled)) {
+  // Status is valid; scd30State.ascEnabled reflects actual state
+  Serial.printf("ASC is %s\n", enabled ? "ON" : "OFF");
+} else {
+  // Query failed; scd30State.ascStatusValid = false
+  // Display "ASC: --" (unknown)
+}
+```
+
+---
+
+#### Helper: `scd30_getAscStatus()` Display String
+
+**Purpose:** Return ASC status as formatted display string for UI.
+
+**Signature:**
+```cpp
+String scd30_getAscStatus();
+```
+
+**Returns:**
+- `"ON"` if `scd30State.ascEnabled && scd30State.ascStatusValid` (green text)
+- `"OFF"` if `!scd30State.ascEnabled && scd30State.ascStatusValid` (orange text)
+- `"--"` if `!scd30State.ascStatusValid` (gray text, status unknown)
+
+**Used By:** SCD30 page renderer (pageScd30) to display ASC status in top-right corner.
 
 ---
 

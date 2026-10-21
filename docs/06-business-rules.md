@@ -3117,6 +3117,140 @@ String ds2484_getLargeDisplayData(uint8_t valueIndex,
 
 ---
 
+### BR-034: SCD30 ASC Status Display — **NEW (FEATURE-SPEC-009)**
+
+**Description:**  
+The SCD30 page (Page 4) displays the current Automatic Self Calibration (ASC) status in the header area (top-right corner) using color-coded text. ASC status is queried at system startup (~500ms after SCD30 START command) and updated on demand after user toggles.
+
+**Trigger:**  
+- System boot: ASC status query issued in non-blocking sensor polling loop
+- User interaction: Y button press on SCD30 page triggers ASC toggle and subsequent verification query
+- Display refresh: Every 500 ms, page renderer calls `scd30_getAscStatus()` to get current display string
+
+**Conditions:**  
+- SCD30 sensor is present (`available.scd30 == true`)
+- Page 4 (SCD30) is currently displayed
+- Large Display mode is NOT active (or is active on a different page)
+
+**Behavior:**  
+1. **Display String:**
+   - If `scd30State.ascStatusValid && scd30State.ascEnabled`: Display `"ASC: ON"` in green (TFT_GREEN)
+   - If `scd30State.ascStatusValid && !scd30State.ascEnabled`: Display `"ASC: OFF"` in orange (TFT_ORANGE)
+   - If `!scd30State.ascStatusValid`: Display `"ASC: --"` in dark grey (TFT_DARKGREY)
+
+2. **Placement:** Top-right corner of page header (x=474 right-aligned, y=8)
+
+3. **Font:** Small (setTextSize(1)) to fit header without crowding title
+
+4. **Update Frequency:** Every display refresh cycle (500 ms for sensor pages)
+
+5. **Failure Handling:**
+   - If ASC query fails (I2C error, CRC invalid): `ascStatusValid = false`; display "ASC: --"
+   - Display does not crash; page remains responsive
+   - Retries next polling cycle (~500 ms later)
+
+**Evidence:**  
+- Feature Specification: FEATURE-SPEC-009
+- Function: `scd30_getAscStatus()` returns "ON"/"OFF"/"--"
+- Caller: `pageScd30()` renderer
+
+**Scope:** Page 4 (SCD30) only. No other pages display ASC status.
+
+**Confidence:** HIGH (defined in FEATURE-SPEC-009)
+
+---
+
+### BR-035: SCD30 ASC Toggle via Gamepad X Button — **NEW (FEATURE-SPEC-009)**
+
+**Description:**  
+When the user presses the Gamepad X button while viewing the SCD30 page (Page 4) in normal (non-Large-Display) mode, the system sends an I2C SET ASC command to toggle the ASC state (ON ↔ OFF). After the toggle, the system re-queries the ASC status within the next sensor polling cycle to verify the actual state and detect any errors.
+
+**Trigger:**  
+- Gamepad X button press (falling edge: `xPressed && !lastX`)
+- Current page is 4 (SCD30)
+- Large Display mode is NOT active on SCD30 page
+
+**Conditions:**  
+- SCD30 sensor is present (`available.scd30 == true`)
+- I2C bus is operational
+- Previous toggle command (if any) has completed (not pending)
+
+**Behavior:**  
+1. **Optimistic State Update:** Immediately set `scd30State.ascEnabled = !scd30State.ascEnabled`
+   - Rationale: Provide immediate visual feedback to user
+   - Display updates to show new state (green/orange)
+
+2. **I2C SET ASC Command:** Send wire transmission with:
+   - Command bytes: 0x53 0xDA
+   - Data bytes: 0x00, then (0x01 if enabling, 0x00 if disabling)
+   - CRC byte: Calculated via `scd30Crc([0x00, data_low])`
+
+3. **Set Pending Flag:** `scd30State.pendingAscWrite = true` during transmission; clear after completion
+
+4. **Debounce:** Ignore X button presses for at least 100 ms after last toggle command sent
+   - Rationale: Prevents accidental repeated toggles from button bounce or user holding button
+   - Prevents I2C bus flooding
+
+5. **Verification Query:** Schedule ASC status query (~500 ms after toggle) to verify actual state
+   - If query shows expected state: display reflects reality, no action
+   - If query shows different state: log warning, update display to actual state (eventual consistency wins)
+
+6. **Non-Blocking:** ASC toggle and query must NOT block display refresh or sensor polling
+
+**Failure Handling:**  
+- **I2C Write Fails:** Return false; revert optimistic state update; display prior state; user can retry toggle
+- **Query Fails After Successful Write:** Log warning; display "ASC: --" (unknown); retry next polling cycle
+- **Query Succeeds but State Differs:** Log warning (mismatch); update display to actual state
+
+**Error Recovery:**  
+User can attempt toggle again immediately (after 100 ms debounce).
+
+**Evidence:**  
+- Feature Specification: FEATURE-SPEC-009
+- Function: `setAsc(bool enable)` sends I2C command; `getAscStatus(bool&)` verifies
+- Input handling: gamepad button edge detection in main loop (lines 2370–2430)
+
+**Scope:** Page 4 (SCD30) only, in normal page view (not Large Display mode).
+
+**Confidence:** HIGH (defined in FEATURE-SPEC-009)
+
+---
+
+### BR-036: SCD30 ASC Toggle NOT Available in Large Display Mode — **NEW (FEATURE-SPEC-009)**
+
+**Description:**  
+When Large Display Mode is active on the SCD30 page (Page 4), the Y button behavior reverts to the standard Large Display mode exit function (BR-031). ASC toggle is disabled in Large Display mode. Users must exit Large Display mode to toggle ASC.
+
+**Trigger:**  
+- Gamepad Y button press while in Large Display mode on Page 4
+
+**Conditions:**  
+- `largeDisplayMode.active == true`
+- `largeDisplayMode.currentPage == 4` (SCD30)
+
+**Behavior:**  
+1. Exit Large Display mode (same as BR-031)
+2. Do NOT send ASC toggle command
+3. Display ASC status on Page 4 header (BR-034)
+4. User can now press Y again (in normal mode) to toggle ASC
+
+**Rationale:**  
+- Large Display Mode is for focused viewing, not sensor control
+- Prevents accidental ASC toggles while viewing parameter in enlarged format
+- Consistent with existing Large Display mode design (view-only)
+
+**Evidence:**  
+- Feature Specification: FEATURE-SPEC-009 (notes Large Display mode unchanged)
+- Input handling: Check `largeDisplayMode.active` before processing ASC toggle
+
+**Scope:** Page 4 (SCD30) only, in Large Display mode.
+
+**Related:** BR-031 (Large Display Mode Exit), BR-035 (ASC Toggle in Normal Mode)
+
+**Confidence:** HIGH (defined in FEATURE-SPEC-009)
+
+---
+
 ## Ambiguities & [UNKNOWN] Items
 
 | Item | Impact | Note |

@@ -2299,3 +2299,376 @@ int main(int argc, char** argv) {
 
 Run: `pio test -e esp32dev`
 
+---
+
+## Test Cases: SCD30 ASC Control & Display (FEATURE-SPEC-009, FR-010) — **NEW**
+
+### UT-001: SCD30 CRC8 Validation for ASC Status Response
+
+**Purpose:** Verify CRC8 calculation for ASC status query responses.
+
+**Test Type:** Unit Test
+
+**Setup:**
+- Isolated `scd30Crc()` function test (no hardware)
+- Test vectors: Known ASC status responses with valid CRC
+
+**Test Vectors:**
+```
+ASC ON (0x00 0x01):
+  CRC(0x00, 0x01) = 0xFE
+  Expected response bytes: [0x00, 0x01, 0xFE]
+
+ASC OFF (0x00 0x00):
+  CRC(0x00, 0x00) = 0xFF
+  Expected response bytes: [0x00, 0x00, 0xFF]
+```
+
+**Action:**
+1. Compute `scd30Crc([0x00, 0x01])` → expect 0xFE
+2. Compute `scd30Crc([0x00, 0x00])` → expect 0xFF
+3. Verify CRC validation: `crc == response[2]`
+
+**Expected Result:**
+- ✅ CRC matches expected values
+- ✅ CRC validation function correctly rejects mismatched CRC
+
+**Error Condition:**
+- ❌ CRC mismatch → validation fails, query returns false
+
+---
+
+### UT-002: `setAsc(bool enable)` I2C Command Encoding
+
+**Purpose:** Verify correct I2C command bytes for ASC enable/disable.
+
+**Test Type:** Unit Test (mocked I2C)
+
+**Setup:**
+- Mock `Wire.beginTransmission()`, `Wire.write()`, `Wire.endTransmission()`
+- Track all bytes written
+
+**Test Cases:**
+
+**Case 1: Enable ASC**
+- Input: `setAsc(true)`
+- Expected Wire.write calls:
+  - `0x53` (command high)
+  - `0xDA` (command low)
+  - `0x00` (data high)
+  - `0x01` (data low = enable)
+  - `CRC8([0x00, 0x01])` = 0xFE
+
+**Case 2: Disable ASC**
+- Input: `setAsc(false)`
+- Expected Wire.write calls:
+  - `0x53`, `0xDA`, `0x00`, `0x00`, `0xFF`
+
+**Action:**
+1. Call `setAsc(true)`
+2. Verify Wire.write calls match expected sequence
+3. Repeat for `setAsc(false)`
+
+**Expected Result:**
+- ✅ Correct command bytes sent in order
+- ✅ CRC calculated correctly
+- ✅ Function returns true if endTransmission == 0
+
+**Error Condition:**
+- ❌ Wrong byte sequence → test fails
+- ❌ I2C error (endTransmission != 0) → function returns false
+
+---
+
+### UT-003: `getAscStatus(bool& outEnabled)` Response Parsing
+
+**Purpose:** Verify correct parsing of ASC status response from sensor.
+
+**Test Type:** Unit Test (mocked I2C)
+
+**Setup:**
+- Mock `Wire.requestFrom()` to return 3 bytes
+- Mock `Wire.read()` to return status bytes
+- Test vectors: ASC ON, ASC OFF, invalid CRC
+
+**Test Cases:**
+
+**Case 1: ASC ON (valid)**
+- Response bytes: `[0x00, 0x01, 0xFE]` (0x01 = ON, CRC valid)
+- Expected: `getAscStatus(enabled)` returns true, `enabled = true`
+- State update: `ascEnabled = true`, `ascStatusValid = true`
+
+**Case 2: ASC OFF (valid)**
+- Response bytes: `[0x00, 0x00, 0xFF]` (0x00 = OFF, CRC valid)
+- Expected: `getAscStatus(enabled)` returns true, `enabled = false`
+- State update: `ascEnabled = false`, `ascStatusValid = true`
+
+**Case 3: Invalid CRC**
+- Response bytes: `[0x00, 0x01, 0xAA]` (CRC mismatch)
+- Expected: `getAscStatus(enabled)` returns false, outEnabled unchanged
+- State update: `ascStatusValid = false`
+
+**Case 4: I2C Read Fails**
+- Wire.requestFrom returns 0 bytes
+- Expected: `getAscStatus(enabled)` returns false
+- State: No change
+
+**Action:**
+1. For each test case, set up mock I2C response
+2. Call `getAscStatus(enabled)`
+3. Verify return value and outEnabled content
+4. Verify Scd30State fields updated correctly
+
+**Expected Result:**
+- ✅ Valid responses parsed correctly
+- ✅ Invalid CRC rejected
+- ✅ I2C errors handled gracefully
+- ✅ State struct updated only on success
+
+---
+
+### UT-004: `scd30_getAscStatus()` Display String
+
+**Purpose:** Verify correct display string generation for ASC status.
+
+**Test Type:** Unit Test
+
+**Setup:**
+- No I2C or hardware; test pure string formatting logic
+- Set `scd30State` fields to various combinations
+
+**Test Cases:**
+
+**Case 1: ASC ON, status valid**
+```cpp
+scd30State.ascEnabled = true;
+scd30State.ascStatusValid = true;
+String result = scd30_getAscStatus();
+ASSERT_EQUAL(result, "ON");
+```
+
+**Case 2: ASC OFF, status valid**
+```cpp
+scd30State.ascEnabled = false;
+scd30State.ascStatusValid = true;
+String result = scd30_getAscStatus();
+ASSERT_EQUAL(result, "OFF");
+```
+
+**Case 3: Status unknown (invalid)**
+```cpp
+scd30State.ascStatusValid = false;
+String result = scd30_getAscStatus();
+ASSERT_EQUAL(result, "--");
+```
+
+**Expected Result:**
+- ✅ All three display strings correct
+- ✅ No crashes on edge cases
+
+---
+
+### IT-001: SCD30 Page Displays ASC Status Badge
+
+**Purpose:** Verify ASC status badge appears on SCD30 page.
+
+**Test Type:** Integration Test (hardware in loop)
+
+**Setup:**
+- Device booted with SCD30 connected
+- Wait ~2 seconds for ASC status query to complete
+- Navigate to Page 4 (SCD30)
+
+**Action:**
+1. Observe SCD30 page on display
+2. Check top-right area for "ASC: ON" or "ASC: OFF" or "ASC: --"
+3. Verify color: green (ON), orange (OFF), grey (--)
+
+**Expected Result:**
+- ✅ ASC status badge visible and readable
+- ✅ Color matches state
+- ✅ Text doesn't overlap title or other elements
+- ✅ Page updates every ~500 ms
+
+**Verification Methods:**
+- Visual inspection
+- Serial log shows `ASC status query: ON/OFF`
+- Display screenshot/pixel check
+
+**Error Condition:**
+- ❌ Badge missing or invisible
+- ❌ Wrong color or text
+- ❌ Page freezes during ASC query
+
+---
+
+### IT-002: X Button Toggles ASC in Normal Mode
+
+**Purpose:** Verify X button toggles ASC state on SCD30 page.
+
+**Test Type:** Integration Test (hardware in loop)
+
+**Setup:**
+- Device booted with SCD30 connected
+- Navigate to Page 4 (SCD30)
+- NOT in Large Display mode
+- Initial ASC state: ON
+
+**Action:**
+1. Press X button on Gamepad
+2. Wait ~100 ms (debounce)
+3. Observe display: badge should change to "ASC: OFF"
+4. Wait ~500 ms for verification query
+5. Press X button again
+6. Observe: badge changes to "ASC: ON"
+
+**Expected Result:**
+- ✅ First X press: ASC ON → OFF (visual feedback immediate)
+- ✅ Second X press: ASC OFF → ON
+- ✅ State persists (doesn't revert)
+- ✅ Page remains responsive (no lag)
+- ✅ Serial log shows: "ASC toggle: enabling" / "ASC toggle: disabling"
+
+**Verification:**
+- Visual inspection of badge change
+- Serial output confirms I2C commands sent and verified
+- Gamepad button press logged in debug output
+
+**Error Condition:**
+- ❌ Badge doesn't change
+- ❌ Page freezes or lags
+- ❌ I2C error logged without recovery
+
+---
+
+### IT-003: X Button Cycles Backward in Large Display Mode (Not Toggle ASC)
+
+**Purpose:** Verify X button in Large Display mode cycles backward, doesn't toggle ASC.
+
+**Test Type:** Integration Test (hardware in loop)
+
+**Setup:**
+- Navigate to Page 4 (SCD30)
+- Press B button to enter Large Display mode
+- Current value displayed large (e.g., CO2 concentration)
+
+**Action:**
+1. Press X button to cycle backward through parameters
+2. Observe: parameter cycles (e.g., CO2 → Humidity → Temperature → CO2)
+3. Verify ASC status badge doesn't change
+4. Exit Large Display mode (Y button)
+5. Check ASC status: should be unchanged
+
+**Expected Result:**
+- ✅ X button cycles backward through parameters in Large Display
+- ✅ ASC status unchanged (no toggle occurred)
+- ✅ No ASC I2C command sent during Large Display mode
+- ✅ Serial shows: parameter cycling, NO "ASC toggle" message
+
+**Verification:**
+- Visual inspection of parameter cycling
+- Serial log confirms backward cycle, no ASC command sent
+
+---
+
+### IT-004: ASC Toggle Verification & Error Recovery
+
+**Purpose:** Verify ASC toggle is re-queried and actual state is displayed even if toggle fails.
+
+**Test Type:** Integration Test (hardware in loop, error injection)
+
+**Setup:**
+- Navigate to Page 4 (SCD30)
+- ASC currently ON
+- Deliberately cause I2C noise or disconnect sensor briefly during toggle
+
+**Action:**
+1. Press Y button → toggle command sent
+2. Observer sees optimistic state change (ON → OFF in badge)
+3. I2C error occurs during or after toggle
+4. Next ASC status query fails
+5. Wait ~1 second for display refresh
+
+**Expected Result:**
+- ✅ Display shows "ASC: --" (unknown) after query failure
+- ✅ Page doesn't crash or freeze
+- ✅ Sensor remains detectable on page (not marked unavailable)
+- ✅ Serial log shows warning: "ASC toggle verification failed"
+- ✅ User can retry toggle
+
+**Verification:**
+- Visual inspection of badge changing to "--"
+- Serial log output shows error and retry
+
+**Error Condition:**
+- ❌ Page crashes or hangs
+- ❌ Badge stuck on incorrect state
+- ❌ No error recovery
+
+---
+
+### AT-001: ASC Status Always Visible on SCD30 Page
+
+**User Story:** "As a developer, I want to see whether ASC is ON or OFF at a glance without needing the serial monitor."
+
+**Acceptance Criteria:**
+- ✅ After boot: SCD30 page displays ASC status (not "--", but actual ON/OFF)
+- ✅ Status visible in top-right corner (readable at arm's length)
+- ✅ Status updates within 500 ms after any change
+- ✅ Color coding consistent: green=ON, orange=OFF, grey=unknown
+- ✅ Persists across page navigation (returns to same page, status unchanged)
+
+**Test Method:** Manual verification on hardware after ~2-second boot stabilization.
+
+---
+
+### AT-002: X Button Reliably Toggles ASC
+
+**User Story:** "As a developer, I want to toggle ASC with a single X button press; no need to press twice or wait."
+
+**Acceptance Criteria:**
+- ✅ Single X press toggles state (not double-toggle or no-op)
+- ✅ Toggle works even if last toggle was seconds ago
+- ✅ Toggle debounce prevents accidental repeats (100 ms minimum)
+- ✅ Display updates immediately (optimistic feedback)
+- ✅ Verification query confirms actual state within 500 ms
+- ✅ Page doesn't freeze or become unresponsive
+
+**Test Method:**
+1. Press X rapidly (multiple times)
+2. Observe badge changes ON ↔ OFF
+3. Verify no missed or repeated toggles
+
+---
+
+### AT-003: Large Display Mode Unchanged
+
+**User Story:** "Large Display mode should work the same for SCD30 as all other pages; X cycles backward, not toggle ASC."
+
+**Acceptance Criteria:**
+- ✅ B button enters Large Display mode (shows 1 large parameter)
+- ✅ Y button exits Large Display mode (ASC not toggled)
+- ✅ X button cycles backward through CO2, Temp, Humidity (3 values, in reverse)
+- ✅ ASC status displayed on return to normal page view
+- ✅ Large Display cycle doesn't include ASC as 4th parameter
+- ✅ X button doesn't toggle ASC while in Large Display
+
+**Test Method:** Manual navigation through Large Display on Page 4.
+
+---
+
+### AT-004: Error Handling is Transparent
+
+**User Story:** "If ASC query fails, the system should recover gracefully without confusing the user."
+
+**Acceptance Criteria:**
+- ✅ Failed query shows "ASC: --" (not error message or crash)
+- ✅ User can still toggle even if status unknown
+- ✅ Page remains responsive and fully functional
+- ✅ Retry happens automatically (~500 ms)
+- ✅ System recovers to correct state once I2C stabilizes
+
+**Test Method:** Induce I2C errors (noise, loose connection, etc.) and verify graceful degradation.
+
+---
+
