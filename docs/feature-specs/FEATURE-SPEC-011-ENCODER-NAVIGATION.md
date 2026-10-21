@@ -159,11 +159,28 @@ This feature enables users to navigate the sensor dashboard display and control 
 
 **File:** `src/main.cpp`
 
-| Variable | Type | Purpose | Initial Value | Scope |
-|----------|------|---------|----------------|-------|
-| `lastEncoderPressed` | `bool` | Debounce flag for encoder button | `false` | global |
-| `lastEncoderPosition` | `int32_t` | Previous position for delta calculation | `0` | global |
-| `encoderPageMapping` | `uint8_t` | Current page from encoder position | `0` | global |
+| Variable | Type | Purpose | Initial Value | Scope | Notes |
+|----------|------|---------|---|---|---|
+| `encoderLastPressed` | `bool` | Debounce flag for encoder button | `false` | global | Tracks previous press state for rising-edge detection in `handleButtons()` (line 189); enables single press = single transition behavior |
+| `encoderLastPosition` | `int32_t` | Previous position for delta calculation | `0` | global | Updated in `readEncoderAt50Hz()` (line 1300); used to compute encoder rotation delta every polling cycle |
+| `lastEncoderNavigationPosition` | `int32_t` | Position tracking for navigation delta | `0` | static local in `handleButtons()` (line 2681) | Prevents double-processing of encoder rotation steps; separate from polling-layer tracking; reset only when page/value navigation occurs |
+
+**Naming Convention Notes:**
+- **`encoderLastXxx`** = global state managed by encoder input handler
+  - Updated by polling functions (`readEncoderAt50Hz()`)
+  - Used by navigation handler (`handleButtons()`)
+  - Examples: `encoderLastPressed` (debounce), `encoderLastPosition` (delta source)
+  
+- **`lastEncoderXxx`** = legacy naming convention for consistency with gamepad pattern
+  - Matches gamepad button naming: `lastY`, `lastA`, `lastB`, `lastX` (all boolean debounce flags)
+  - Encoder naming follows same pattern: `encoderLastPressed` aligns with `lastY`, `lastA`, etc.
+  - Improves code readability by pattern recognition
+  
+- **Static local `lastEncoderNavigationPosition`** (not global)
+  - Scope: Only visible within `handleButtons()` function
+  - Lifetime: Persists across function calls (static), reset only when navigation occurs
+  - Purpose: Cycle-by-cycle tracking to prevent reprocessing of same encoder position
+  - Pattern: Similar to gamepad's use of local static state for edge detection
 
 ### 5.2 Modified Structures
 
@@ -193,12 +210,11 @@ This feature enables users to navigate the sensor dashboard display and control 
 
 **Internal Function Changes:**
 
-| Function | Change | Reason |
-|----------|--------|--------|
-| `handleButtons()` | Add encoder button press detection | Debounce encoder press like gamepad buttons |
-| `displayCurrentPage()` | No change (uses existing largeDisplayMode.active flag) | Display logic already handles mode transitions |
-| `updateEncoderLed()` | Enhance to reflect page index in standard mode | LED feedback for encoder position |
-| `pollEncoder()` | No change (already polls position/delta/button) | Polling layer independent of navigation logic |
+| Function | Change | Reason | Location | Execution Context |
+|----------|--------|--------|----------|---|
+| **Encoder Navigation Handler** (in `handleButtons()`) | New block for encoder rotation and button debounce | Processes encoder position delta (page navigation in standard mode, value scrolling in Large Display mode) and encoder button press (mode toggling) with rising-edge debounce; ensures navigation state is current before display rendering | **PRIORITY 1** (lines 2672-2756) in main loop | Executes FIRST in loop before display rendering; guarantees encoder input is processed and state updated before any display refresh; critical for state consistency |
+| `updateEncoderLed()` | Enhanced to support both standard mode page colors and Large Display mode brightness scaling | Standard mode: LED color reflects current page (10-color map, full brightness). Large Display mode: LED brightness reflects current value index (50-100% range, page color preserved). | Lines 1256-1291; called every INPUT_REFRESH_MS (10 ms) at lines 2437 and 2756 | Runs at 100 Hz (every 10 ms); synchronized with encoder polling; provides immediate visual feedback within same loop cycle |
+| `readEncoderAt50Hz()` | Existing function; unchanged | Polls encoder position/delta/button state; feeds data to navigation handler | Lines 1299-1339; called every INPUT_REFRESH_MS (10 ms) | Runs at 100 Hz; queries seesaw co-processor for current encoder state; state stored in `encoderValues` struct for navigation handler to process |
 
 ---
 

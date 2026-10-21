@@ -941,6 +941,138 @@ static uint32_t DS18B20_CONVERSION_TIME_MS = 750;   // Line ~181: Change to 95/3
 
 ---
 
+## Encoder Navigation Configuration (FEATURE-SPEC-011)
+
+### Overview
+
+Encoder navigation parameters are **compile-time constants** defined in `src/main.cpp`. No runtime configuration available. The encoder provides alternative input for page navigation (standard mode) and parameter value scrolling (Large Display mode), with visual feedback via NeoPixel LED.
+
+### Compile-Time Constants
+
+| Constant | Value | Location | Purpose |
+|----------|-------|----------|---------|
+| `ENCODER_DELTA_THRESHOLD` | `1` | src/main.cpp:2684 | Minimum encoder steps to trigger page navigation |
+| `pageColors[10]` | See table below | src/main.cpp:1260-1273 | 10-color map for encoder LED feedback by page |
+| `LED Brightness (Standard Mode)` | `255` | src/main.cpp:1276 | Full brightness in standard page navigation mode |
+| `LED Brightness (Large Display Mode)` | 128-255 (scaled) | src/main.cpp:1277-1285 | Scaled brightness in Large Display Mode (50%-100% range) |
+| `INPUT_REFRESH_MS` | `10` | src/main.cpp:60 | Polling frequency (100 Hz) for responsive encoder input |
+
+### Encoder LED Color Map (Unchangeable at Runtime)
+
+**The following 10-color map is hardcoded and provides visual feedback of the current page:**
+
+| Page | Sensor Title | Color Name | Hex Value | RGB | Notes |
+|------|--------------|-----------|-----------|-----|-------|
+| 0 | BME280 Climate Sensor | Red | 0xFF0000 | (255, 0, 0) | Primary climate data |
+| 1 | Gamepad QT Input | Orange | 0xFF7F00 | (255, 127, 0) | Game input controller |
+| 2 | INA219 Battery Monitor | Yellow | 0xFFFF00 | (255, 255, 0) | Power measurement |
+| 3 | Rotary Encoder & LED | Green | 0x00FF00 | (0, 255, 0) | Encoder control page |
+| 4 | SCD30 CO₂ Sensor | Cyan | 0x00FFFF | (0, 255, 255) | Gas measurement |
+| 5 | SI1145 UV/IR Sensor | Blue | 0x0000FF | (0, 0, 255) | Spectrum sensor |
+| 6 | TSL2591 Light Sensor | Purple | 0x7F00FF | (127, 0, 255) | Illumination sensor |
+| 7 | VEML6070 UV Sensor | White | 0xFFFFFF | (255, 255, 255) | UV-A index |
+| 8 | VEML6075 UV Sensor | Pink | 0xFF1493 | (255, 20, 147) | UV-A/B index |
+| 9 | DS2484 1-Wire Adaptor | Light Blue | 0x87CEEB | (135, 206, 235) | Temperature sensor hub |
+
+### Behavior Configuration
+
+**Delta Threshold (Navigation Sensitivity):**
+```cpp
+// Line 2684 in handleButtons() - encoder navigation block
+const int ENCODER_DELTA_THRESHOLD = 1;
+// 1 = most sensitive (default): each encoder step = one page change
+// 2+ = less sensitive: requires larger rotation for page change
+// Recommended: keep at 1 for intuitive 1:1 response
+```
+
+**LED Brightness in Standard Mode:**
+```cpp
+// Line 1276 in updateEncoderLed()
+uint8_t ledBrightness = 255;  // Full brightness (100%)
+// Range: 0-255, where 128 ≈ 50%, 255 = 100%
+// Increase for brighter LED (higher power consumption)
+// Decrease for dimmer LED (lower power consumption)
+```
+
+**LED Brightness in Large Display Mode:**
+```cpp
+// Lines 1281 in updateEncoderLed()
+ledBrightness = 128 + (largeDisplayMode.valueIndex * 127 / paramCount);
+// Linear scaling from 50% (128) to 100% (255)
+// Value 0: 50% brightness (visual start marker)
+// Value N (last): 100% brightness (visual end marker)
+// To change range: edit "128" (minimum) and "127" (scale factor)
+```
+
+### How to Customize Encoder Behavior
+
+**To Change Delta Threshold (Rotation Sensitivity):**
+```cpp
+// src/main.cpp, line 2684
+const int ENCODER_DELTA_THRESHOLD = 1;  // Change this to 2 or higher
+// 1 = 1 encoder step = 1 page; very responsive (default)
+// 2 = 2 encoder steps = 1 page; less responsive
+// 3+ = more steps required; least responsive
+```
+
+**To Change LED Page Color Mapping:**
+```cpp
+// src/main.cpp, lines 1260-1273, in updateEncoderLed()
+const uint32_t pageColors[] = {
+    0xFF0000,  // Page 0: change Red to any color (e.g., 0x00FF00 for green)
+    0xFF7F00,  // Page 1: Orange
+    0xFFFF00,  // Page 2: Yellow
+    // ... modify any hex value
+    0x87CEEB   // Page 9: Light Blue
+};
+// Hex format: 0xRRGGBB (e.g., 0xFF0000 = red, 0x00FF00 = green)
+```
+
+**To Change LED Brightness Range (Large Display Mode):**
+```cpp
+// src/main.cpp, line 1281, in updateEncoderLed()
+ledBrightness = 128 + (largeDisplayMode.valueIndex * 127 / paramCount);
+// Current: 50% (128) to 100% (255)
+// To change to 20% (51) to 100% (255): edit "128" to "51"
+// To change to 50% (128) to 80% (204): edit "127" to "76"
+```
+
+### Rebuild & Upload Required
+
+Any changes to these compile-time constants require recompilation and device reprogramming:
+
+```bash
+# Edit src/main.cpp constants (see sections above)
+
+# Recompile firmware
+pio run --environment freenove-fnk0114n-sensor-pages
+
+# Upload to device
+pio run --environment freenove-fnk0114n-sensor-pages --target upload
+
+# Monitor serial output (optional)
+pio run --environment freenove-fnk0114n-sensor-pages --target monitor
+```
+
+**Upload Duration:** ~30 seconds  
+**Device Reset:** Automatic after upload  
+**Settings Persistence:** New constants take effect immediately on boot  
+
+### No Runtime Configuration Available
+
+- ❌ No settings menu on device
+- ❌ No persistent EEPROM storage of preferences
+- ❌ No Over-The-Air (OTA) updates of constants
+- ✅ All configuration is compile-time only (consistent with project design: "no menus, no hierarchies")
+
+This design choice ensures:
+- Predictable, deterministic behavior
+- No risk of corrupted runtime settings
+- Minimal RAM overhead (all constants in flash)
+- Simple, auditable code (no hidden state)
+
+---
+
 ## Known Configuration Limitations
 
 | Limitation | Impact | Workaround |
@@ -950,6 +1082,7 @@ static uint32_t DS18B20_CONVERSION_TIME_MS = 750;   // Line ~181: Change to 95/3
 | I2C addresses hardcoded | Cannot use different hardware variants | Edit constants for new hardware |
 | Serial port hardcoded | Cannot switch ports without rebuild | Edit platformio.ini for each platform |
 | No configuration file | No persistent settings | Add JSON config in SPIFFS (future work) |
+| Encoder parameters compile-time only | Cannot adjust sensitivity at runtime | Rebuild firmware for different thresholds |
 
 ---
 
