@@ -1308,7 +1308,9 @@ void readEncoderAt50Hz()
 
   if (encoderValues.pressed && !encoderPressedSince) encoderPressedSince = millis();
   if (!encoderValues.pressed) encoderPressedSince = 0;
-  encoderLastPressed = encoderValues.pressed;
+  // NOTE: encoderLastPressed is NOT updated here!
+  // It is maintained separately in the encoder navigation handler to ensure
+  // rising-edge detection works correctly for mode toggling.
   encoderValues.presses = encoderPressCount;
   encoderValues.brightness = encoderBrightness;
   encoderValues.color = encoderColorNames[encoderColorIndex];
@@ -2747,19 +2749,7 @@ void loop()
     encoderLastPressed = encoderPressed;
   }
 
-  // PRIORITY 2: IMMEDIATE draw if page changed (no delay!)
-  if (currentPage != lastPage) {
-    // Safety: Reset large display mode when navigating to different page (FEATURE-SPEC-007)
-    if (largeDisplayMode.active) {
-      largeDisplayMode.active = false;
-      largeDisplayMode.valueIndex = 0;
-    }
-    drawCurrentPage(true);
-    lastPage = currentPage;
-    nextDisplayMs = now + SENSOR_REFRESH_MS;
-  }
-
-  // PRIORITY 3: Read encoder input (always, for stats aggregation)
+  // PRIORITY 2: Read encoder input (always, for stats aggregation)
   if (available.encoder && (int32_t)(now - nextEncoderMs) >= 0) {
     readEncoderAt50Hz();
     // FEATURE-SPEC-011: Update LED based on current mode and page every 50 Hz
@@ -2767,14 +2757,14 @@ void loop()
     nextEncoderMs = now + INPUT_REFRESH_MS;
   }
 
-  // PRIORITY 4: Read INA219 at independent schedule
+  // PRIORITY 3: Read INA219 at independent schedule
   const uint32_t nowUs = micros();
   if (available.ina219 && (int32_t)(nowUs - nextInaSampleUs) >= 0) {
     readIna219At50Hz();
     nextInaSampleUs = nowUs + 20000;
   }
 
-  // PRIORITY 5: Rotated sensor read dispatch (FEATURE-SPEC-006 non-blocking architecture)
+  // PRIORITY 4: Rotated sensor read dispatch (FEATURE-SPEC-006 non-blocking architecture)
   // Every SENSOR_SLOT_INTERVAL_MS (200 ms), dispatch the appropriate sensor(s) for current slot
   // With 10 slots, cycle = 10 × 200ms = 2000ms, giving DS18B20 1600ms between start and check
   static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
@@ -2785,7 +2775,7 @@ void loop()
     lastSensorSlotDispatched = currentSensorSlot;
   }
 
-  // PRIORITY 6: Periodic display refresh with event-driven optimization (FEATURE-SPEC-006)
+  // PRIORITY 5: Periodic display refresh with event-driven optimization (FEATURE-SPEC-006)
   // Display shall redraw ONLY on:
   //   1. Page change (immediate)
   //   2. Sensor value change (detected by valuesChanged() or largeDisplayValueChanged())
@@ -2815,7 +2805,7 @@ void loop()
     nextLargeDisplayRefreshMs = now + 200;  // Rate limit: max 5 Hz (200 ms between updates)
   }
 
-  // PRIORITY 7: Update statistics (optional, configurable)
+  // PRIORITY 6: Update statistics (optional, configurable)
   updateInputStats();
   printGamepadStats();
   printEncoderStats();
