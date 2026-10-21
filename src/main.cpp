@@ -9,6 +9,7 @@
 #include <seesaw_neopixel.h>
 #include <Adafruit_DS248x.h>
 #include <OneWire.h>
+#include <SparkFun_SCD30_Arduino_Library.h>  // FEATURE-SPEC-009: Upgraded to SparkFun library
 #include <math.h>
 #include <string.h>
 
@@ -73,6 +74,7 @@ Adafruit_BME280 bme280;
 Adafruit_seesaw gamepad;
 Adafruit_seesaw encoder;
 seesaw_NeoPixel encoderLed(1, ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800, &Wire);
+SCD30 scd30Sensor;  // FEATURE-SPEC-009: SparkFun SCD30 Library instance
 
 // DS2484 I2C-to-1-Wire adapter via Adafruit library
 Adafruit_DS248x ds2484Master;
@@ -96,13 +98,10 @@ struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t com
 struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
 struct Scd30Values { float co2; float temp; float humidity; };
 struct Scd30State {
-  bool ascEnabled;          // Current ASC status (true=ON, false=OFF)
-  bool ascStatusValid;      // Whether we successfully queried ASC status
   uint32_t lastAscQuery;    // Timestamp of last ASC status query (ms)
   bool pendingAscWrite;     // Whether an ASC toggle is in-flight
-  bool ascLastRead;         // Last read value (for hysteresis/debounce)
-  uint8_t ascDebounceCount; // Counter for consecutive stable reads (0-2)
 };
+
 struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
 struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
 
@@ -922,120 +921,33 @@ bool readScd30(Scd30Values &values)
   return true;
 }
 
-// FEATURE-SPEC-009: Set ASC (Automatic Self Calibration) mode on SCD30
+// FEATURE-SPEC-009: Toggle ASC (Automatic Self Calibration) mode on SCD30
+// Now using SparkFun SCD30 library for robust I2C communication with builtin delays
 bool setAsc(bool enable)
 {
   if (!available.scd30) return false;
-  
-  uint8_t dataBytes[2] = {0x00, enable ? 0x01 : 0x00};
-  uint8_t crc = scd30Crc(dataBytes, 2);
-  
-  Wire.beginTransmission(SCD30_ADDR);
-  Wire.write(SCD30_CMD_SET_ASC >> 8);
-  Wire.write(SCD30_CMD_SET_ASC & 0xFF);
-  Wire.write(dataBytes[0]);
-  Wire.write(dataBytes[1]);
-  Wire.write(crc);
-  bool success = Wire.endTransmission() == 0;
-  
-  if (success) {
-    scd30State.ascEnabled = enable;
-    scd30State.pendingAscWrite = true;
-    // Small delay to ensure sensor processes the command before we query again
-    delayMicroseconds(100);
-  }
-  return success;
+  scd30Sensor.setAutoSelfCalibration(enable);
+  scd30State.pendingAscWrite = true;
+  return true;
 }
 
 // FEATURE-SPEC-009: Query ASC status from SCD30
+// SparkFun library handles I2C timing and CRC validation internally
 bool getAscStatus(bool& outEnabled)
 {
   if (!available.scd30) return false;
-  
-  // Send command
-  if (!scd30Command(SCD30_CMD_GET_ASC)) {
-    scd30State.ascStatusValid = false;
-    return false;
-  }
-  
-  // Small delay to ensure sensor prepares response (SCD30 responds slowly after I2C command)
-  delayMicroseconds(1000);  // 1ms - gives sensor time to prepare data
-  
-  // Read response with retry on bad data (0xDD is I2C NAK/error)
-  for (int attempt = 0; attempt < 3; attempt++) {
-    if (Wire.requestFrom(SCD30_ADDR, 3) != 3) {
-      if (attempt < 2) {
-        delayMicroseconds(50);
-        continue;
-      }
-      scd30State.ascStatusValid = false;
-      return false;
-    }
-    
-    uint8_t data[3];
-    data[0] = (uint8_t)Wire.read();
-    data[1] = (uint8_t)Wire.read();
-    data[2] = (uint8_t)Wire.read();
-    
-    // Check for I2C error pattern (all 0xDD means bus error)
-    if (data[0] == 0xDD && data[1] == 0xDD && data[2] == 0xDD) {
-      if (attempt < 2) {
-        delayMicroseconds(100);
-        continue;
-      }
-      scd30State.ascStatusValid = false;
-      return false;
-    }
-    
-    // Valid response received
-    if (scd30Crc(data, 2) != data[2]) {
-      scd30State.ascStatusValid = false;
-      return false;
-    }
-    
-    // FEATURE-SPEC-009: Hysteresis/Debounce logic
-    // The SCD30 may report slightly different byte patterns. Use debouncing:
-    // Only update display if same value read twice consecutively (debounceCount >= 2)
-    bool readValue = (data[1] & 0x01) != 0;
-    
-    // Check if sensor value is same as last read
-    if (readValue == scd30State.ascLastRead) {
-      // Value stable - increment debounce counter
-      if (scd30State.ascDebounceCount < 2) {
-        scd30State.ascDebounceCount++;
-      }
-      Serial.printf("[ASC QUERY] bytes: 0x%02X 0x%02X 0x%02X → %s (stable, debounce: %d/2)\n",
-                    data[0], data[1], data[2], readValue ? "ON" : "OFF", scd30State.ascDebounceCount);
-      
-      // Update display only after 2 stable reads
-      if (scd30State.ascDebounceCount >= 2 && readValue != scd30State.ascEnabled) {
-        Serial.printf("[ASC] Display update: %s → %s\n", 
-                      scd30State.ascEnabled ? "ON" : "OFF", readValue ? "ON" : "OFF");
-        scd30State.ascEnabled = readValue;
-      }
-    } else {
-      // Value changed - reset debounce counter
-      Serial.printf("[ASC QUERY] bytes: 0x%02X 0x%02X 0x%02X → %s (changed! reset debounce)\n",
-                    data[0], data[1], data[2], readValue ? "ON" : "OFF");
-      scd30State.ascLastRead = readValue;
-      scd30State.ascDebounceCount = 1;  // Start fresh counter
-    }
-    
-    scd30State.ascStatusValid = true;
-    scd30State.lastAscQuery = millis();
-    scd30State.pendingAscWrite = false;
-    outEnabled = scd30State.ascEnabled;  // Return debounced value
-    return true;
-  }
-  
-  return false;
+  outEnabled = scd30Sensor.getAutoSelfCalibration();
+  scd30State.lastAscQuery = millis();
+  scd30State.pendingAscWrite = false;
+  return true;
 }
 
 // FEATURE-SPEC-009: Get ASC status string for display
 String scd30_getAscStatus()
 {
-  if (!scd30State.ascStatusValid) return "--";
-  return scd30State.ascEnabled ? "ON" : "OFF";
+  if (!available.scd30) return "--";
+  bool ascEnabled = scd30Sensor.getAutoSelfCalibration();
+  return ascEnabled ? "ON" : "OFF";
 }
 
 bool readVeml6075(Veml6075Values &values)
@@ -1752,8 +1664,9 @@ void rotatedReadSensor(uint32_t slot)
       if (available.scd30 && scd30Ready()) readScd30(scd30Values);
       
       // FEATURE-SPEC-009: Query ASC status with adaptive timing
+      // SparkFun library handles I2C timing and delays internally
       // After toggle: query immediately (pendingAscWrite = true)
-      // After boot: first query after 3+ seconds (lastAscQuery = 0), then every 2 seconds
+      // After boot: first query after 3+ seconds, then every 2 seconds
       if (available.scd30) {
         uint32_t timeSinceLastQuery = millis() - scd30State.lastAscQuery;
         bool shouldQuery = scd30State.pendingAscWrite ||  // After toggle
@@ -1763,11 +1676,9 @@ void rotatedReadSensor(uint32_t slot)
         }
         
         if (shouldQuery) {
-          // IMPORTANT: Small delay between readScd30() and getAscStatus() to avoid
-          // I2C buffer conflicts. The previous 18-byte read needs time to settle.
-          delayMicroseconds(500);
+          // SparkFun library handles I2C bus settling internally
           bool ascEnabled;
-          getAscStatus(ascEnabled);  // Update scd30State with current ASC status
+          getAscStatus(ascEnabled);  // Query ASC status via library
         }
       }
       break;
@@ -2272,11 +2183,10 @@ void pageScd30()
   }
 
   // FEATURE-SPEC-009: Draw header with ASC status badge
+  // SparkFun library always returns valid status, no need to check validity
   String ascStatus = scd30_getAscStatus();
-  uint16_t badgeColor = TFT_DARKGREY;
-  if (scd30State.ascStatusValid) {
-    badgeColor = scd30State.ascEnabled ? TFT_GREEN : TFT_ORANGE;
-  }
+  bool ascEnabled = available.scd30 ? scd30Sensor.getAutoSelfCalibration() : false;
+  uint16_t badgeColor = available.scd30 ? (ascEnabled ? TFT_GREEN : TFT_ORANGE) : TFT_DARKGREY;
   drawHeaderWithBadge("SCD30 (0x61)", ascStatus.c_str(), badgeColor);
   
   // Display all SCD30 parameters using central definition (FEATURE-SPEC-008)
@@ -2435,16 +2345,16 @@ void detectSensors()
   Wire.write(0x02);
   available.veml6070 = Wire.endTransmission() == 0 && Wire.requestFrom(VEML6070_ADDR_MSB, 1) == 1;
   available.si1145 = si1145.begin();
-  available.scd30 = scd30Command(SCD30_CMD_START);
-  // FEATURE-SPEC-009: Initialize ASC state - will be queried by polling loop after 3+ seconds
+  
+  // FEATURE-SPEC-009: Initialize SCD30 with SparkFun library
+  available.scd30 = scd30Sensor.begin();
   if (available.scd30) {
-    scd30State.ascStatusValid = false;
-    scd30State.lastAscQuery = 0;
-    scd30State.ascEnabled = false;
+    scd30Sensor.beginMeasuring();  // Start continuous measurement
+    scd30State.lastAscQuery = 0;    // Will be queried by polling loop after 3+ seconds
     scd30State.pendingAscWrite = false;
-    scd30State.ascLastRead = false;
-    scd30State.ascDebounceCount = 0;
+    Serial.println("[SETUP] SCD30: FOUND, using SparkFun library");
   }
+  
   available.bme280 = bme280.begin(BME280_ADDR, &Wire);
   available.gamepad = gamepad.begin(GAMEPAD_ADDR);
   if (available.gamepad) gamepad.pinModeBulk(BUTTON_MASK, INPUT_PULLUP);
@@ -2602,7 +2512,8 @@ void loop()
     if (xPressed && !lastX) {
       // FEATURE-SPEC-009: Toggle ASC on Page 4 in normal mode
       if (currentPage == 4 && !largeDisplayMode.active && available.scd30) {
-        setAsc(!scd30State.ascEnabled);
+        bool currentAsc = scd30Sensor.getAutoSelfCalibration();
+        setAsc(!currentAsc);
       }
       // Cycle backward in large display mode (unchanged)
       else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
