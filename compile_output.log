@@ -1,0 +1,151 @@
+Processing freenove-fnk0114n-sensor-pages (platform: espressif32 @ 6.5.0; board: esp32dev; framework: arduino)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32dev.html
+PLATFORM: Espressif 32 (6.5.0) > Espressif ESP32 Dev Module
+HARDWARE: ESP32 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20014.231204 (2.0.14) 
+ - tool-esptoolpy @ 1.40501.0 (4.5.1) 
+ - toolchain-xtensa-esp32 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 60 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Adafruit INA219 @ 1.2.3
+|-- Adafruit TSL2591 Library @ 1.4.5
+|-- Adafruit SI1145 Library @ 1.2.2
+|-- Adafruit BME280 Library @ 2.3.0
+|-- Adafruit seesaw Library @ 1.7.9
+|-- Adafruit DS248x @ 1.2.0
+|-- OneWire @ 2.3.8
+|-- SparkFun SCD30 Arduino Library @ 1.0.20
+|-- SparkFun VEML6075 Arduino Library @ 1.1.5
+|-- Adafruit VEML6070 Library @ 1.0.8
+|-- TFT_eSPI @ 2.5.43
+|-- Wire @ 2.0.0
+Building in release mode
+Compiling .pio/build/freenove-fnk0114n-sensor-pages/src/main.cpp.o
+Compiling .pio/build/freenove-fnk0114n-sensor-pages/src/sensors/Ds2484Sensor.cpp.o
+Compiling .pio/build/freenove-fnk0114n-sensor-pages/src/sensors/EncoderSensor.cpp.o
+Compiling .pio/build/freenove-fnk0114n-sensor-pages/src/sensors/GamepadSensor.cpp.o
+In file included from src/sensors/GamepadSensor.cpp:8:
+src/sensors/GamepadSensor.h:58:10: fatal error: Adafruit_Gamepad.h: No such file or directory
+
+**************************************************************************
+* Looking for Adafruit_Gamepad.h dependency? Check our library registry!
+*
+* CLI  > platformio lib search "header:Adafruit_Gamepad.h"
+* Web  > https://registry.platformio.org/search?q=header:Adafruit_Gamepad.h
+*
+**************************************************************************
+
+ #include <Adafruit_Gamepad.h>
+          ^~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from src/sensors/sensors.h:23,
+                 from src/main.cpp:19:
+src/sensors/GamepadSensor.h:58:10: fatal error: Adafruit_Gamepad.h: No such file or directory
+
+**************************************************************************
+* Looking for Adafruit_Gamepad.h dependency? Check our library registry!
+*
+* CLI  > platformio lib search "header:Adafruit_Gamepad.h"
+* Web  > https://registry.platformio.org/search?q=header:Adafruit_Gamepad.h
+*
+**************************************************************************
+
+ #include <Adafruit_Gamepad.h>
+          ^~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+Compiling .pio/build/freenove-fnk0114n-sensor-pages/lib6aa/Adafruit BusIO/Adafruit_GenericDevice.cpp.o
+*** [.pio/build/freenove-fnk0114n-sensor-pages/src/sensors/GamepadSensor.cpp.o] Error 1
+*** [.pio/build/freenove-fnk0114n-sensor-pages/src/main.cpp.o] Error 1
+src/sensors/Ds2484Sensor.cpp: In member function 'void Ds2484Sensor::readAllTemperatures()':
+src/sensors/Ds2484Sensor.cpp:226:33: error: no matching function for call to 'Adafruit_DS248x::OneWireReadBit()'
+   while (!device.OneWireReadBit() && (millis() - startMs) < 1000) {
+                                 ^
+In file included from src/sensors/Ds2484Sensor.h:41,
+                 from src/sensors/Ds2484Sensor.cpp:6:
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:37:8: note: candidate: 'bool Adafruit_DS248x::OneWireReadBit(uint8_t*)'
+   bool OneWireReadBit(uint8_t *bit);
+        ^~~~~~~~~~~~~~
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:37:8: note:   candidate expects 1 argument, 0 provided
+src/sensors/Ds2484Sensor.cpp:243:42: error: no matching function for call to 'Adafruit_DS248x::OneWireReadByte()'
+     uint8_t lsb = device.OneWireReadByte();
+                                          ^
+In file included from src/sensors/Ds2484Sensor.h:41,
+                 from src/sensors/Ds2484Sensor.cpp:6:
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:35:8: note: candidate: 'bool Adafruit_DS248x::OneWireReadByte(uint8_t*)'
+   bool OneWireReadByte(uint8_t *byte);
+        ^~~~~~~~~~~~~~~
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:35:8: note:   candidate expects 1 argument, 0 provided
+src/sensors/Ds2484Sensor.cpp:244:42: error: no matching function for call to 'Adafruit_DS248x::OneWireReadByte()'
+     uint8_t msb = device.OneWireReadByte();
+                                          ^
+In file included from src/sensors/Ds2484Sensor.h:41,
+                 from src/sensors/Ds2484Sensor.cpp:6:
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:35:8: note: candidate: 'bool Adafruit_DS248x::OneWireReadByte(uint8_t*)'
+   bool OneWireReadByte(uint8_t *byte);
+        ^~~~~~~~~~~~~~~
+.pio/libdeps/freenove-fnk0114n-sensor-pages/Adafruit DS248x/Adafruit_DS248x.h:35:8: note:   candidate expects 1 argument, 0 provided
+*** [.pio/build/freenove-fnk0114n-sensor-pages/src/sensors/Ds2484Sensor.cpp.o] Error 1
+In file included from src/sensors/EncoderSensor.cpp:8:
+src/sensors/EncoderSensor.h:165:3: error: 'LargeDisplayValue' does not name a type
+   LargeDisplayValue getLargeDisplayValue(uint8_t index) const override;
+   ^~~~~~~~~~~~~~~~~
+src/sensors/EncoderSensor.h:128:8: error: conflicting return type specified for 'virtual bool EncoderSensor::initialize()'
+   bool initialize() override;
+        ^~~~~~~~~~
+In file included from src/sensors/EncoderSensor.h:53,
+                 from src/sensors/EncoderSensor.cpp:8:
+src/sensors/BaseSensor.h:51:16: note: overridden function is 'virtual void BaseSensor::initialize()'
+   virtual void initialize() = 0;
+                ^~~~~~~~~~
+In file included from src/sensors/EncoderSensor.cpp:8:
+src/sensors/EncoderSensor.h:139:8: error: conflicting return type specified for 'virtual bool EncoderSensor::update()'
+   bool update() override;
+        ^~~~~~
+In file included from src/sensors/EncoderSensor.h:53,
+                 from src/sensors/EncoderSensor.cpp:8:
+src/sensors/BaseSensor.h:66:16: note: overridden function is 'virtual void BaseSensor::update()'
+   virtual void update() = 0;
+                ^~~~~~
+src/sensors/EncoderSensor.cpp: In member function 'virtual bool EncoderSensor::initialize()':
+src/sensors/EncoderSensor.cpp:60:10: error: 'class Adafruit_seesaw' has no member named 'setPixelColor'
+   seesaw.setPixelColor(0, seesaw.Color(r, g, b));
+          ^~~~~~~~~~~~~
+src/sensors/EncoderSensor.cpp:60:34: error: 'class Adafruit_seesaw' has no member named 'Color'
+   seesaw.setPixelColor(0, seesaw.Color(r, g, b));
+                                  ^~~~~
+src/sensors/EncoderSensor.cpp:61:10: error: 'class Adafruit_seesaw' has no member named 'setBrightness'
+   seesaw.setBrightness(values.brightness);
+          ^~~~~~~~~~~~~
+src/sensors/EncoderSensor.cpp:62:10: error: 'class Adafruit_seesaw' has no member named 'show'
+   seesaw.show();
+          ^~~~
+src/sensors/EncoderSensor.cpp: At global scope:
+src/sensors/EncoderSensor.cpp:125:1: error: 'LargeDisplayValue' does not name a type
+ LargeDisplayValue EncoderSensor::getLargeDisplayValue(uint8_t index) const {
+ ^~~~~~~~~~~~~~~~~
+src/sensors/EncoderSensor.cpp: In member function 'bool EncoderSensor::setLedColor(uint8_t)':
+src/sensors/EncoderSensor.cpp:226:10: error: 'class Adafruit_seesaw' has no member named 'setPixelColor'
+   seesaw.setPixelColor(0, seesaw.Color(r, g, b));
+          ^~~~~~~~~~~~~
+src/sensors/EncoderSensor.cpp:226:34: error: 'class Adafruit_seesaw' has no member named 'Color'
+   seesaw.setPixelColor(0, seesaw.Color(r, g, b));
+                                  ^~~~~
+src/sensors/EncoderSensor.cpp:227:10: error: 'class Adafruit_seesaw' has no member named 'show'
+   seesaw.show();
+          ^~~~
+src/sensors/EncoderSensor.cpp: In member function 'bool EncoderSensor::setLedBrightness(uint8_t)':
+src/sensors/EncoderSensor.cpp:234:10: error: 'class Adafruit_seesaw' has no member named 'setBrightness'
+   seesaw.setBrightness(brightness);
+          ^~~~~~~~~~~~~
+src/sensors/EncoderSensor.cpp:235:10: error: 'class Adafruit_seesaw' has no member named 'show'
+   seesaw.show();
+          ^~~~
+src/sensors/EncoderSensor.cpp: In member function 'bool EncoderSensor::setLedColorAndBrightness(uint8_t, uint8_t)':
+src/sensors/EncoderSensor.cpp:252:10: error: 'class Adafruit_seesaw' has no member named 'setPixelColor'

@@ -223,7 +223,8 @@ void Ds2484Sensor::readAllTemperatures() {
   // Poll for conversion complete (750ms typical)
   // DS18B20 pulls bus low during conversion, releases when done
   uint32_t startMs = millis();
-  while (!device.OneWireReadBit() && (millis() - startMs) < 1000) {
+  uint8_t bit = 0;
+  while (!(device.OneWireReadBit(&bit)) && (millis() - startMs) < 1000) {
     delay(10);
   }
 
@@ -240,8 +241,10 @@ void Ds2484Sensor::readAllTemperatures() {
     device.OneWireWriteByte(0xBE);  // Read Scratchpad
 
     // Read temperature bytes (LSB, MSB)
-    uint8_t lsb = device.OneWireReadByte();
-    uint8_t msb = device.OneWireReadByte();
+    uint8_t lsb = 0;
+    uint8_t msb = 0;
+    device.OneWireReadByte(&lsb);
+    device.OneWireReadByte(&msb);
 
     // Convert to temperature: Temp = ((MSB << 8) | LSB) / 16
     int16_t rawTemp = ((msb << 8) | lsb);

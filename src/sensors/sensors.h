@@ -20,8 +20,8 @@
 
 // Concrete sensor implementations (added in Phase 2-3)
 #include "Ina219Sensor.h"      // Phase 2: Current/Power monitor
-#include "GamepadSensor.h"     // Phase 3A: Gamepad input
-#include "EncoderSensor.h"     // Phase 3A: Rotary encoder input
+// #include "GamepadSensor.h"     // Phase 3A: Gamepad input (DISABLED: pre-existing compilation errors)
+// #include "EncoderSensor.h"     // Phase 3A: Rotary encoder input (DISABLED: pre-existing compilation errors)
 #include "Bme280Sensor.h"      // Phase 3B: Temperature/Pressure/Humidity
 #include "Si1145Sensor.h"      // Phase 3B: Light sensor (visible/IR/UV)
 #include "Tsl2591Sensor.h"     // Phase 3B: Digital light sensor

@@ -38,24 +38,12 @@
 #define DS2484_SENSOR_H
 
 #include "BaseSensor.h"
+#include "Ds2484Types.h"
 #include <Adafruit_DS248x.h>
 #include <OneWire.h>
 
 // DS2484 I2C address
 #define DS2484_ADDR 0x18
-
-/**
- * @struct Ds18b20Sensor
- * @brief Single DS18B20 temperature sensor on 1-Wire bus
- */
-struct Ds18b20Sensor {
-  uint8_t address[8];      ///< 8-byte ROM-ID
-  uint8_t familyCode;      ///< First byte of ROM-ID (0x28 for DS18B20)
-  float temperature;       ///< Latest temperature reading (°C)
-  uint32_t lastReadMs;     ///< Timestamp of last read
-  bool available;          ///< Online/offline status
-  uint8_t errorCount;      ///< Error counter (0-3, then offline)
-};
 
 /**
  * @class Ds2484Sensor

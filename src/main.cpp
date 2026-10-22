@@ -11,9 +11,13 @@
 #include <OneWire.h>
 #include <SparkFun_SCD30_Arduino_Library.h>  // FEATURE-SPEC-009: Upgraded to SparkFun library
 #include <SparkFun_VEML6075_Arduino_Library.h>  // FEATURE-SPEC-010: Upgraded to SparkFun library
-#include <Adafruit_VEML6070.h>  // FEATURE-SPEC-010: Upgraded to Adafruit library
+// PHASE-4: Removed direct Adafruit_VEML6070.h include to avoid redefinition (included via sensors.h)
+// #include <Adafruit_VEML6070.h>  // FEATURE-SPEC-010: Upgraded to Adafruit library
 #include <math.h>
 #include <string.h>
+
+// PHASE-4: Include sensor registry and all sensor classes
+#include "sensors/sensors.h"
 
 #define SDA_PIN 32
 #define SCL_PIN 25
@@ -85,6 +89,22 @@ Adafruit_VEML6070 veml6070Sensor;  // Adafruit VEML6070 instance
 // DS2484 I2C-to-1-Wire adapter via Adafruit library
 Adafruit_DS248x ds2484Master;
 
+// PHASE-4: Sensor Registry and Instances
+// Registry manages all 8 functional sensor instances polymorphically (excludes GamepadSensor and EncoderSensor with pre-existing errors)
+SensorRegistry sensorRegistry;
+
+// Create instances of all 8 working sensor classes
+Ina219Sensor ina219Sensor;
+// GamepadSensor gamepadSensor;  // DISABLED: pre-existing compilation errors
+// EncoderSensor encoderSensor;  // DISABLED: pre-existing compilation errors
+Bme280Sensor bme280Sensor;
+Si1145Sensor si1145Sensor;
+Tsl2591Sensor tsl2591Sensor;
+Veml6075Sensor veml6075Sensor_new;
+Veml6070Sensor veml6070Sensor_new;
+Scd30Sensor scd30Sensor_new;
+Ds2484Sensor ds2484Sensor;
+
 struct SensorStatus {
   bool ina219;
   bool veml6075;
@@ -111,24 +131,8 @@ struct Scd30State {
 struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
 struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
 
-// 1-Wire temperature sensor struct (single sensor on DS2484)
-struct Ds18b20Sensor {
-  uint8_t address[8];      // 8-byte ROM-ID
-  uint8_t familyCode;      // First byte of ROM-ID (0x28, 0x22, 0x10, etc.)
-  float temperature;       // Latest temperature reading (°C)
-  uint32_t lastReadMs;     // Timestamp of last read
-  bool available;          // Online/offline status
-  uint8_t errorCount;      // Error counter (0-3, then offline)
-};
-
-// DS2484 I2C-to-1-Wire adapter struct
-struct Ds2484Values {
-  bool masterPresent;           // DS2484 adapter detected via I2C probe
-  uint8_t sensorCount;          // Number of discovered sensors (0-3)
-  Ds18b20Sensor sensors[3];     // Array of up to 3 sensors
-  uint32_t lastScanMs;          // Timestamp of last bus scan (60s interval)
-  uint32_t lastConversionMs;    // Timestamp of last temperature conversion (3s interval)
-};
+// PHASE-4: Import DS2484 struct definitions from sensor class (avoid redefinition)
+#include "sensors/Ds2484Types.h"
 
 // BME280 climate sensor cache struct (FEATURE-SPEC-005)
 struct Bme280Values {
@@ -1333,6 +1337,10 @@ void readEncoderAt50Hz()
 
 void readSensors()
 {
+  // PHASE-4: Update all sensors via registry
+  sensorRegistry.updateAll();
+  
+  // Legacy sensor reads (kept for backwards compatibility during transition)
   if (available.bme280) readBme280(bme280Values);       // New: BME280 caching (FEATURE-SPEC-005)
   // NOTE: TSL2591 is async - starts measurement in rotatedReadSensor(), checked later
   // if (available.tsl2591) readTsl2591(tsl2591Values);  // Removed: async via startTsl2591Measurement()
@@ -2546,6 +2554,23 @@ void setup()
   
   Serial.println("[SETUP] Initializing sensor caches...");
   initializeSensorCaches();
+  
+  // PHASE-4: Initialize the Sensor Registry with all 8 working sensors
+  Serial.println("[SETUP] Initializing Sensor Registry...");
+  sensorRegistry.registerSensor(0, &ina219Sensor, "INA219", 0xF800);  // Red
+  // sensorRegistry.registerSensor(1, &gamepadSensor, "Gamepad", 0xF81F);  // DISABLED - Magenta
+  // sensorRegistry.registerSensor(2, &encoderSensor, "Encoder", 0xFC00);  // DISABLED - Orange
+  sensorRegistry.registerSensor(3, &bme280Sensor, "BME280", 0x07E0);  // Green
+  sensorRegistry.registerSensor(4, &si1145Sensor, "SI1145", 0xFFE0);  // Yellow
+  sensorRegistry.registerSensor(5, &tsl2591Sensor, "TSL2591", 0x07FF);  // Cyan
+  sensorRegistry.registerSensor(6, &veml6075Sensor_new, "VEML6075", 0xF81F);  // Magenta
+  sensorRegistry.registerSensor(7, &veml6070Sensor_new, "VEML6070", 0xFC00);  // Orange
+  sensorRegistry.registerSensor(8, &scd30Sensor_new, "SCD30", 0x0810);  // Blue
+  sensorRegistry.registerSensor(9, &ds2484Sensor, "DS2484", 0xFBE0);  // Light Gray
+  
+  // Initialize all sensors
+  Serial.println("[SETUP] Initializing all sensors via registry...");
+  sensorRegistry.initializeAll();
   
   Serial.println("[SETUP] Performing initial sensor reads...");
   readSensors();
