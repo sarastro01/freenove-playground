@@ -185,15 +185,6 @@ struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8
 // PHASE-4: Import DS2484 struct definitions from sensor class (avoid redefinition)
 #include "sensors/Ds2484Types.h"
 
-// BME280 climate sensor cache struct (FEATURE-SPEC-005)
-struct Bme280Values {
-  float temperature;      // °C
-  float humidity;         // %RH
-  float pressure;         // hPa
-  float altitude;         // m
-  float dewPoint;         // °C
-};
-
 // TSL2591 light sensor cache struct (FEATURE-SPEC-005)
 struct Tsl2591Values {
   uint32_t fullSpectrum;       // Full spectrum raw (16-bit CHAN0)
@@ -217,7 +208,7 @@ Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
 Scd30State scd30State{};
-Bme280Values bme280Values{};       // BME280 cache
+Bme280Values bme280Values{};       // BME280 cache (struct def in Bme280Sensor.h)
 Tsl2591Values tsl2591Values{};     // TSL2591 cache
 Si1145Values si1145Values{};       // SI1145 cache
 EncoderValues encoderValues{};
@@ -1093,36 +1084,11 @@ void readBme280(Bme280Values &values)
   
   uint32_t startTime = micros();
   
-  // Read sensor values
-  float temperature = bme280.readTemperature();
-  float humidity = bme280.readHumidity();
-  float pressure = bme280.readPressure() / 100.0f;  // Pa → hPa
-  float altitude = bme280.readAltitude(1013.25f);   // m, using 1013.25 hPa reference
+  // PHASE 3: Delegate to sensor class
+  bme280Sensor.update();
   
-  // Plausibility check: Verify values in valid ranges
-  // Valid ranges: T[-40,85]°C, RH[0,100]%, P[300,1100]hPa
-  if (temperature < -40 || temperature > 85 ||
-      humidity < 0 || humidity > 100 ||
-      pressure < 300 || pressure > 1100) {
-    /* // Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
-                  temperature, humidity, pressure); */
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Calculate dew point using Alduchov & Eskridge formula (±0.35°C accuracy)
-  // Valid for 0-50°C, 1-100%RH
-  const float a = 17.62f;
-  const float b = 243.12f;
-  float alpha = ((a * temperature) / (b + temperature)) + log(humidity / 100.0f);
-  float dewPoint = (b * alpha) / (a - alpha);
-  
-  // Update cache (only on successful read)
-  values.temperature = temperature;
-  values.humidity = humidity;
-  values.pressure = pressure;
-  values.altitude = altitude;
-  values.dewPoint = dewPoint;
+  // Copy from sensor accessor to global struct
+  values = bme280Sensor.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;

@@ -39,6 +39,20 @@
 #define BME280_ADDR 0x77  // Primary address
 #define BME280_ADDR_ALT 0x76  // Alternative address
 
+// ============================================================================
+// Bme280Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+// This struct is also defined in main.cpp for backward compatibility
+// Both definitions must remain in sync
+//
+struct Bme280Values {
+  float temperature;      ///< °C - ambient temperature
+  float humidity;         ///< %RH - relative humidity
+  float pressure;         ///< hPa - atmospheric pressure
+  float altitude;         ///< m - altitude above sea level
+  float dewPoint;         ///< °C - dew point temperature
+};
+
 /**
  * @class Bme280Sensor
  * @brief BME280 environmental sensor implementation
@@ -246,6 +260,22 @@ public:
    * @return Dew point in °C
    */
   float getDewPoint() const { return values.dewPoint; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * Returns all current sensor values packed into Bme280Values struct.
+   * Used by main.cpp display layer instead of direct global variable access.
+   * This enables better encapsulation without moving the struct definition.
+   * 
+   * @return Const reference to Bme280Values struct with current sensor state
+   * 
+   * @note The returned struct is reconstructed from internal values on each call.
+   *       For performance-critical code, consider caching the result.
+   * 
+   * @see Bme280Values (defined in main.cpp)
+   */
+  const struct Bme280Values& getValues() const;
 
 protected:
   /**

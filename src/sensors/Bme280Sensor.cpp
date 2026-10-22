@@ -149,3 +149,27 @@ float Bme280Sensor::calculateDewPoint(float temperature, float humidity) const {
   float dewPoint = (b * alpha) / (a - alpha);
   return dewPoint;
 }
+
+// ============================================================================
+// PHASE 3 Refactoring: getValues() Accessor
+// ============================================================================
+// Provides const reference to Bme280Values struct for main.cpp display layer.
+// The struct is populated from internal cached values on each call.
+// This is a backward-compatibility bridge that enables encapsulation
+// without moving the struct definition to the header.
+//
+// Implementation detail: Uses static local struct to avoid heap allocation.
+// Thread-safe for single-threaded Arduino context.
+// 
+const struct Bme280Values& Bme280Sensor::getValues() const {
+  static struct Bme280Values valuesBuffer;
+  
+  // Populate buffer from internal state
+  valuesBuffer.temperature = values.temperature;
+  valuesBuffer.humidity = values.humidity;
+  valuesBuffer.pressure = values.pressure;
+  valuesBuffer.altitude = values.altitude;
+  valuesBuffer.dewPoint = values.dewPoint;
+  
+  return valuesBuffer;
+}
