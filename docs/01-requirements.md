@@ -984,6 +984,83 @@ All messages tagged with category: `[BOOT]`, `[DIAG]`, `[SENSOR]`, `[INPUT]`, `[
 
 ---
 
+### FR-024b: External Persistent Serial Monitor with Disk Logging (FEATURE-SPEC-012) — **NEW**
+
+**Requirement:**  
+The system shall provide a host-level Python serial monitor that captures all firmware output to persistent disk logs, enabling long-term diagnostics, post-mortem analysis, and trend detection for 24+ hour stress testing.
+
+**Details:**
+
+**Functional Capabilities:**
+- Captures all Serial output from firmware (via logPrintf) to dated log files
+- Implements automatic daily log rotation: logs/serial/serial_monitor_YYYY-MM-DD.log
+- Provides dual-mode operation:
+  - **Normal Mode:** Display all output to terminal with color-coding by severity
+  - **Compact Mode (--compact flag):** Show only critical errors in terminal; persist everything to disk
+- Implements intelligent I2C error categorization:
+  - OK (blue): time < 50ms, errors:0, bus:free
+  - SLOW (yellow): time ≥ 50ms
+  - BUS_ERROR (red): errors > 0
+  - CRITICAL (bold red): Error 263 or "bus:locked"
+- Provides search functionality (--search flag) for post-mortem pattern matching
+- Tracks statistics: Lines, Errors, I2C-Errors, Slow-I2C (updated every 200 lines in compact mode)
+
+**Persistence Requirements:**
+- Location: logs/serial/ directory
+- Format: Chronological (oldest at top, newest at bottom)
+- Filename: serial_monitor_YYYY-MM-DD.log (one per day)
+- Growth rate: 1–2 MB per hour during normal operation
+- Rotation trigger: Midnight UTC
+- Data guarantee: No data loss even if device reboots or crashes
+
+**Usage Examples:**
+```bash
+# Normal mode (show all output)
+python3 scripts/serial_monitor.py
+
+# Compact mode (filter to critical only, persist all)
+python3 scripts/serial_monitor.py --compact &
+
+# Post-mortem analysis
+python3 scripts/serial_monitor.py --search "Error 263"
+python3 scripts/serial_monitor.py --search "bus:locked"
+```
+
+**Dependency:**
+- Python 3.6+ runtime
+- pyserial library: `pip install pyserial`
+
+**Performance Impact:**
+- Runs on host machine (not ESP32)
+- No impact on firmware execution time
+- Disk I/O: ~1–2 MB/hour (non-blocking, buffered)
+- Python process memory: ~20–50 MB resident
+
+**Implementation:**
+- New file: scripts/serial_monitor.py (369 lines)
+- New file: scripts/monitor.sh (quick wrapper script)
+- New directory: logs/serial/ (auto-created on first run)
+- Supporting docs: SERIAL_MONITOR_README.md, SERIAL_MONITOR_QUICK_REFERENCE.txt
+- Updated architecture: docs/02-architecture.md § 3.10.1
+
+**Acceptance Criteria:**
+- Python monitor starts without errors
+- Serial output appears in real-time on terminal (normal mode)
+- All output persisted to logs/serial/serial_monitor_YYYY-MM-DD.log
+- Compact mode filters correctly (shows only SLOW/BUS_ERROR/CRITICAL)
+- Search functionality finds error patterns
+- Log rotation occurs exactly at midnight
+- 24-hour test produces 24–48 MB log file with zero data loss
+- No Python dependencies beyond pyserial
+
+**Status:** ✅ IMPLEMENTED
+
+**Related Requirements:** FR-024, FR-025, FR-027
+
+**Related Specifications:** FEATURE-SPEC-012, docs/02-architecture.md § 3.10.1, docs/14-reconstruction-plan.md § Phase 5c
+
+---
+
 ### FR-025: Display Switch Diagnostics Logging (FEATURE-SPEC-012)
 
 **Requirement:**  

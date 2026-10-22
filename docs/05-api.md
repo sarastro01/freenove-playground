@@ -2481,3 +2481,334 @@ void pageBme280() {
 ```
 
 **Every page renderer (0–9) follows same pattern.**
+
+---
+
+## 11. Python Serial Monitor API (FEATURE-SPEC-012) — **NEW**
+
+### Overview
+
+The **Python Serial Monitor** (`scripts/serial_monitor.py`) is a host-side tool that captures, analyzes, and persists firmware serial output for long-term diagnostics and post-mortem analysis.
+
+**Location:** `scripts/serial_monitor.py` (369 lines, Python 3.6+)
+
+**Dependency:** `pip install pyserial`
+
+**Purpose:**
+- Persistent logging to disk for 24+ hour stress testing
+- Real-time terminal output with color-coding
+- Intelligent I2C error categorization
+- Search functionality for pattern matching
+- Automatic daily log rotation
+
+---
+
+### Command-Line Interface
+
+#### Basic Usage
+
+**Normal mode (show all output):**
+```bash
+python3 scripts/serial_monitor.py
+```
+
+**Compact mode (show only critical errors, persist all):**
+```bash
+python3 scripts/serial_monitor.py --compact
+```
+
+**Background execution (recommended for long tests):**
+```bash
+python3 scripts/serial_monitor.py --compact &
+nohup python3 scripts/serial_monitor.py --compact > /tmp/monitor.log 2>&1 &
+```
+
+**Post-mortem search:**
+```bash
+python3 scripts/serial_monitor.py --search "Error 263"
+python3 scripts/serial_monitor.py --search "bus:locked"
+python3 scripts/serial_monitor.py --search "CRITICAL"
+```
+
+#### Command-Line Flags
+
+| Flag | Description | Default | Example |
+|------|-------------|---------|---------|
+| `--compact` | Filter terminal output to show only critical errors; persist all to disk | Off (normal mode) | `python3 scripts/serial_monitor.py --compact` |
+| `--search TEXT` | Search logs for pattern matching TEXT; return matching lines | None | `python3 scripts/serial_monitor.py --search "Error 263"` |
+| `--help` | Display usage help | — | `python3 scripts/serial_monitor.py --help` |
+
+---
+
+### Terminal Output Format (Normal Mode)
+
+**Example output with timestamps and color-coding:**
+```
+🔌 Serial Monitor (NORMAL MODE)...
+   Port: /dev/ttyUSB0
+   Baudrate: 115200
+   Log directory: logs/serial
+   Log file: logs/serial/serial_monitor_2026-10-22.log
+────────────────────────────────────────────────────────────────────────────────
+✓ Connected to /dev/ttyUSB0
+
+[23:06:05.935] [DS18B20] Results read: 1/1 sensors OK, took 38204 µs
+[23:06:05.976] [DS18B20] Starting conversion for 1 sensors...
+[23:06:06.456] [DS18B20] Conversion started (took 17212 µs)
+[23:06:06.646] [I2C-TIMING] Sensors:value time:63 ms bus:free errors:0
+[23:06:07.404] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+[23:06:07.445] [DS18B20] Conversion ready, reading results...
+```
+
+**Color Codes:**
+- 🔴 Red: ERROR, I2C bus errors, Critical conditions
+- 🟡 Yellow: WARN, Slow I2C transactions (≥50ms)
+- 🔵 Blue: INFO, Normal I2C transactions, sensor status
+- ✓ Green: OK, Successful operations
+- ⚪ Gray: Debug, verbose logging
+
+---
+
+### Terminal Output Format (Compact Mode)
+
+**Compact mode filters terminal to show only critical errors; all data persisted to disk:**
+
+```
+🔌 Serial Monitor (COMPACT MODE)...
+   Port: /dev/ttyUSB0
+   Baudrate: 115200
+   Log directory: logs/serial
+   Log file: logs/serial/serial_monitor_2026-10-22.log
+   Mode: COMPACT (only critical messages shown)
+────────────────────────────────────────────────────────────────────────────────
+✓ Connected to /dev/ttyUSB0
+
+[23:06:09.423] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+[23:06:09.475] [ERROR] I2C read failed for Encoder
+[23:06:13.445] [I2C-TIMING] Sensors:value time:241 ms bus:free errors:0
+[23:06:13] 📊 Lines: 600, Errors: 0, I2C-Errors: 1, Slow-I2C: 5
+[23:06:15.437] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+```
+
+**Terminal shows:**
+- ✓ Lines tagged SLOW (time ≥ 50ms)
+- ✓ Lines tagged BUS_ERROR (errors > 0)
+- ✓ Lines tagged CRITICAL (Error 263, "bus:locked")
+- ✗ Hidden: Lines tagged OK (time < 50ms, errors:0, bus:free)
+- ✓ Statistics every 200 lines showing aggregated error counts
+
+**Statistics Metrics:**
+- **Lines:** Total lines processed so far
+- **Errors:** Count of lines containing "ERROR" keyword
+- **I2C-Errors:** Count of [I2C-TIMING] lines with errors > 0
+- **Slow-I2C:** Count of [I2C-TIMING] lines with time ≥ 50ms
+
+---
+
+### I2C Error Categorization Logic
+
+The monitor automatically parses [I2C-TIMING] lines and categorizes them:
+
+#### Categorization Rules
+
+```
+IF line contains "Error 263" OR "ERROR"
+  CATEGORY = CRITICAL (bold red)
+  DISPLAY_MODE = Always shown
+
+ELSE IF line matches "bus:locked errors:N" where N > 0
+  CATEGORY = BUS_ERROR (red)
+  DISPLAY_MODE = Always shown
+
+ELSE IF line matches "time:NNN ms" where NNN >= 50
+  CATEGORY = SLOW (yellow)
+  DISPLAY_MODE = Shown in compact mode
+
+ELSE IF line matches "time:NNN ms" where NNN < 50 AND "errors:0" AND "bus:free"
+  CATEGORY = OK (blue)
+  DISPLAY_MODE = Hidden in compact mode, shown in normal mode
+
+END IF
+```
+
+#### Performance Thresholds
+
+| Metric | Threshold | Meaning |
+|--------|-----------|---------|
+| **Healthy I2C** | < 20 ms | Normal sensor read latency |
+| **Slow I2C** | ≥ 50 ms | Performance degradation, watch for issues |
+| **Critical Error** | Error 263, "bus:locked" | I2C bus stuck, requires intervention |
+| **Bus Error** | errors > 0 | Transaction failed, sensor read incomplete |
+
+#### Example Line Analysis
+
+**Input line:**
+```
+[23:06:09.423] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+```
+
+**Categorization:**
+1. Contains "bus:locked"? YES
+2. Extract errors: errors:0 → error_count = 0
+3. But contains "bus:locked" → CATEGORY = SLOW or higher?
+4. time=240 ms ≥ 50 ms → CATEGORY = SLOW (yellow)
+5. Actually: time=240 ms + bus:locked → Treat as performance issue + bus state indicator
+6. Result: **SLOW category, yellow color, shown in compact mode**
+
+---
+
+### Log File Storage & Format
+
+#### Directory Structure
+
+```
+logs/
+└── serial/
+    ├── serial_monitor_2026-10-22.log  (created on Oct 22)
+    ├── serial_monitor_2026-10-23.log  (auto-rotated on Oct 23 at 00:00)
+    └── serial_monitor_2026-10-24.log  (auto-rotated on Oct 24 at 00:00)
+```
+
+#### File Format
+
+**Each line contains:**
+```
+[HH:MM:SS.mmm] <firmware logPrintf() output>
+```
+
+**Example:**
+```
+[23:06:05.935] [DS18B20] Results read: 1/1 sensors OK, took 38204 µs
+[23:06:05.976] [DS18B20] Starting conversion for 1 sensors...
+[23:06:06.646] [I2C-TIMING] Sensors:value time:63 ms bus:free errors:0
+[23:06:09.423] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+[23:06:13.445] [DS18B20] Conversion ready, reading results...
+```
+
+**Chronological Order:** Oldest entries at top, newest at bottom (opposite of typical terminal scrolling)
+
+**Growth Rate:** 1–2 MB per hour during normal operation
+
+#### Log Rotation
+
+**Trigger:** Midnight UTC (00:00:00)
+
+**Behavior:**
+1. At midnight, new file created: serial_monitor_YYYY-MM-DD.log (next date)
+2. Previous day's file closed (remains in logs/serial/)
+3. No data loss during rotation
+4. User can maintain archives separately
+
+---
+
+### Search Functionality
+
+#### Search Command
+
+```bash
+python3 scripts/serial_monitor.py --search "pattern"
+```
+
+**Behavior:**
+- Searches logs/serial/ directory for files matching serial_monitor_*.log
+- Returns all lines containing pattern (case-insensitive)
+- Shows filename and timestamp context
+- Returns "No matches found" if pattern not present
+
+#### Common Search Patterns
+
+| Pattern | Use Case | Example Command |
+|---------|----------|-----------------|
+| `"Error 263"` | Find I2C timeout errors | `python3 scripts/serial_monitor.py --search "Error 263"` |
+| `"bus:locked"` | Find I2C bus lockups | `python3 scripts/serial_monitor.py --search "bus:locked"` |
+| `"CRITICAL"` | Find all critical errors | `python3 scripts/serial_monitor.py --search "CRITICAL"` |
+| `"ERROR"` | Find any error condition | `python3 scripts/serial_monitor.py --search "ERROR"` |
+| `"GAMEPAD"` | Find gamepad input events | `python3 scripts/serial_monitor.py --search "GAMEPAD"` |
+| `"ENCODER"` | Find encoder input events | `python3 scripts/serial_monitor.py --search "ENCODER"` |
+| `"[I2C-TIMING]"` | Find all I2C timing logs | `python3 scripts/serial_monitor.py --search "[I2C-TIMING]"` |
+
+---
+
+### Post-Mortem Analysis Workflow
+
+#### Scenario: Device Hung at 03:45 UTC
+
+**Step 1: Collect Evidence**
+```bash
+# Check which log file contains the time window
+ls -la logs/serial/serial_monitor_*.log
+
+# Example output shows: serial_monitor_2026-10-22.log
+```
+
+**Step 2: Search for Errors Around Time**
+```bash
+# Search for critical errors
+python3 scripts/serial_monitor.py --search "Error 263"
+
+# Extract lines from log manually
+grep "\[03:4[0-5]" logs/serial/serial_monitor_2026-10-22.log | tail -50
+```
+
+**Step 3: Analyze I2C Transactions**
+```bash
+# Find slow I2C transactions before hang
+grep "time:.*[5-9][0-9]\|time:.*[1-9][0-9][0-9]" logs/serial/serial_monitor_2026-10-22.log | tail -20
+```
+
+**Step 4: Correlate with Input Events**
+```bash
+# Find input activity around the time
+grep "\[INPUT\]" logs/serial/serial_monitor_2026-10-22.log | tail -20
+```
+
+**Step 5: Diagnose Root Cause**
+- If errors before hang: I2C communication failure
+- If performance degradation trend: Accumulating I2C issues
+- If no errors: Possible firmware bug or interrupt issue
+
+---
+
+### Performance Characteristics
+
+**Disk I/O:**
+- Writes: ~1–2 MB/hour (line buffered, flushed immediately)
+- Operations: Non-blocking (pyserial handles buffering)
+- No impact on firmware
+
+**Memory:**
+- Python process: ~20–50 MB resident
+- Runs on host (not ESP32)
+- No impact on firmware RAM/flash
+
+**Serial Throughput:**
+- Baud rate: 115200 = ~14.4 KB/sec theoretical max
+- Expected rate: ~50–100 messages/min = 200–400 bytes/min
+- Utilization: ~0.3% (well within limits)
+- No data loss observed
+
+---
+
+### Integration with Firmware (logPrintf)
+
+The Python monitor consumes output from firmware's `logPrintf()` function:
+
+```
+Firmware logPrintf() → Serial UART → /dev/ttyUSB0 → Python monitor
+                                                   → Terminal output
+                                                   → Disk log file
+```
+
+**No changes to firmware required** — Monitor is completely passive and reads from Serial output.
+
+**Works immediately after firmware deployment and logPrintf() implementation.**
+
+---
+
+### Related Documentation
+
+- **Architecture:** docs/02-architecture.md § 3.10.1 (Host-Level Monitoring)
+- **Requirements:** docs/01-requirements.md § FR-024b (External Persistent Monitor)
+- **Reconstruction:** docs/14-reconstruction-plan.md § Phase 5c (Python Monitor Setup)
+- **User Guide:** SERIAL_MONITOR_README.md (comprehensive documentation)
+- **Quick Reference:** SERIAL_MONITOR_QUICK_REFERENCE.txt (one-page guide)

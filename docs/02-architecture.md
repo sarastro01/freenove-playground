@@ -2465,3 +2465,269 @@ if ((millis() / 300000) != lastDiagnosticsPeriod) {  // Every 5 minutes
 
 ---
 
+### 3.10.1 Host-Level Persistent Monitoring (Python Serial Monitor)
+
+**Purpose:** Capture and analyze persistent serial output from the firmware for long-term diagnostics, post-mortem analysis, and performance trending.
+
+**Architecture Overview:**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Firmware (ESP32)                                            │
+│  └─ Serial.printf() via logPrintf() wrapper                  │
+│     Sends: [HH:MM:SS.sss] [CATEGORY] Message\n              │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ 115200 baud
+                               │ /dev/ttyUSB0
+                               ↓
+┌──────────────────────────────────────────────────────────────┐
+│  Python Serial Monitor (scripts/serial_monitor.py)           │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │ NORMAL MODE (default)                                   │ │
+│  │ - Shows all output to terminal (real-time)              │ │
+│  │ - Color-coded by severity (ERROR/WARN/INFO/OK)          │ │
+│  │ - Timestamps in [HH:MM:SS.mmm] format                   │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │ COMPACT MODE (--compact flag)                           │ │
+│  │ - Filters to show ONLY critical errors in terminal      │ │
+│  │ - Categorizes I2C-TIMING lines automatically            │ │
+│  │ - Shows statistics every 200 lines                      │ │
+│  │ - Routine output hidden but persisted to disk           │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │ POST-MORTEM ANALYSIS (--search flag)                    │ │
+│  │ - Search logs for error patterns                        │ │
+│  │ - Pattern: "Error 263", "bus:locked", "CRITICAL"        │ │
+│  │ - Returns matching lines with context                   │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ Persistent disk logging
+                               ↓
+┌──────────────────────────────────────────────────────────────┐
+│  Log File Storage                                            │
+│  logs/serial/serial_monitor_YYYY-MM-DD.log                  │
+│                                                              │
+│  ├─ One file per day (auto-rotation at midnight)            │
+│  ├─ Chronological order (oldest entries at top)             │
+│  ├─ Growth: ~1-2 MB per hour during normal operation        │
+│  ├─ Format: [HH:MM:SS.mmm] <firmware output>                │
+│  └─ Line buffering: Data flushed immediately               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### **Installation & Usage**
+
+**Python Dependency:**
+```bash
+pip install pyserial
+```
+
+**Starting the Monitor:**
+
+Normal mode (shows all output):
+```bash
+python3 scripts/serial_monitor.py
+```
+
+Compact mode (filtered to critical errors only):
+```bash
+python3 scripts/serial_monitor.py --compact &
+```
+
+Persistent background mode (recommended for long-term testing):
+```bash
+# Start in background, redirect output to file if needed
+python3 scripts/serial_monitor.py --compact > /tmp/monitor.log 2>&1 &
+
+# Or with nohup for immunity to terminal closure:
+nohup python3 scripts/serial_monitor.py --compact > /tmp/monitor.log 2>&1 &
+```
+
+**Post-Mortem Analysis:**
+```bash
+# Search for specific error patterns
+python3 scripts/serial_monitor.py --search "Error 263"
+python3 scripts/serial_monitor.py --search "bus:locked"
+python3 scripts/serial_monitor.py --search "CRITICAL"
+```
+
+#### **I2C Error Categorization Logic**
+
+The monitor automatically categorizes all `[I2C-TIMING]` lines based on performance and error status:
+
+| Category | Criteria | Display Color | Terminal Show |
+|----------|----------|----------------|---------------|
+| **OK** | time < 50ms, errors:0, bus:free | Blue | Hidden in compact mode |
+| **SLOW** | time ≥ 50ms | Yellow | Shown in compact mode |
+| **BUS_ERROR** | errors > 0 | Red | Always shown |
+| **CRITICAL** | Error 263 or "bus:locked" | Bold Red | Always shown |
+
+**Categorization Algorithm:**
+```python
+def get_i2c_severity(line: str) -> tuple:
+    """
+    Analyze I2C-TIMING line for severity.
+    Returns: (severity_code, is_critical)
+    """
+    # Check for explicit errors
+    if "Error 263" in line or "ERROR" in line:
+        return "CRITICAL", True
+    
+    # Check for bus lock condition
+    if "bus:locked errors:" in line:
+        try:
+            import re
+            match = re.search(r'errors:(\d+)', line)
+            if match:
+                error_count = int(match.group(1))
+                if error_count > 0:
+                    return "BUS_ERROR", True
+        except:
+            pass
+    
+    # Check for slow transaction
+    if "time:" in line:
+        try:
+            import re
+            match = re.search(r'time:(\d+)', line)
+            if match:
+                time_ms = int(match.group(1))
+                if time_ms > 50:  # Slow I2C transaction
+                    return "SLOW", False
+        except:
+            pass
+    
+    return "OK", False
+```
+
+**Thresholds:**
+- **Slow I2C threshold:** 50 ms (typical healthy I2C is 5–20 ms)
+- **Critical errors:** Error 263 (ESP_ERR_TIMEOUT), "bus:locked"
+- **Performance baseline:** < 20 ms for normal sensor reads
+
+#### **Compact Mode Statistics Tracking**
+
+Compact mode periodically displays aggregated error counts:
+
+```
+📊 Lines: 1200, Errors: 0, I2C-Errors: 2, Slow-I2C: 14
+```
+
+Metrics:
+- **Lines:** Total lines processed
+- **Errors:** Count of lines containing "ERROR" or error code
+- **I2C-Errors:** Count of I2C lines with error_count > 0
+- **Slow-I2C:** Count of I2C transactions exceeding 50 ms
+
+**Update Frequency:**
+- Compact mode: Every 200 lines (updates ~3 times per minute)
+- Normal mode: Every 500 lines
+
+**Interpretation:**
+- Increasing Slow-I2C: Indicates performance degradation before bus errors
+- Sudden spike in I2C-Errors: Correlate with sensor failures or electrical noise
+- Persistent Errors > 0: Indicates systemic I2C issue requiring investigation
+
+#### **Log File Format & Storage**
+
+**Directory Structure:**
+```
+logs/
+└── serial/
+    ├── serial_monitor_2026-10-22.log  (created Oct 22)
+    ├── serial_monitor_2026-10-23.log  (auto-rotated Oct 23)
+    └── serial_monitor_2026-10-24.log  (auto-rotated Oct 24)
+```
+
+**File Format:**
+- **Chronological order:** Oldest entries at top, newest at bottom (opposite of terminal output)
+- **Timestamp:** `[HH:MM:SS.mmm]` prepended to each firmware message
+- **Encoding:** UTF-8 plain text
+- **Line buffering:** Data flushed immediately (not buffered)
+- **Size:** Approximately 1–2 MB per hour during normal operation
+
+**Example Log Entry:**
+```
+[23:06:05.935] [DS18B20] Results read: 1/1 sensors OK, took 38204 µs
+[23:06:05.976] [DS18B20] Starting conversion for 1 sensors...
+[23:06:05.994] [DS18B20] Conversion started (took 17212 µs)
+[23:06:06.646] [I2C-TIMING] Sensors:value time:63 ms bus:free errors:0
+[23:06:07.404] [I2C-TIMING] TSL2591:value time:240 ms bus:locked errors:0
+```
+
+**Log Rotation:**
+- **Trigger:** Midnight (00:00:00)
+- **Behavior:** New file created automatically with current date
+- **Old files:** Retained indefinitely (recommend archiving weekly)
+
+#### **Use Cases & Workflows**
+
+**1. Real-Time Monitoring During Stress Tests**
+```bash
+# Start monitor in compact mode
+python3 scripts/serial_monitor.py --compact &
+
+# Run stress test (e.g., 24-hour soak test)
+# Monitor terminal shows only critical errors
+# Background process writes everything to log
+
+# After test completes:
+tail -100 logs/serial/serial_monitor_2026-10-22.log
+```
+
+**2. Post-Mortem Analysis After Production Issue**
+```bash
+# Issue reported: "Device hung at 03:45 UTC"
+# Search for errors around that time
+
+python3 scripts/serial_monitor.py --search "Error 263"
+# Output: All I2C timeout errors with timestamps
+
+python3 scripts/serial_monitor.py --search "bus:locked"
+# Output: All bus-locked conditions for correlation
+```
+
+**3. Performance Trend Analysis**
+```bash
+# Extract statistics from compact mode logs
+grep "📊 Lines:" logs/serial/serial_monitor_2026-10-*.log | tail -20
+
+# Analyze Slow-I2C trend over 7 days
+# Increasing Slow-I2C values indicate degradation
+```
+
+**4. Spontaneous Display Switch Investigation**
+```bash
+# Correlate page changes with input events
+grep "\[MODE\] page change" logs/serial/serial_monitor_2026-10-22.log > changes.txt
+grep "\[INPUT\]" logs/serial/serial_monitor_2026-10-22.log > inputs.txt
+
+# For each page change in changes.txt:
+# - Check inputs.txt for event within 500 ms
+# - Unexplained changes indicate system bug or noise
+```
+
+#### **Performance Characteristics**
+
+**Disk I/O:**
+- Writes: ~1–2 MB/hour
+- I/O operations: Non-blocking (Python serial library handles buffering)
+- No impact on firmware execution time
+
+**Memory:**
+- Python monitor process: ~20–50 MB resident
+- Runs on host machine (not ESP32)
+- No impact on firmware memory or performance
+
+**Baud Rate & Throughput:**
+- Serial speed: 115200 baud = ~14.4 KB/s theoretical max
+- Expected message rate: ~50–100 messages/min = 200–400 bytes/min
+- Utilization: ~0.3–0.6% (well within limits)
+- No data loss observed at current rates
+
+---
+
