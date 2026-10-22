@@ -5,7 +5,7 @@
 
 #include "Veml6070Sensor.h"
 
-Veml6070Sensor::Veml6070Sensor() {
+Veml6070Sensor::Veml6070Sensor() : device(nullptr) {
   // Initialize values to zero
   values.raw = 0;
   values.lsb = 0;
@@ -18,16 +18,20 @@ Veml6070Sensor::Veml6070Sensor() {
 }
 
 void Veml6070Sensor::initialize() {
-  // Attempt to detect device at I2C addresses 0x38/0x39
-  // Note: device.begin() was already called in main.cpp setup
-  // This sensor was initialized separately
-  available = true;  // Assume already initialized by main.cpp
+  // Check if device pointer was set via setDevice()
+  if (!device) {
+    Serial.printf("[VEML6070] ERROR: Device pointer not set! Call setDevice() from main.cpp\n");
+    available = false;
+    return;
+  }
   
+  // Device was already initialized in main.cpp, just mark as available
+  available = true;
   Serial.printf("[VEML6070] Sensor initialized (via main.cpp)\n");
 }
 
 void Veml6070Sensor::update() {
-  if (!available) return;
+  if (!available || !device) return;
 
   // Mark as initialized on first read
   if (!values.initialized) {
@@ -35,7 +39,7 @@ void Veml6070Sensor::update() {
   }
 
   // Read sensor values using Adafruit VEML6070 API
-  uint16_t raw = device.readUV();
+  uint16_t raw = device->readUV();
   values.raw = raw;
   values.lsb = raw & 0xFF;
   values.msb = (raw >> 8) & 0xFF;

@@ -44,8 +44,8 @@
  */
 class Veml6070Sensor : public BaseSensor {
 private:
-  /// I2C device instance
-  Adafruit_VEML6070 device;
+  /// Reference to global I2C device instance (initialized in main.cpp)
+  Adafruit_VEML6070* device;
   
   /// Cached sensor values (replaces global Veml6070Values struct)
   struct {
@@ -168,6 +168,13 @@ public:
    * @return Status string (e.g., "OK" or error details)
    */
   String getStatus() const override;
+
+  /**
+   * @brief Set the global device pointer (call from main.cpp after global device creation)
+   * 
+   * @param globalDevice Pointer to the global Adafruit_VEML6070 instance
+   */
+  void setDevice(Adafruit_VEML6070* globalDevice) { device = globalDevice; }
 
   // === VEML6070-Specific Methods ===
 

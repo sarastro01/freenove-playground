@@ -2568,6 +2568,9 @@ void setup()
   sensorRegistry.registerSensor(8, &scd30Sensor_new, "SCD30", 0x0810);  // Blue
   sensorRegistry.registerSensor(9, &ds2484Sensor, "DS2484", 0xFBE0);  // Light Gray
   
+  // PHASE-4: Set device pointers for sensors that use global device instances
+  veml6070Sensor_new.setDevice(&veml6070Sensor);  // Pass global device instance to wrapper
+  
   // Initialize all sensors
   Serial.println("[SETUP] Initializing all sensors via registry...");
   sensorRegistry.initializeAll();
