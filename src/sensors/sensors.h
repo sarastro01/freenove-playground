@@ -25,9 +25,9 @@
 #include "Bme280Sensor.h"      // Phase 3B: Temperature/Pressure/Humidity
 #include "Si1145Sensor.h"      // Phase 3B: Light sensor (visible/IR/UV)
 #include "Tsl2591Sensor.h"     // Phase 3B: Digital light sensor
-// #include "Scd30Sensor.h"    // Phase 3C: CO2 + ASC
-// #include "Veml6075Sensor.h" // Phase 3C: UVA/UVB sensor
-// #include "Veml6070Sensor.h" // Phase 3A: UV sensor
-// #include "Ds2484Sensor.h"   // Phase 3C: 1-Wire temperature
+#include "Veml6075Sensor.h"    // Phase 3C: UVA/UVB sensor
+#include "Veml6070Sensor.h"    // Phase 3C: UV sensor
+#include "Scd30Sensor.h"       // Phase 3C: CO2 + ASC
+#include "Ds2484Sensor.h"      // Phase 3C: 1-Wire temperature
 
 #endif  // SENSORS_H
