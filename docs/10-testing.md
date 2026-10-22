@@ -1,9 +1,9 @@
 # Testing Strategy & Coverage: sensor-pages-dashboard
 
-**Last Updated:** 2026-10-22  
+**Last Updated:** 2026-10-23  
 **Current Status:** ⚠️ **NO AUTOMATED TESTS** (Manual testing only, includes DS2484 1-Wire tests)  
 **Test Framework:** None (PlatformIO Unity available but not used)  
-**Related Specs:** FEATURE-SPEC-005, FEATURE-SPEC-008, FEATURE-SPEC-012 (NEW)
+**Related Specs:** FEATURE-SPEC-005, FEATURE-SPEC-008, FEATURE-SPEC-012, FEATURE-SPEC-013 (NEW)
 
 ---
 
@@ -38,16 +38,18 @@ Based on reverse-engineered business rules (docs/06-business-rules.md), the foll
 | CRC8 validation rejects corrupted SCD30 data | Data integrity; safety | Unit |
 | Timing gates use signed arithmetic (rollover safe) | System stability; no data loss | Unit |
 | DS18B20 state machine terminates (no infinite wait) | Real-time response; no hangups | Integration |
-| Page navigation wraps correctly (0↔10 boundaries) | Usability; no stuck states (10 pages now) | Unit |
+| Page navigation wraps correctly (0↔11 boundaries) | Usability; no stuck states (11 pages including info) | Unit |
 | INA219 time-gap sanity check prevents overflow | Accumulator integrity | Unit |
 | LED updates immediately (< 20 ms latency) | User feedback; responsiveness | Integration |
 | DS2484 1-Wire bus scan discovers all sensors | Discovery correctness; max 3 sensors | Integration |
+| **(NEW) Boot sequence appears on TFT** | **Visual confirmation of startup** | **Integration** |
+| **(NEW) System info page displays correct data** | **Uptime updates, version, error counts accurate** | **Integration** |
 
 ### TIER 2: Functional (Should Be Tested)
 
 | Behavior | Why Important | Test Category |
 |----------|---------------|----------------|
-| All 10 pages render without crashes | Core functionality (10 pages now) | Integration |
+| All 11 pages render without crashes | Core functionality (11 pages now: 10 sensor + 1 info) | Integration |
 | Page refresh rates (20 ms vs 500 ms) met | Performance | Integration |
 | Sensor missing → error screen (no crash) | Graceful degradation | Integration |
 | Gamepad falling-edge detection works | Correct page navigation | Integration |
@@ -3759,6 +3761,309 @@ logs/serial/serial_monitor_2026-10-22.log:14: [23:27:44.821] [00:21:45.272] [I2C
 - ⏳ Monitor for I2C error trends
 - ⏳ Archive logs after test completion
 - ⏳ Update final results
+
+---
+
+## Test Cases: Boot Sequence & System Info Page (FEATURE-SPEC-013) — **NEW**
+
+### TC-BOOT-001: Boot Terminal Display
+
+**Requirement:** FR-028 (Boot Sequence Logging to TFT Display)
+
+**Setup:** ESP32 with TFT display connected. Device powered off.
+
+**Test Procedure:**
+1. Power on device via USB
+2. Watch TFT display during setup()
+3. Verify boot messages appear without timestamps
+4. Check I2C discovery messages
+5. Confirm "BOOT COMPLETE" message
+6. Observe 1 second pause
+7. Verify first page (sensor or info) displays
+
+**Expected Result:**
+- Boot terminal appears on TFT after TFT initialization
+- Messages format: `[CATEGORY] message` (NO `[HH:MM:SS]` prefix)
+- All boot stages visible: Serial→Diag→TFT→I2C→Scan→Sensors→Complete
+- I2C device addresses shown (e.g., `[I2C] Found: BME280 @ 0x77`)
+- "BOOT COMPLETE" displayed in terminal
+- 1000ms pause before first page
+- No crashes, graceful errors on missing sensors
+
+**Acceptance Criteria:**
+- ✅ Boot terminal messages appear on TFT
+- ✅ No timestamps visible (unlike Serial logPrintf)
+- ✅ I2C devices discovered and logged
+- ✅ "BOOT COMPLETE" message visible
+- ✅ 1 second delay observed
+- ✅ First page displays after boot
+- ✅ Serial output continues with timestamps (no regression)
+
+**Fallback Test (TFT Failure):**
+- Simulate TFT init failure
+- Verify boot continues without hard reset
+- All boot messages fallback to Serial (with timestamps)
+- System remains responsive
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-BOOT-002: Boot Sequence Ordering
+
+**Requirement:** BR-BOOT-001 (Boot Sequence Logging Order)
+
+**Setup:** ESP32 with full sensor complement. Serial monitor + TFT display.
+
+**Test Procedure:**
+1. Power on device
+2. Capture serial output and screenshot TFT
+3. Verify boot stages in correct order (1–13 from BR-BOOT-001):
+   - Serial initialized
+   - Diagnostics initialized (reboot reason)
+   - TFT initialized (first TFT message appears)
+   - I2C bus initialized
+   - I2C scan begins
+   - Sensors detected
+   - Registry initialized
+   - Initial reads
+   - DS18B20 conversion (if 1-Wire present)
+   - Boot complete
+   - 1 second pause
+   - First page shown
+
+**Expected Result:**
+- All stages appear in order on TFT
+- Each stage completed before next begins
+- No out-of-order messages
+- Timing: boot completes in < 5 seconds
+
+**Acceptance Criteria:**
+- ✅ Boot stages logged in correct order
+- ✅ No skipped stages
+- ✅ Boot time < 5 seconds
+- ✅ 1 second pause exactly 1000ms
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-INFO-001: System Info Page Renders
+
+**Requirement:** FR-029 (System Information Display Page)
+
+**Setup:** Device fully booted, navigation to page 10.
+
+**Test Procedure:**
+1. Power on device
+2. Navigate to page 10 using A button (or Y from page 0)
+3. Verify all fields display:
+   - Version (from diagnostics.h)
+   - Build date (from diagnostics.h)
+   - Uptime (HH:MM:SS)
+   - Boot time (X.X seconds)
+   - Heap (free / total)
+   - Min Free Heap
+   - Sensor count (N/10)
+   - Error count (Total + I2C + Slow)
+4. Verify layout and colors
+5. Verify navigation hint at bottom
+
+**Expected Result:**
+- All fields present and readable
+- Colors: labels TFT_GREEN, values TFT_WHITE/CYAN
+- Errors: TFT_RED if count > 0, TFT_GREEN if = 0
+- Layout matches FEATURE-SPEC-013 diagram
+- Navigation hint shows "← Y | System Info | A →"
+
+**Acceptance Criteria:**
+- ✅ All 11 fields displayed
+- ✅ Correct color scheme applied
+- ✅ Layout matches specification
+- ✅ Text readable (no truncation)
+- ✅ No rendering errors
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-INFO-002: Info Page Uptime Updates
+
+**Requirement:** BR-INFO-004 (Uptime Calculation and Display)
+
+**Setup:** Device on page 10 (System Info), observe for 3+ seconds.
+
+**Test Procedure:**
+1. Navigate to page 10
+2. Record uptime value at T=0 (HH:MM:SS)
+3. Wait 1 second
+4. Record uptime value at T=1s
+5. Wait 2 seconds
+6. Record uptime value at T=3s
+7. Verify uptime increases by 1 second each measurement
+
+**Expected Result:**
+- Uptime at T=0: HH:MM:SS (any value)
+- Uptime at T=1s: HH:MM:(SS+1)
+- Uptime at T=3s: HH:MM:(SS+3)
+- Update frequency: 500ms or better
+- No jumps or skips in timer
+
+**Acceptance Criteria:**
+- ✅ Uptime updates every 500ms
+- ✅ Value increases monotonically
+- ✅ No value skips or glitches
+- ✅ Format correct (HH:MM:SS)
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-INFO-003: Info Page Navigation
+
+**Requirement:** BR-INFO-002 (System Info Page Navigation)
+
+**Setup:** Device on any page, navigation to/from page 10.
+
+**Test Procedure:**
+1. Start on page 0 (BME280)
+2. Press Y button → should go to page 10 (wrap-around)
+3. Verify page title shows "SYSTEM INFORMATION"
+4. Press A button → should go to page 0 (wrap-around)
+5. Press A repeatedly until reaching page 9 (VEML6075)
+6. Press A button → should go to page 10
+7. Press Y button → should go to page 9
+8. Repeat navigation multiple times (no stuck states)
+
+**Expected Result:**
+- Navigation wraps correctly: Page 9 ↔ Page 10 ↔ Page 0
+- Page 10 accessible from all pages
+- No stuck states (can always navigate away)
+- Transitions smooth and immediate
+
+**Acceptance Criteria:**
+- ✅ Y from page 0 → page 10
+- ✅ A from page 10 → page 0
+- ✅ A from page 9 → page 10
+- ✅ Y from page 10 → page 9
+- ✅ Navigation works repeatedly without errors
+- ✅ No hang or lag
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-INFO-004: Error Count Aggregation
+
+**Requirement:** BR-INFO-003 (Error Count Aggregation)
+
+**Setup:** Device running, observe error counts on page 10.
+
+**Test Procedure:**
+1. Navigate to page 10
+2. Record error counts at boot (should be 0 if no errors during boot)
+3. Simulate I2C error (if possible):
+   - Disconnect/reconnect a sensor
+   - Observe Serial for error messages
+   - Watch page 10 for error count increment
+4. Force slow sensor read (if possible):
+   - Observe timeout or high timing in Serial
+   - Watch page 10 for slow count increment
+5. Verify Total = I2C + Slow
+
+**Expected Result:**
+- Initial errors = 0 (if clean boot)
+- On I2C error: `Errors: Total: N (I2C: M, Slow: K)` with M incrementing
+- On slow sensor: Slow count increments
+- Color changes to TFT_RED when count > 0
+- Total always equals I2C + Slow
+
+**Acceptance Criteria:**
+- ✅ Error counts display correctly
+- ✅ Counts increment on errors
+- ✅ Total = I2C + Slow (formula correct)
+- ✅ Color changes based on count
+- ✅ Counts reset on reboot
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-INFO-005: System Info Page Accuracy
+
+**Requirement:** FR-029 (System Information Display Page)
+
+**Setup:** Device fully booted, page 10 displayed.
+
+**Test Procedure:**
+1. Verify Version matches diagnostics.h VERSION constant
+2. Verify Build date matches diagnostics.h BUILD_DATE constant
+3. Verify sensor count matches number of detected devices at boot
+4. Use calculator to verify uptime conversion HH:MM:SS is correct
+5. Check heap: should match ESP.getFreeHeap() from Serial
+6. Check min free: should match ESP.getMinFreeHeap() from Serial
+
+**Expected Result:**
+- All values match source constants/functions
+- No off-by-one errors in conversions
+- Heap values reasonable (not negative, < total)
+- Uptime formula correct: HH:MM:SS = millis() / 1000 format
+
+**Acceptance Criteria:**
+- ✅ Version matches diagnostics.h
+- ✅ Build date matches diagnostics.h
+- ✅ Sensor count accurate
+- ✅ Uptime conversion correct (HH:MM:SS format)
+- ✅ Heap values reasonable and consistent
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+### TC-PAGE-COUNT-001: PAGE_COUNT = 11
+
+**Requirement:** FR-003 (Circular Pagination Navigation), FR-029 (System Info Page)
+
+**Setup:** Code inspection of PAGE_COUNT constant and page array.
+
+**Test Procedure:**
+1. Check src/main.cpp for `#define PAGE_COUNT 11` or `const uint8_t PAGE_COUNT = 11`
+2. Verify page array has 11 entries (indices 0–10)
+3. Verify PAGE_TITLES has 11 strings
+4. Verify drawCurrentPage() handles all 11 pages (switch case 0–10)
+5. Verify navigation logic uses modulo PAGE_COUNT (11)
+
+**Expected Result:**
+- PAGE_COUNT = 11 (not 10)
+- Page array complete (0–10)
+- All pages referenced in drawCurrentPage()
+- Navigation modulo arithmetic correct
+
+**Acceptance Criteria:**
+- ✅ PAGE_COUNT set to 11
+- ✅ All 11 pages in array
+- ✅ No gaps or missing pages
+- ✅ Navigation wraps correctly at 11
+
+**Status:** 🟡 PENDING IMPLEMENTATION
+
+---
+
+## Summary: New Tests for FEATURE-SPEC-013
+
+| Test | Focus | Category | Status |
+|------|-------|----------|--------|
+| TC-BOOT-001 | Boot terminal display | Integration | 🟡 Pending |
+| TC-BOOT-002 | Boot sequence ordering | Integration | 🟡 Pending |
+| TC-INFO-001 | Info page rendering | Integration | 🟡 Pending |
+| TC-INFO-002 | Uptime updates | Integration | 🟡 Pending |
+| TC-INFO-003 | Navigation to/from page 10 | Integration | 🟡 Pending |
+| TC-INFO-004 | Error count aggregation | Integration | 🟡 Pending |
+| TC-INFO-005 | Info page data accuracy | Integration | 🟡 Pending |
+| TC-PAGE-COUNT-001 | PAGE_COUNT = 11 validation | Unit | 🟡 Pending |
+
+**Total New Tests:** 8  
+**All tests scheduled for implementation phase**
 
 ---
 

@@ -1,8 +1,8 @@
 # API & External Interfaces: sensor-pages-dashboard
 
-**Last Updated:** 2026-10-22  
+**Last Updated:** 2026-10-23  
 **Project Type:** Embedded Firmware (No HTTP/REST APIs)  
-**Related Specs:** FEATURE-SPEC-012 (Logging & Diagnostics)
+**Related Specs:** FEATURE-SPEC-012 (Logging & Diagnostics), FEATURE-SPEC-013 (Boot Logging & System Info)
 
 ---
 
@@ -1816,7 +1816,213 @@ struct Ds18b20Values {
 
 ---
 
-## 11. Communication Patterns
+## 11. Boot Logger API (FEATURE-SPEC-013) — **NEW**
+
+### Overview
+
+Boot logger provides TFT display output during system initialization. Messages appear without timestamps (unlike Serial logPrintf), enabling visual confirmation of boot progress.
+
+### API Functions
+
+#### bootLoggerInit()
+
+**Signature:**
+```cpp
+void bootLoggerInit(TFT_eSPI& tft);
+```
+
+**Purpose:**  
+Activate boot terminal mode on TFT display. Called after TFT initialization completes.
+
+**Parameters:**
+- `tft`: Reference to TFT_eSPI display object
+
+**Behavior:**
+- Initializes boot log buffer (30-line circular buffer)
+- Clears TFT display and draws boot terminal header
+- Sets text color to TFT_WHITE on TFT_BLACK
+- Ready to receive messages via bootLogPrintf()
+
+**Return Value:** None
+
+**Side Effects:**
+- TFT display cleared and repainted
+- Global boot logger state initialized
+
+#### bootLogPrintf()
+
+**Signature:**
+```cpp
+void bootLogPrintf(const char* format, ...);
+```
+
+**Purpose:**  
+Add a formatted message to boot log (TFT display). Similar to logPrintf but without timestamps.
+
+**Parameters:**
+- `format`: Printf-style format string
+- `...`: Variable arguments (same as printf)
+
+**Behavior:**
+- Formats message: `[CATEGORY] message text`
+- Adds line to circular buffer
+- Triggers TFT re-render if changed
+- Maximum line length: 60 characters (truncated)
+- Messages without timestamps
+
+**Return Value:** None
+
+**Examples:**
+```cpp
+bootLogPrintf("[I2C] Found: BME280 @ 0x77");
+bootLogPrintf("[SETUP] Initializing sensors...");
+bootLogPrintf("[ERROR] Sensor initialization failed");
+```
+
+**Differences from logPrintf():**
+| Aspect | bootLogPrintf | logPrintf |
+|--------|---------------|-----------|
+| Output | TFT display | Serial (USB) |
+| Timestamps | NO | YES ([HH:MM:SS.sss]) |
+| Activation | After TFT ready | Immediate |
+| Buffer | ~30 lines RAM | Unbounded (disk file) |
+| Format | `[CATEGORY] text` | `[HH:MM:SS.sss] [CATEGORY] text` |
+
+#### bootLoggerComplete()
+
+**Signature:**
+```cpp
+void bootLoggerComplete();
+```
+
+**Purpose:**  
+Exit boot terminal mode and transition to normal operation. Called after "BOOT COMPLETE" message and 1000ms delay.
+
+**Behavior:**
+- Disables boot logger
+- Clears boot log buffer (memory free)
+- Releases TFT from terminal mode
+- Sets up for first normal page display
+
+**Return Value:** None
+
+**Side Effects:**
+- Boot terminal messages discarded
+- TFT display cleared for first sensor page
+
+#### bootLoggerRender()
+
+**Signature:**
+```cpp
+void bootLoggerRender();
+```
+
+**Purpose:**  
+Manually render current boot log to TFT display. Called internally after each bootLogPrintf().
+
+**Behavior:**
+- Scrolls old messages off top
+- Adds new line at bottom
+- Updates TFT display in real-time
+
+**Return Value:** None
+
+**Note:** Usually called automatically; manual call not needed.
+
+---
+
+## 12. System Information Page API (FEATURE-SPEC-013) — **NEW**
+
+### Overview
+
+System information page (page 10) displays runtime diagnostics. Functions provide data updates and page rendering.
+
+### API Functions
+
+#### pageSystemInfo()
+
+**Signature:**
+```cpp
+void pageSystemInfo();
+```
+
+**Purpose:**  
+Render system information page (page 10). Called by drawCurrentPage() when currentPage == 10.
+
+**Behavior:**
+- Draws page title: "SYSTEM INFORMATION"
+- Displays version, build date, uptime, heap, errors
+- Updates dynamic values (uptime, heap, errors)
+- Handles color coding (red errors, green labels)
+- Draws navigation hint at bottom
+
+**Return Value:** None
+
+**Called By:** drawCurrentPage() in main loop (every 500 ms)
+
+#### updateSystemInfoData()
+
+**Signature:**
+```cpp
+void updateSystemInfoData();
+```
+
+**Purpose:**  
+Refresh all system information values before rendering. Updates uptime, heap, error counts.
+
+**Behavior:**
+- Recalculates uptime from millis()
+- Reads current free heap via ESP.getFreeHeap()
+- Reads min free heap via ESP.getMinFreeHeap()
+- Reads error counts from diagStats
+- Updates all global SystemInfoData fields
+
+**Return Value:** None
+
+**Called By:** pageSystemInfo() at page refresh rate (500 ms)
+
+#### getUptimeMs()
+
+**Signature:**
+```cpp
+uint32_t getUptimeMs();
+```
+
+**Purpose:**  
+Get current uptime in milliseconds since boot.
+
+**Return Value:**  
+Milliseconds elapsed since setup() started (from millis()).
+
+**Used By:** updateSystemInfoData() for uptime calculation
+
+#### formatUptimeString()
+
+**Signature:**
+```cpp
+String formatUptimeString(uint32_t ms);
+```
+
+**Purpose:**  
+Convert milliseconds to formatted uptime string (HH:MM:SS).
+
+**Parameters:**
+- `ms`: Milliseconds since boot
+
+**Return Value:**  
+String in format "HH:MM:SS" (e.g., "00:12:34")
+
+**Formula:**
+```cpp
+hours = (ms / 1000) / 3600
+minutes = ((ms / 1000) % 3600) / 60
+seconds = (ms / 1000) % 60
+// Return formatted string
+```
+
+---
+
+## 12. Communication Patterns
 
 ### Read Pattern (Polling Sensors)
 
@@ -1863,7 +2069,7 @@ Cycle 96+:
 
 ---
 
-## 12. Error Handling (API Level)
+## 13. Error Handling (API Level)
 
 ### I2C Read Failure
 - **Symptom:** `Wire.endTransmission()` != 0 or `Wire.requestFrom()` returns fewer bytes.

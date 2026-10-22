@@ -3822,6 +3822,211 @@ Logging system operates with <5% performance overhead and no memory leaks during
 
 ---
 
+### BR-BOOT-001: Boot Sequence Logging Order (FEATURE-SPEC-013)
+
+**Description:**  
+Boot initialization shall log to TFT display (if available) in a strict sequence without timestamps.
+
+**Boot Sequence (logged in this order):**
+1. Serial port initialized (115200 baud, 8N1)
+2. Diagnostics initialized (reboot reason, heap stats via logPrintf to Serial)
+3. TFT display initialized and ready to display boot messages
+4. bootLoggerInit() called — activates TFT terminal mode
+5. I2C bus initialized (400 kHz, 100ms timeout)
+6. I2C bus scan (if enabled): discover all device addresses
+7. Sensor presence detection: log each sensor begin() result
+8. Sensor registry initialization
+9. Initial sensor reads
+10. DS18B20 conversion startup (if 1-Wire present)
+11. Final screen drawn
+12. Boot complete message displayed
+13. 1000ms delay (visible pause)
+14. bootLoggerComplete() called — exit boot terminal mode
+15. First page displayed (info page or sensor page 0)
+
+**Message Format (on TFT, no timestamps):**
+- Format: `[CATEGORY] message text`
+- Example: `[I2C] Found: BME280 @ 0x77`
+- Maximum line length: 60 characters
+- Color: TFT_WHITE text on TFT_BLACK background
+- Scrolling: new lines push old lines off top (~28 lines visible)
+
+**Fallback Behavior:**
+- If TFT initialization fails: boot continues, messages log to Serial only
+- If I2C bus fails: boot continues with error messages, sensors marked unavailable
+- No hard reset on boot errors; graceful degradation
+
+**Related Requirements:** FR-028 (Boot Sequence Logging to TFT), FR-001 (Sensor Detection)
+
+---
+
+### BR-BOOT-002: Boot Completion Criteria (FEATURE-SPEC-013)
+
+**Description:**  
+Boot is considered complete when all initialization stages finish and a specific message appears.
+
+**Completion Conditions:**
+- "BOOT COMPLETE" (or similar) message displayed on TFT
+- 1000ms delay elapsed (exactly 1 second, visible pause to user)
+- First page ready to display (pageSystemInfo or pageBme280 depending on config)
+- All error flags and statistics populated
+
+**Post-Boot State:**
+- Error counts from diagnostics.h available for info page display
+- Uptime counter starts from 0 (millis() from boot)
+- Sensor detection results finalized (no re-detection at runtime)
+
+**Related Requirements:** FR-028 (Boot Sequence Logging)
+
+---
+
+### BR-BOOT-003: Boot Logger Initialization Order (FEATURE-SPEC-013)
+
+**Description:**  
+Boot logger must be initialized after TFT is ready to display, preventing boot messages from appearing before display functional.
+
+**Critical Dependency:**
+- Serial output (logPrintf) can start immediately at setup()
+- TFT output (bootLogPrintf via TFT terminal) starts only after tft.init() completes
+- Order guarantee: `Serial.begin()` → diagnostics → `tft.init()` → `bootLoggerInit()`
+
+**Implication:**
+- Initial diagnostics messages (reboot reason, heap) log to Serial only
+- First TFT message appears after "TFT initialized" message
+- No lost boot messages (Serial captures everything)
+
+**Error Handling:**
+- If tft.init() fails: bootLoggerInit() is skipped, all boot messages go to Serial
+- System detects TFT failure at first drawCurrentPage() call
+- Graceful degradation; boot does not halt
+
+**Related Requirements:** FR-028 (Boot Logging), FR-002 (TFT Display)
+
+---
+
+### BR-INFO-001: System Information Page Content (FEATURE-SPEC-013)
+
+**Description:**  
+System info page (page 10) shall display runtime diagnostics and system status in a consistent format.
+
+**Required Content:**
+```
+Version:  X.Y.Z                 (from diagnostics.h VERSION)
+Build:    YYYY-MM-DDTHH:MM:SSZ  (from diagnostics.h BUILD_DATE)
+Uptime:   HH:MM:SS              (calculated from millis(), updated 500ms)
+Boot Time: X.X seconds          (time from setup() start to boot_complete)
+Heap:     XXXXX / XXXXX bytes   (current free / total)
+Min Free: XXXXX bytes           (all-time minimum free heap)
+Sensors:  N/10 detected         (count of devices found at boot)
+Errors:   Total: N
+          I2C: M
+          Slow: K
+```
+
+**Value Refresh Rates:**
+- Uptime: Every 500ms (synchronized with sensor pages)
+- Heap: Every 500ms or 1000ms (reduce overhead)
+- Error counts: Updated when error occurs (event-driven)
+- Version/Build: Static (never changes during runtime)
+- Sensor count: Static (set at boot detection)
+
+**Color Scheme:**
+- Labels (e.g., "Version:"): TFT_GREEN
+- Values (numbers): TFT_WHITE
+- Large numbers (uptime, heap): TFT_CYAN for emphasis
+- Errors: TFT_RED if count > 0, TFT_GREEN if count = 0
+
+**Related Requirements:** FR-029 (System Info Page), FR-002 (TFT Display)
+
+---
+
+### BR-INFO-002: System Information Page Navigation (FEATURE-SPEC-013)
+
+**Description:**  
+System info page (page 10) integrates seamlessly into circular pagination with no special-case handling.
+
+**Navigation Rules (unchanged from FR-003):**
+- Page 9 + A button → Page 10 (System Info)
+- Page 10 + A button → Page 0 (BME280, wrap-around)
+- Page 10 + Y button → Page 9 (VEML6075, wrap-around)
+- Page 0 + Y button → Page 10 (System Info, wrap-around)
+- All transitions use standard modulo arithmetic: `(page + 1) % PAGE_COUNT` and `(page - 1 + PAGE_COUNT) % PAGE_COUNT`
+- PAGE_COUNT = 11 (10 sensor pages + 1 info page)
+
+**Implications:**
+- No menu or modal dialog (info page is just another page)
+- No special button combinations required
+- User navigation behavior identical to sensor pages
+
+**Related Requirements:** FR-003 (Circular Pagination)
+
+---
+
+### BR-INFO-003: Error Count Aggregation (FEATURE-SPEC-013)
+
+**Description:**  
+Total error count on system info page is the sum of specific error types from diagnostics module.
+
+**Aggregation Formula:**
+```
+Total Errors = diagStats.i2cErrors + diagStats.slowSensorReads
+```
+
+**Error Categories:**
+- `i2cErrors`: Incremented when I2C device fails to respond (from diagnostics.h trackI2cError())
+- `slowSensorReads`: Incremented when sensor read exceeds SLOW_SENSOR_THRESHOLD_MS (500ms)
+
+**Display Format:**
+```
+Errors:   Total: N
+          I2C: M
+          Slow: K
+```
+Where:
+- N = M + K (sum)
+- M = diagStats.i2cErrors (per-device I2C failures)
+- K = diagStats.slowSensorReads (timing threshold breaches)
+
+**Persistence Across Reboots:**
+- Error counts reset to 0 on boot (no EEPROM persistence)
+- Counts are session-only (since last boot)
+- Display format: "errors since boot"
+
+**Related Requirements:** FR-029 (System Info Page), FR-025 (Display Switch Diagnostics)
+
+---
+
+### BR-INFO-004: Uptime Calculation and Display (FEATURE-SPEC-013)
+
+**Description:**  
+System uptime is calculated from millis() since boot and displayed in HH:MM:SS format, updated every 500ms.
+
+**Calculation:**
+```cpp
+uint32_t uptimeMs = millis();  // Milliseconds since boot
+uint32_t hours = (uptimeMs / 1000) / 3600;
+uint32_t minutes = ((uptimeMs / 1000) % 3600) / 60;
+uint32_t seconds = (uptimeMs / 1000) % 60;
+// Display: HH:MM:SS
+```
+
+**Update Frequency:** 500ms (synchronized with page refresh rate)
+
+**Range & Overflow Handling:**
+- millis() overflows at ~49.7 days (2^32 milliseconds)
+- System handles overflow gracefully (wraps around)
+- Firmware designed for uptime < 7 days in typical operation
+- Overflow behavior: uptime counter wraps (not an error)
+
+**Validation:**
+- Uptime always >= 0
+- Uptime increases monotonically (within a boot session)
+- After reboot: uptime resets to 0
+
+**Related Requirements:** FR-029 (System Info Page)
+
+---
+
 ## Ambiguities & [UNKNOWN] Items
 
 | Item | Impact | Note |
@@ -3834,4 +4039,7 @@ Logging system operates with <5% performance overhead and no memory leaks during
 | Encoder delta per mechanical tick | BR-011 | Assumed ±1 per tick; actual hardware behavior unknown |
 | (NEW) Spontaneous display switch root cause | BR-036 | Electrical noise, I2C glitch, or firmware bug? (To be diagnosed) |
 | (NEW) Serial bottleneck risk at 100 msgs/min | BR-038 | Will 115200 baud handle steady-state volume? (Monitor in tests) |
+| (NEW) Boot logger initialization timing | BR-BOOT-003 | Critical ordering of TFT init before boot logger activation |
+| (NEW) System info page boot time measurement | BR-INFO-001 | Exact timing point for "boot complete" (configuration option) |
+
 

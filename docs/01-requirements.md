@@ -1,9 +1,9 @@
 # Requirements: sensor-pages-dashboard
 
-**Last Updated:** 2026-10-22  
+**Last Updated:** 2026-10-23  
 **Project Type:** Embedded Firmware (ESP32)  
 **Platform:** PlatformIO + Arduino Framework  
-**Related Specs:** FEATURE-SPEC-012 (Responsiveness, Logging, Versioning)
+**Related Specs:** FEATURE-SPEC-012 (Responsiveness, Logging, Versioning), FEATURE-SPEC-013 (Boot Logging & System Info)
 
 ---
 
@@ -71,16 +71,16 @@ The system shall display acquired sensor data on a TFT screen with color-coded i
 ### FR-003: Circular Pagination Navigation
 
 **Requirement:**  
-The system shall provide navigation through 10 sensor pages using gamepad buttons.
+The system shall provide navigation through 11 pages (10 sensor pages + 1 system info page) using gamepad buttons.
 
 **Details:**
-- 10 pages (indices 0–9)
+- 11 pages (indices 0–10)
 - Y button: navigate to previous page (with wrap-around)
 - A button: navigate to next page (with wrap-around)
-- Page 0 Y button → Page 9
-- Page 9 A button → Page 0
+- Page 0 Y button → Page 10
+- Page 10 A button → Page 0
 - Navigation is falling-edge triggered (button press, not release)
-- PAGE_COUNT constant = 10
+- PAGE_COUNT constant = 11
 
 **Page Order:**
 - Page 0: BME280 Climate Sensor
@@ -92,16 +92,15 @@ The system shall provide navigation through 10 sensor pages using gamepad button
 - Page 6: TSL2591 Light Sensor
 - Page 7: VEML6070 UV Sensor
 - Page 8: VEML6075 UV Sensor
-- Page 9: DS2484 1-Wire Temperature Sensors (NEW)
+- Page 9: DS2484 1-Wire Temperature Sensors
+- **Page 10: System Information (NEW — FEATURE-SPEC-013)**
 
 **Evidence:**
-- Page array: 10 titles in drawCurrentPage
-- Navigation logic: modulo arithmetic with PAGE_COUNT=10
+- Page array: 11 titles in drawCurrentPage (indices 0-10)
+- Navigation logic: modulo arithmetic with PAGE_COUNT=11
 - Edge detection: `yPressed && !lastY`, `aPressed && !lastA`
 
 ---
-
-### FR-004: User Input Processing
 
 **Requirement:**  
 The system shall process gamepad button and rotary encoder input in real-time.
@@ -1170,12 +1169,106 @@ The logging system shall operate with <5% performance overhead and no memory lea
 
 ---
 
+### FR-028: Boot Sequence Logging to TFT Display (FEATURE-SPEC-013)
+
+**Requirement:**  
+The system shall display initialization progress messages on the TFT display during boot, enabling visual confirmation of each boot stage.
+
+**Details:**
+- Boot terminal mode activates after TFT initialization
+- Messages displayed without timestamps (terminal-style, unlike Serial logging)
+- Display format: `[CATEGORY] message text`
+- Maximum line length: 60 characters
+- Messages scroll: new lines push old lines off top
+- Text color: TFT_WHITE on TFT_BLACK background
+- Boot stages logged (in order):
+  1. Serial port initialized
+  2. Diagnostics initialized (reboot reason, heap status)
+  3. TFT display initialized and ready for boot messages
+  4. I2C bus initialized (400 kHz, 100ms timeout)
+  5. I2C bus scan (if enabled): discovered device addresses
+  6. Sensor presence detection: per-sensor initialization
+  7. Sensor registry initialization
+  8. Boot complete message + 1000ms pause
+
+**Timing Guarantee:**
+- Boot messages appear in real-time (< 50 ms delay after event)
+- "BOOT COMPLETE" followed by exactly 1000ms delay before first page display
+- System tolerates TFT failure: boot continues, messages log to Serial only
+
+**Evidence:**
+- New bootLoggerInit() function (called after TFT ready)
+- New bootLogPrintf() function (parallel to logPrintf, no timestamps)
+- Reorganized setup() sequence with boot logging calls
+- Related: FR-001 (sensor detection), FR-002 (TFT display)
+
+**Related Business Rules:** BR-BOOT-001, BR-BOOT-002, BR-BOOT-003
+
+**Status:** 🟠 READY FOR SPECIFICATION REVIEW (decisions confirmed in FEATURE-SPEC-013)
+
+---
+
+### FR-029: System Information Display Page (FEATURE-SPEC-013)
+
+**Requirement:**  
+The system shall provide a dedicated display page (page 10) showing runtime diagnostics and system status.
+
+**Details:**
+- Accessible via normal page navigation (Y/A buttons like sensor pages)
+- Displays in PAGE_COUNT=11 (added to 10 existing pages)
+- Content displayed:
+  - Software Version (from diagnostics.h VERSION)
+  - Build Date (from diagnostics.h BUILD_DATE)
+  - Uptime (HH:MM:SS format, updated every 500ms)
+  - Boot Time (seconds from start of setup() to boot complete)
+  - Heap Status (free bytes / total bytes)
+  - Min Free Heap (all-time minimum since boot)
+  - Sensor Count (number of devices detected at boot, format: N/10)
+  - Error Summary (total errors = I2C errors + slow sensor reads)
+
+**Refresh Frequency:**
+- Uptime and heap: 500ms (synchronized with sensor pages)
+- Error counts: updated on occurrence (not periodic)
+
+**UI Layout:**
+```
+[SYSTEM INFORMATION]
+[header bar]
+Version:  X.Y.Z
+Build:    YYYY-MM-DDTHH:MM:SSZ
+Uptime:   HH:MM:SS (updates live)
+Heap:     XXXXX / XXXXX bytes
+Min Free: XXXXX bytes
+Sensors:  N/10 detected
+Errors:   Total: N (I2C: M, Slow: K)
+← Y | Info Page | A →  [navigation hint]
+```
+
+**Color Scheme:**
+- Labels: TFT_GREEN
+- Values: TFT_WHITE (numbers: TFT_CYAN if significant)
+- Errors: TFT_RED if count > 0, TFT_GREEN if count = 0
+
+**Evidence:**
+- New pageSystemInfo() renderer function
+- New updateSystemInfoData() function (refresh values)
+- PAGE_COUNT updated from 10 to 11
+- Navigation logic unchanged (modulo PAGE_COUNT=11)
+
+**Related Business Rules:** BR-INFO-001, BR-INFO-002, BR-INFO-003
+
+**Related Requirements:** FR-003 (pagination), FR-002 (display)
+
+**Status:** 🟠 READY FOR SPECIFICATION REVIEW (decisions confirmed in FEATURE-SPEC-013)
+
+---
+
 ## Testing Requirements
 
 **See docs/10-testing.md for comprehensive testing strategy.**
 
 No automated tests currently exist (known limitation LIMIT-001). Critical behaviors that MUST be manually verified:
-1. All 9 pages render and display sensor data
+1. All 11 pages render and display data (10 sensor pages + 1 info page)
 2. Navigation wraps correctly at boundaries
 3. Coulomb counter accumulates without overflow
 4. LED responds immediately to encoder interaction
@@ -1184,6 +1277,9 @@ No automated tests currently exist (known limitation LIMIT-001). Critical behavi
 7. (NEW) Page switches logged with source (GAMEPAD/ENCODER/AUTO)
 8. (NEW) Version and build date displayed at boot
 9. (NEW) 24-hour logging test identifies spontaneous display switches
+10. (NEW - FEATURE-SPEC-013) Boot sequence displays on TFT with no timestamps
+11. (NEW - FEATURE-SPEC-013) Page 10 (System Info) shows live uptime and error counts
+12. (NEW - FEATURE-SPEC-013) Navigation from page 9→10 and page 10→0 works correctly
 
 ---
 

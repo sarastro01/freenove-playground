@@ -67,8 +67,13 @@
 // Organized by functional area for easy location and modification
 
 // Page and Display Configuration
-constexpr uint8_t PAGE_COUNT = 10;
+constexpr uint8_t PAGE_COUNT = 11;  // FEATURE-SPEC-013: +1 for system info page (page 10)
 constexpr uint8_t CONFIG_PAGE_TITLE_MAX_LEN = 20;
+
+// Boot Logger Configuration (FEATURE-SPEC-013)
+#define ENABLE_BOOT_LOGGING 1
+constexpr uint8_t BOOT_LOG_BUFFER_LINES = 30;
+constexpr uint8_t BOOT_LOG_LINE_LENGTH = 64;
 
 // Timing Configuration (milliseconds)
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
@@ -106,16 +111,17 @@ constexpr bool ENABLE_STATS_REPORTING_DEFAULT = true;
 // Page Title Lookup Table (Eliminates String Duplication)
 // ============================================================================
 const char* const PAGE_TITLES[PAGE_COUNT] = {
-  "BME280",      // Page 0
-  "Gamepad",     // Page 1
-  "INA219",      // Page 2
-  "Encoder",     // Page 3
-  "SCD30",       // Page 4
-  "SI1145",      // Page 5
-  "TSL2591",     // Page 6
-  "VEML6070",    // Page 7
-  "VEML6075",    // Page 8
-  "DS2484"       // Page 9
+  "BME280",             // Page 0
+  "Gamepad",            // Page 1
+  "INA219",             // Page 2
+  "Encoder",            // Page 3
+  "SCD30",              // Page 4
+  "SI1145",             // Page 5
+  "TSL2591",            // Page 6
+  "VEML6070",           // Page 7
+  "VEML6075",           // Page 8
+  "DS2484",             // Page 9
+  "System Information"  // Page 10 (FEATURE-SPEC-013)
 };
 
 // ============================================================================
@@ -149,7 +155,48 @@ Adafruit_DS248x ds2484Master;                // DS2484 I2C-to-1-Wire adapter
 SensorRegistry sensorRegistry;               // Registry manages all 8 sensor wrappers polymorphically
 DiagnosticStats diagStats = {0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0};
 
-// Cooperative I2C bus serialization. The loop is single-threaded, but this
+// ============================================================================
+// SECTION 3a: BOOT LOGGER (FEATURE-SPEC-013)
+// ============================================================================
+#if ENABLE_BOOT_LOGGING
+struct BootLogger {
+  char lineBuffer[BOOT_LOG_BUFFER_LINES][BOOT_LOG_LINE_LENGTH];
+  uint8_t lineCount;
+  uint8_t headIndex;  // Points to oldest line (FIFO)
+  bool isActive;
+  TFT_eSPI* tftPtr;
+};
+
+static BootLogger bootLogger = {
+  .lineBuffer = {},
+  .lineCount = 0,
+  .headIndex = 0,
+  .isActive = false,
+  .tftPtr = nullptr
+};
+#endif
+
+// ============================================================================
+// SECTION 3b: SYSTEM INFO PAGE DATA (FEATURE-SPEC-013)
+// ============================================================================
+struct SystemInfoData {
+  uint32_t uptimeMs;
+  uint32_t bootTimeMs;
+  uint32_t freeHeap;
+  uint32_t totalHeap;
+  uint32_t minFreeHeap;
+  uint32_t sensorCount;
+  uint32_t totalErrors;
+  uint32_t i2cErrors;
+  uint32_t slowSensorErrors;
+  char versionString[16];
+  char buildDateString[32];
+};
+
+static SystemInfoData systemInfoData = {};  // Zero-initialize all fields
+
+static uint32_t bootStartTimeMs = 0;  // Track boot start for boot time calculation
+
 // guard prevents a scheduled read from starting while another read is active.
 static bool i2cBusLocked = false;
 static uint32_t i2cLockTimeout = 0;
@@ -482,6 +529,7 @@ void pageTsl2591();
 void pageVeml6070();
 void pageVeml6075();
 void pageDs2484();
+void pageSystemInfo();  // FEATURE-SPEC-013
 
 // ============================================================================
 // PHASE 5: PAGE HANDLER ARRAY (Data-Driven Page Dispatch)
@@ -492,24 +540,38 @@ struct PageHandler {
   uint16_t color;                    // LED indicator color for this page
 };
 
-// Array maps page index (0-9) to handler (replaces switch statement)
+// Array maps page index (0-10) to handler (replaces switch statement)
 const PageHandler pageHandlers[PAGE_COUNT] = {
-  {"BME280",   [](bool changed) { pageBme280(); }, 0x07E0},      // Page 0: Green
-  {"Gamepad",  [](bool changed) { pageGamepad(); }, 0xF81F},     // Page 1: Magenta
-  {"INA219",   [](bool changed) { pageIna219(); }, 0xF800},      // Page 2: Red
-  {"Encoder",  [](bool changed) { pageEncoder(); }, 0xFC00},     // Page 3: Orange
-  {"SCD30",    [](bool changed) { pageScd30(changed); }, 0x0810},// Page 4: Blue
-  {"SI1145",   [](bool changed) { pageSi1145(); }, 0xFFE0},      // Page 5: Yellow
-  {"TSL2591",  [](bool changed) { pageTsl2591(); }, 0x07FF},     // Page 6: Cyan
-  {"VEML6070", [](bool changed) { pageVeml6070(); }, 0xFC00},    // Page 7: Orange
-  {"VEML6075", [](bool changed) { pageVeml6075(); }, 0xF81F},    // Page 8: Magenta
-  {"DS2484",   [](bool changed) { pageDs2484(); }, 0xFBE0}       // Page 9: Light Gray
+  {"BME280",              [](bool changed) { pageBme280(); }, 0x07E0},      // Page 0: Green
+  {"Gamepad",             [](bool changed) { pageGamepad(); }, 0xF81F},     // Page 1: Magenta
+  {"INA219",              [](bool changed) { pageIna219(); }, 0xF800},      // Page 2: Red
+  {"Encoder",             [](bool changed) { pageEncoder(); }, 0xFC00},     // Page 3: Orange
+  {"SCD30",               [](bool changed) { pageScd30(changed); }, 0x0810},// Page 4: Blue
+  {"SI1145",              [](bool changed) { pageSi1145(); }, 0xFFE0},      // Page 5: Yellow
+  {"TSL2591",             [](bool changed) { pageTsl2591(); }, 0x07FF},     // Page 6: Cyan
+  {"VEML6070",            [](bool changed) { pageVeml6070(); }, 0xFC00},    // Page 7: Orange
+  {"VEML6075",            [](bool changed) { pageVeml6075(); }, 0xF81F},    // Page 8: Magenta
+  {"DS2484",              [](bool changed) { pageDs2484(); }, 0xFBE0},      // Page 9: Light Gray
+  {"System Information",  [](bool changed) { pageSystemInfo(); }, 0x001F}   // Page 10: Blue (FEATURE-SPEC-013)
 };
 
 // ============================================================================
 // FORWARD DECLARATIONS - Required for Value Getters to use helper functions
 // ============================================================================
 String formatRuntime(uint32_t elapsedUs);
+
+// FEATURE-SPEC-013: Boot Logger and System Info Forward Declarations
+#if ENABLE_BOOT_LOGGING
+void bootLoggerInit(TFT_eSPI* tft);
+void bootLogPrintf(const char* category, const char* format, ...);
+void bootLoggerRender();
+void bootLoggerComplete();
+#endif
+
+void updateSystemInfoData();
+String formatUptimeString(uint32_t uptimeMs);
+uint32_t getUptimeMs();
+
 
 // ============================================================================
 // CENTRAL VALUE GETTERS - Return value string for each sensor parameter
@@ -2588,7 +2650,8 @@ void drawCurrentPage(bool pageChanged)
       "TSL2591 (0x29)",
       "VEML6070 (0x38/0x39)",
       "VEML6075 (0x10)",
-      "DS2484 1-Wire (0x18)"
+      "DS2484 1-Wire (0x18)",
+      "System Information"  // Page 10 (FEATURE-SPEC-013)
     };
     // FEATURE-SPEC-009: Draw header for SCD30 with ASC badge only when page changes
     if (currentPage == 4) {
@@ -2825,6 +2888,268 @@ void logPrintf(const char* format, ...)
   }
 }
 
+// ============================================================================
+// BOOT LOGGER IMPLEMENTATION (FEATURE-SPEC-013)
+// ============================================================================
+#if ENABLE_BOOT_LOGGING
+
+void bootLoggerInit(TFT_eSPI* tft)
+{
+  bootLogger.tftPtr = tft;
+  bootLogger.isActive = true;
+  bootLogger.lineCount = 0;
+  bootLogger.headIndex = 0;
+  memset(bootLogger.lineBuffer, 0, sizeof(bootLogger.lineBuffer));
+}
+
+void bootLogPrintf(const char* category, const char* format, ...)
+{
+  if (!bootLogger.isActive || !bootLogger.tftPtr) {
+    return;  // Boot logger not active; skip
+  }
+
+  // Format the message
+  char buffer[BOOT_LOG_LINE_LENGTH];
+  va_list args;
+  va_start(args, format);
+  
+  // First, format the category + message
+  int len = 0;
+  if (category && category[0]) {
+    len = snprintf(buffer, sizeof(buffer), "[%s] ", category);
+  }
+  
+  if (len > 0 && len < BOOT_LOG_LINE_LENGTH - 1) {
+    vsnprintf(&buffer[len], sizeof(buffer) - len, format, args);
+  } else {
+    vsnprintf(buffer, sizeof(buffer), format, args);
+  }
+  
+  va_end(args);
+
+  // Truncate to buffer size if needed
+  buffer[BOOT_LOG_LINE_LENGTH - 1] = '\0';
+  
+  // Add line to circular buffer
+  if (bootLogger.lineCount < BOOT_LOG_BUFFER_LINES) {
+    strncpy(bootLogger.lineBuffer[bootLogger.lineCount], buffer, BOOT_LOG_LINE_LENGTH - 1);
+    bootLogger.lineBuffer[bootLogger.lineCount][BOOT_LOG_LINE_LENGTH - 1] = '\0';
+    bootLogger.lineCount++;
+  } else {
+    // Circular: overwrite oldest line
+    strncpy(bootLogger.lineBuffer[bootLogger.headIndex], buffer, BOOT_LOG_LINE_LENGTH - 1);
+    bootLogger.lineBuffer[bootLogger.headIndex][BOOT_LOG_LINE_LENGTH - 1] = '\0';
+    bootLogger.headIndex = (bootLogger.headIndex + 1) % BOOT_LOG_BUFFER_LINES;
+  }
+
+  // Render immediately to show progress
+  bootLoggerRender();
+  
+  // Also log to Serial for debugging (don't add [BOOT] prefix, already in buffer)
+  logPrintf("%s", buffer);
+}
+
+void bootLoggerRender()
+{
+  if (!bootLogger.isActive || !bootLogger.tftPtr) {
+    return;  // Boot logger not active; skip rendering
+  }
+
+  TFT_eSPI& tft = *bootLogger.tftPtr;
+
+  // Terminal-style rendering: clear and redraw all lines
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setTextFont(2);  // Use monospace-style font
+
+  uint16_t yPos = 10;
+  const uint16_t lineHeight = 16;
+  const uint16_t maxLines = 18;  // ~18 lines fit on 320x480 screen
+
+  // Determine which lines to display (last maxLines lines, or fewer if buffer not full)
+  uint8_t displayCount = bootLogger.lineCount < maxLines ? bootLogger.lineCount : maxLines;
+  uint8_t startIndex = bootLogger.lineCount >= maxLines 
+    ? (bootLogger.headIndex + (bootLogger.lineCount - displayCount)) % BOOT_LOG_BUFFER_LINES
+    : 0;
+
+  // Display lines
+  for (uint8_t i = 0; i < displayCount; i++) {
+    uint8_t lineIdx = (startIndex + i) % BOOT_LOG_BUFFER_LINES;
+    tft.drawString(bootLogger.lineBuffer[lineIdx], 10, yPos, 2);
+    yPos += lineHeight;
+  }
+
+  tft.setTextFont(0);  // Reset font
+}
+
+void bootLoggerComplete()
+{
+  if (!bootLogger.isActive || !bootLogger.tftPtr) {
+    return;
+  }
+
+  // Add "BOOT COMPLETE" message
+  bootLogPrintf("BOOT", "BOOT COMPLETE");
+  
+  // Display for 1 second with the boot logger
+  delay(1000);
+  
+  // Deactivate boot logger
+  bootLogger.isActive = false;
+  
+  logPrintf("[BOOT] Boot logger deactivated");
+}
+
+#endif  // ENABLE_BOOT_LOGGING
+
+// ============================================================================
+// SYSTEM INFO PAGE IMPLEMENTATION (FEATURE-SPEC-013)
+// ============================================================================
+
+uint32_t getUptimeMs()
+{
+  return millis() - bootStartTimeMs;
+}
+
+String formatUptimeString(uint32_t uptimeMs)
+{
+  uint32_t totalSeconds = uptimeMs / 1000;
+  uint32_t hours = totalSeconds / 3600;
+  uint32_t minutes = (totalSeconds % 3600) / 60;
+  uint32_t seconds = totalSeconds % 60;
+  
+  char buffer[16];
+  snprintf(buffer, sizeof(buffer), "%02lu:%02lu:%02lu", hours, minutes, seconds);
+  return String(buffer);
+}
+
+void updateSystemInfoData()
+{
+  // Update uptime
+  systemInfoData.uptimeMs = getUptimeMs();
+  
+  // Calculate boot time (time from boot start to when boot logger was deactivated)
+  // For now, estimate as bootStartTimeMs to when setup() completed
+  // This will be refined when we integrate with the boot sequence
+  systemInfoData.bootTimeMs = systemInfoData.uptimeMs;  // Placeholder
+
+  // Update heap information
+  systemInfoData.freeHeap = esp_get_free_heap_size();
+  // ESP32 internal RAM is 320KB, but we report total as free + allocated at this moment
+  // For System Info display, we'll show internal RAM (320KB = 327680 bytes)
+  systemInfoData.totalHeap = 327680;  // ESP32 internal RAM in bytes
+  systemInfoData.minFreeHeap = esp_get_minimum_free_heap_size();
+
+  // Count available sensors
+  uint8_t count = 0;
+  if (available.bme280) count++;
+  if (available.gamepad) count++;
+  if (available.ina219) count++;
+  if (available.encoder) count++;
+  if (available.scd30) count++;
+  if (available.si1145) count++;
+  if (available.tsl2591) count++;
+  if (available.veml6070) count++;
+  if (available.veml6075) count++;
+  if (available.ds2484) count++;
+  systemInfoData.sensorCount = count;
+
+  // Aggregate errors
+  systemInfoData.i2cErrors = diagStats.i2cErrors;
+  systemInfoData.slowSensorErrors = diagStats.slowSensorReads;
+  systemInfoData.totalErrors = systemInfoData.i2cErrors + systemInfoData.slowSensorErrors;
+
+  // Get version and build date from diagnostics.h
+  strncpy(systemInfoData.versionString, VERSION, sizeof(systemInfoData.versionString) - 1);
+  strncpy(systemInfoData.buildDateString, BUILD_DATE, sizeof(systemInfoData.buildDateString) - 1);
+}
+
+void pageSystemInfo()
+{
+  updateSystemInfoData();
+
+  // FEATURE-SPEC-013: System Information page layout
+  // Title is already drawn by drawHeader(), so start with content
+
+  uint16_t y = 50;
+  const uint16_t lineHeight = 26;
+  const uint16_t col1X = 10;
+  const uint16_t col2X = 200;
+
+  // Set colors for consistent UI
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setTextFont(2);
+
+  // Row 1: Version
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Version:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(systemInfoData.versionString, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 2: Build Date
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Build:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(systemInfoData.buildDateString, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 3: Uptime
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Uptime:", col1X, y, 2);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  String uptimeStr = formatUptimeString(systemInfoData.uptimeMs);
+  tft.drawString(uptimeStr, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 4: Heap Free
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Heap Free:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  String heapFreeStr = String(systemInfoData.freeHeap / 1024) + "KB";
+  tft.drawString(heapFreeStr, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 5: Heap Total
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Heap Total:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  String heapTotalStr = String(systemInfoData.totalHeap / 1024) + "KB";
+  tft.drawString(heapTotalStr, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 6: Min Free Heap
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Min Free:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  String minFreeStr = String(systemInfoData.minFreeHeap / 1024) + "KB";
+  tft.drawString(minFreeStr, col2X, y, 2);
+  y += lineHeight;
+
+  // Row 7: Sensor Count
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Sensors:", col1X, y, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(String(systemInfoData.sensorCount), col2X, y, 2);
+  y += lineHeight;
+
+  // Row 8: Error Summary
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("Errors:", col1X, y, 2);
+  
+  uint16_t errorColor = systemInfoData.totalErrors > 0 ? TFT_RED : TFT_WHITE;
+  tft.setTextColor(errorColor, TFT_BLACK);
+  String errorStr = String("I2C:") + String(systemInfoData.i2cErrors) + 
+                    String(" Slow:") + String(systemInfoData.slowSensorErrors);
+  tft.drawString(errorStr, col2X, y, 2);
+  y += lineHeight;
+
+  tft.setTextFont(0);  // Reset font
+  footer("Y/A: Change page | System Info");
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -2842,6 +3167,9 @@ void setup()
   
   logPrintf("[SETUP] ========== BOOT START ==========");
   
+  // FEATURE-SPEC-013: Record boot start time for uptime calculation
+  bootStartTimeMs = millis();
+  
   // Initialize diagnostics FIRST
   initDiagnostics();
   
@@ -2855,6 +3183,15 @@ void setup()
   tft.init();
   tft.setRotation(3);
   
+  // FEATURE-SPEC-013: Initialize boot logger after TFT is ready
+#if ENABLE_BOOT_LOGGING
+  bootLoggerInit(&tft);
+  bootLogPrintf("BOOT", "Serial initialized");
+  bootLogPrintf("BOOT", "Diagnostics initialized");
+  bootLogPrintf("BOOT", "I2C bus initialized (400 kHz)");
+  bootLogPrintf("BOOT", "TFT display initialized");
+#endif
+  
   // HOTFIX 2026-10-22: Disable I2C bus scan - causes I2C bus hang at boot
   // The bus scan iterates through all 127 I2C addresses and can deadlock
   // if any device is in an error state (e.g., DS2484 after overflow event)
@@ -2862,16 +3199,28 @@ void setup()
   // scanI2CBus();  // DISABLED - causes boot hang
   
   logPrintf("[SETUP] I2C bus scan disabled (boot safety)");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "I2C bus scan disabled");
+#endif
   drawHeader("Sensor Dashboard");
   
   logPrintf("[SETUP] Detecting sensors...");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "Detecting sensors...");
+#endif
   detectSensors();
   
   logPrintf("[SETUP] Initializing sensor caches...");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "Sensor caches initialized");
+#endif
   initializeSensorCaches();
   
   // PHASE-4: Initialize the Sensor Registry with all 8 working sensors
   logPrintf("[SETUP] Initializing Sensor Registry...");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "Registry initialization...");
+#endif
   sensorRegistry.registerSensor(0, &ina219Sensor, "INA219", 0xF800);  // Red
   // sensorRegistry.registerSensor(1, &gamepadSensor, "Gamepad", 0xF81F);  // DISABLED - Magenta
   // sensorRegistry.registerSensor(2, &encoderSensor, "Encoder", 0xFC00);  // DISABLED - Orange
@@ -2888,9 +3237,15 @@ void setup()
   
   // Initialize all sensors
   logPrintf("[SETUP] Initializing all sensors via registry...");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "Sensor initialization...");
+#endif
   sensorRegistry.initializeAll();
   
   logPrintf("[SETUP] Performing initial sensor reads...");
+#if ENABLE_BOOT_LOGGING
+  bootLogPrintf("BOOT", "Initial sensor reads...");
+#endif
   readSensors();
   
   // Start initial DS18B20 conversion if sensors were found
@@ -2911,6 +3266,14 @@ void setup()
   drawCurrentPage(true);
   
   logPrintf("[SETUP] ========== BOOT COMPLETE ==========");
+  
+  // FEATURE-SPEC-013: Complete boot logger (show "BOOT COMPLETE" for 1 second)
+#if ENABLE_BOOT_LOGGING
+  bootLoggerComplete();
+  // After boot, start with System Info page (page 10)
+  currentPage = 10;
+  drawCurrentPage(true);
+#endif
 }
 
 void loop()
