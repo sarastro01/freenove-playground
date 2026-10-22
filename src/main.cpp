@@ -2606,10 +2606,9 @@ void logPrintf(const char* format, ...)
   va_end(args);
   
   // Print timestamp + formatted message + newline
-  if (len > 0) {
+  // Skip empty messages (no output for blank lines)
+  if (len > 0 && buffer[0] != '\0') {
     ::Serial.printf("[%02d:%02d:%02d.%03d] %s\n", h, m, s, ms, buffer);
-  } else {
-    ::Serial.printf("[%02d:%02d:%02d.%03d] \n", h, m, s, ms);
   }
 }
 
