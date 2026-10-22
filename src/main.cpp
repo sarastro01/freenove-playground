@@ -1080,6 +1080,8 @@ bool readScd30(Scd30Values &values)
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
   logI2cTiming("SCD30", duration);
+  logPrintf("[SCD30] co2=%.0f ppm temp=%.1f°C humidity=%.1f%%", 
+            values.co2, values.temp, values.humidity);
   return true;
 }
 
@@ -1128,6 +1130,8 @@ bool readVeml6075(Veml6075Values &values)
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
   logI2cTiming("VEML6075", duration);
+  logPrintf("[VEML6075] uva=%.2f uvb=%.2f index=%.2f", 
+            values.uvaComp, values.uvbComp, values.index);
   return true;
 }
 
@@ -1142,6 +1146,7 @@ bool readVeml6070(Veml6070Values &values)
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
   logI2cTiming("VEML6070", duration);
+  logPrintf("[VEML6070] uv=%u (raw)", values.raw);
   return true;
 }
 
@@ -1162,6 +1167,8 @@ void readBme280(Bme280Values &values)
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
   logI2cTiming("BME280", duration);
+  logPrintf("[BME280] temp=%.1f°C humidity=%.1f%% pressure=%.0f hPa", 
+            values.temperature, values.humidity, values.pressure);
 }
 
 void readTsl2591(Tsl2591Values &values)
@@ -1190,6 +1197,8 @@ void readSi1145(Si1145Values &values)
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
   logI2cTiming("SI1145", duration);
+  logPrintf("[SI1145] uv=%.2f vis=%u ir=%u", 
+            values.uvIndex, values.visible, values.infrared);
 }
 
 // DS2484 1-Wire temperature sensor functions
@@ -1375,7 +1384,7 @@ void readDs2484Temperatures()
     sensor.available = true;
     sensor.lastReadMs = nowMs;
     
-    // logPrintf("DS2484: Sensor %d temp = %.2f°C", i, sensor.temperature);
+    logPrintf("[DS18B20] Sensor %d temp = %.2f°C", i, sensor.temperature);
   }
   
   uint32_t endTime = micros();
@@ -1599,6 +1608,8 @@ void checkTsl2591Async()
   tsl2591State = Tsl2591State::IDLE;
   
   logI2cTiming("TSL2591", duration);
+  logPrintf("[TSL2591] lux=%.1f visible=%u infrared=%u spectrum=%u", 
+            tsl2591Values.lux, tsl2591Values.visible, tsl2591Values.infrared, tsl2591Values.fullSpectrum);
 }
 
 /// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~1 ms)
@@ -2258,6 +2269,8 @@ void readIna219At50Hz()
   ina219Values = ina219Sensor.getValues();
   unlockI2cBus();
   logI2cTiming("INA219", micros() - startTime);
+  logPrintf("[INA219] bus=%.2f V current=%.2f mA power=%.2f mW", 
+            ina219Values.bus, ina219Values.current, ina219Values.power);
 }
 
 // Format runtime as HH:MM:SS
