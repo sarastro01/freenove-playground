@@ -1,8 +1,9 @@
 # Requirements: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-25  
+**Last Updated:** 2026-10-22  
 **Project Type:** Embedded Firmware (ESP32)  
-**Platform:** PlatformIO + Arduino Framework
+**Platform:** PlatformIO + Arduino Framework  
+**Related Specs:** FEATURE-SPEC-012 (Responsiveness, Logging, Versioning)
 
 ---
 
@@ -915,6 +916,175 @@ All configuration at compile time only.
 
 **Mitigation:** Document precision guarantees; consider 64-bit accumulator.
 
+### FR-023: Non-Blocking Loop Architecture Validation (FEATURE-SPEC-012)
+
+**Requirement:**  
+The system shall execute the main loop with <100 ms input response time and without blocking delay() calls.
+
+**Details:**
+- No `delay()` calls execute within loop() function (lines 2661+)
+- Input polling every INPUT_REFRESH_MS (10 ms) for responsive buttons/encoder
+- Sensor slot scheduling every SENSOR_SLOT_INTERVAL_MS (200 ms)
+- Page display refresh rate limited to prevent flicker
+- Time-based scheduling using `millis()` comparisons (non-blocking)
+
+**Response Time Target:**  
+<100 ms from button press to page navigation (measured via Serial timestamps)
+
+**Evidence:**
+- `loop()` function: line 2661
+- Polling loop: INPUT_REFRESH_MS = 10 ms (lines ~115-140, configuration section)
+- Slot scheduling: SENSOR_SLOT_INTERVAL_MS = 200 ms
+- No delay() calls in loop (confirmed via static analysis in FEATURE-SPEC-012)
+
+**Status:** ✅ IMPLEMENTED (already compliant)
+
+---
+
+### FR-024: Timestamped Serial Logging System (FEATURE-SPEC-012)
+
+**Requirement:**  
+The system shall output all diagnostic messages with millisecond-precision timestamps in ISO format [HH:MM:SS.sss].
+
+**Details:**
+- Timestamp format: `[HH:MM:SS.sss]` prepended to every Serial line
+- Time reference: milliseconds since boot (via `millis()`)
+- Timestamp calculation uses integer-only arithmetic (no floating point)
+- Examples:
+  ```
+  [00:00:15.342] [DS2484] Found sensor 1: Family=28...
+  [00:00:15.412] [INA219] Reading voltage: 5.087 V
+  [00:01:23.801] [GAMEPAD] Button Y pressed
+  ```
+
+**Performance Impact:**
+- Per-message overhead: ~50-100 μs (negligible)
+- Code memory: +500 bytes
+- Stack memory: +50 bytes
+- No impact on loop cycle time (not on critical path)
+- Serial throughput: 115200 baud sufficient for ~100 messages/min
+
+**Logging Categories:**  
+All messages tagged with category: `[BOOT]`, `[DIAG]`, `[SENSOR]`, `[INPUT]`, `[MODE]`, `[I2C]`, `[ERROR]`, `[VERSION]`
+
+**Implementation:**
+- New function: `logPrintf(const char* format, ...)`
+- Replaces all `Serial.printf()` calls
+- Used by sensor read functions, input handlers, and diagnostics
+
+**Status:** 🔵 READY FOR IMPLEMENTATION
+
+**Related Requirements:** FR-025, FR-026, FR-027
+
+---
+
+### FR-025: Display Switch Diagnostics Logging (FEATURE-SPEC-012)
+
+**Requirement:**  
+The system shall log every display page change with source (user input or automatic) and all input device activity.
+
+**Details:**
+
+**Page Change Logging:**
+- Every `currentPage` assignment logged with reason
+- Format: `[HH:MM:SS.sss] [MODE] page change: X → Y (source: GAMEPAD/ENCODER/AUTO)`
+- Examples:
+  ```
+  [00:00:15.234] [MODE] page change: 2 → 3 (source: GAMEPAD Button A)
+  [00:00:16.401] [MODE] page change: 3 → 2 (source: ENCODER rotation CCW)
+  [00:00:18.567] [MODE] Large Display enter (page 2, valueIdx 0)
+  [00:00:25.890] [MODE] Large Display exit (back to page 2)
+  ```
+
+**Encoder Activity Logging:**
+- Rotation events: position delta and direction
+- Button press/release transitions
+- Example:
+  ```
+  [00:00:17.123] [ENCODER] Rotation: position 142 → 143 (delta: +1, CLOCKWISE)
+  [00:00:17.456] [ENCODER] Button: PRESSED
+  [00:00:17.789] [ENCODER] Button: RELEASED
+  ```
+
+**Gamepad Activity Logging:**
+- Button state changes (not every poll cycle)
+- Example:
+  ```
+  [00:00:15.234] [GAMEPAD] Button Y: PRESSED
+  [00:00:15.456] [GAMEPAD] Button Y: RELEASED
+  [00:00:15.678] [GAMEPAD] Button A: PRESSED
+  ```
+
+**Purpose:**  
+Enable diagnosis of spontaneous display switches via 24-hour log analysis. Correlate unexplained page changes with input logs to identify electrical noise, I2C errors, or firmware bugs.
+
+**Status:** 🔵 READY FOR IMPLEMENTATION
+
+**Related Requirements:** FR-024, FR-026
+
+---
+
+### FR-026: Version & Build Information Display (FEATURE-SPEC-012)
+
+**Requirement:**  
+The system shall display version number and build timestamp at boot with all subsequent diagnostic output.
+
+**Details:**
+
+**Boot Output (First 100 ms):**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.004] Compiler: arm-none-eabi-g++
+[00:00:00.005] ESP32-WROOM-32 Detected
+[00:00:00.006] ========================================
+```
+
+**Version Format:**  
+Semantic versioning: `MAJOR.MINOR.PATCH` (e.g., `3.1.0`)
+
+**Build Date Format:**  
+ISO 8601: `YYYY-MM-DDTHH:MM:SSZ` (UTC timezone)
+
+**Implementation:**
+- `#define VERSION "3.1.0"` in diagnostics.h
+- `#define BUILD_DATE "2026-10-22T16:54:00Z"` in diagnostics.h
+- Boot banner output in `setup()` function
+- Output via `logPrintf()` (includes timestamps)
+
+**Update Frequency:**  
+Version bumped after each feature merge; build date set at compile time.
+
+**Status:** 🔵 READY FOR IMPLEMENTATION
+
+**Related Requirements:** FR-024
+
+---
+
+### FR-027: Logging Performance & Stability (FEATURE-SPEC-012)
+
+**Requirement:**  
+The logging system shall operate with <5% performance overhead and no memory leaks during 24-hour operation.
+
+**Details:**
+
+**Performance Acceptance Criteria:**
+- Loop cycle time with logging vs without: <5% difference
+- Heap memory stable (no growth) during continuous operation
+- Serial output at 115200 baud with 0 data corruption
+- Timestamp calculation using integer-only arithmetic (no floating point)
+
+**Memory Requirements:**
+- Runtime: +50 bytes stack (temporary format buffer)
+- Code: +500 bytes (logPrintf function)
+- Total impact: negligible (<1% of available 4MB SRAM)
+
+**Status:** 🔵 READY FOR IMPLEMENTATION
+
+**Related Requirements:** FR-024, FR-025, FR-026
+
 ---
 
 ## Testing Requirements
@@ -927,6 +1097,10 @@ No automated tests currently exist (known limitation LIMIT-001). Critical behavi
 3. Coulomb counter accumulates without overflow
 4. LED responds immediately to encoder interaction
 5. CRC8 validation rejects corrupted SCD30 data
+6. (NEW) All Serial output lines include valid timestamps [HH:MM:SS.sss]
+7. (NEW) Page switches logged with source (GAMEPAD/ENCODER/AUTO)
+8. (NEW) Version and build date displayed at boot
+9. (NEW) 24-hour logging test identifies spontaneous display switches
 
 ---
 
@@ -935,6 +1109,9 @@ No automated tests currently exist (known limitation LIMIT-001). Critical behavi
 1. **INA219 Time-Gap Threshold:** Why 200 ms? (arbitrary safety margin?)
 2. **VEML6075 Compensation Constants:** Where do 2.22, 2.95, 0.001461, 0.002591 come from? (datasheet formulas not documented)
 3. **Display Rotation:** Why 90° instead of 0° or 180°? (physical orientation preference?)
-5. **Page Title Ordering:** Why is BME280 page 0 (not DSC30 or INA219)?
-6. **LED Default Brightness:** Why 64 (not 128 or 255)?
+4. **Page Title Ordering:** Why is BME280 page 0 (not SCD30 or INA219)?
+5. **LED Default Brightness:** Why 64 (not 128 or 255)?
+6. (NEW - FEATURE-SPEC-012) **Display Spontaneous Switches Root Cause:** Is this electrical noise, I2C glitch, or firmware bug? (Will be determined via FR-025 diagnostics)
+7. (NEW - FEATURE-SPEC-012) **Serial Output Bottleneck:** Will ~100 logs/min at 115200 baud cause bottleneck? (Monitor during 24h test)
+8. (NEW - FEATURE-SPEC-012) **Encoder Position Persistence:** Does encoder.position persist across reboots? (Seesaw library behavior)
 

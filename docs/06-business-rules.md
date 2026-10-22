@@ -1,8 +1,8 @@
 # Business Rules: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-25  
+**Last Updated:** 2026-10-22  
 **Firmware Type:** Embedded bare-metal (includes 1-Wire temperature sensors)  
-**Business Domain:** Sensor data acquisition, display, input handling, 1-Wire discovery
+**Business Domain:** Sensor data acquisition, display, input handling, 1-Wire discovery, diagnostics logging
 
 ---
 
@@ -3512,4 +3512,316 @@ When Large Display Mode is active on the SCD30 page (Page 4), the Y button behav
 | VEML6075 config register 0x00 meaning | BR-024 | Hardcoded value 0x0000; exact effect unknown without datasheet |
 | INA219 200 ms gap threshold rationale | BR-022 | Empirically chosen; no documentation of origin |
 | Encoder delta per mechanical tick | BR-011 | Assumed ±1 per tick; actual hardware behavior unknown |
+
+---
+
+## Logging & Diagnostics Rules (FEATURE-SPEC-012)
+
+### BR-031: Serial Output Timestamps Format & Calculation
+
+**Description:**  
+All Serial output includes millisecond-precision timestamp in ISO format `[HH:MM:SS.sss]`.
+
+**Timestamp Calculation:**
+- Time source: `millis()` (milliseconds since boot)
+- Rollover: ~49.7 days after boot
+- Precision: 1 millisecond
+- No floating point; pure integer arithmetic
+- Format: `[HH:MM:SS.sss]` = 13 characters
+
+**Calculation Algorithm:**
+```cpp
+uint32_t elapsedMs = millis();
+uint8_t h = (elapsedMs / 3600000) % 24;
+uint8_t m = (elapsedMs / 60000) % 60;
+uint8_t s = (elapsedMs / 1000) % 60;
+uint16_t ms = elapsedMs % 1000;
+// Output: [HH:MM:SS.sss]
+```
+
+**Prepended to Every Message:**
+Every `Serial.printf()` call (or wrapper `logPrintf()`) prepends timestamp before message content.
+
+**Example:**
+```
+[00:00:15.342] [SENSOR] BME280 read time: 12345 µs
+[00:01:23.801] [GAMEPAD] Button Y pressed
+```
+
+**Related Requirements:** FR-024 (Timestamped Logging System)
+
+**Scope:** All Serial output in firmware
+
+---
+
+### BR-032: Logging Category Tags
+
+**Description:**  
+All messages tagged with category to enable filtering and diagnosis.
+
+**Valid Categories:**
+
+| Tag | Purpose | Usage |
+|-----|---------|-------|
+| `[BOOT]` | Startup/initialization | Device setup, I2C init, sensor detection |
+| `[DIAG]` | Diagnostics/timing | Heap info, loop timing, system status |
+| `[SENSOR]` | Sensor reads/I2C ops | Sensor read timing, data validity checks |
+| `[INPUT]` | User input events | Gamepad button, encoder rotation |
+| `[MODE]` | Display/UI changes | Page navigation, Large Display mode |
+| `[I2C]` | I2C protocol diagnostics | Communication errors, NACK, timeouts |
+| `[ERROR]` | Error conditions | Sensor read failures, invalid data |
+| `[VERSION]` | Version/build info | Version, build date, compiler info |
+
+**Format:** `[CATEGORY]` (brackets required, uppercase)
+
+**Example Output:**
+```
+[00:00:00.015] [BOOT] Starting setup...
+[00:00:15.234] [INPUT] GAMEPAD Button Y: PRESSED
+[00:00:15.271] [MODE] page change: 2 → 1 (source: GAMEPAD Button Y)
+[00:00:30.024] [SENSOR] BME280 read time: 12345 µs
+```
+
+**Frequency Limits:**
+- Sensor read messages: max 2 per sensor per `readSensors()` call (1 start, 1 timing)
+- Input messages: only on state change (not every poll cycle)
+- Boot messages: ~20 messages during first 500ms
+- Diagnostics: periodic (every 5 minutes or on demand)
+
+**Related Requirements:** FR-024, FR-025
+
+---
+
+### BR-033: Display Page Change Logging
+
+**Description:**  
+Every `currentPage` assignment logged with reason (source) and transition details.
+
+**Trigger:**  
+User presses gamepad Y/A button OR rotates encoder OR system initiates auto-page-change.
+
+**Format:**
+```
+[HH:MM:SS.sss] [MODE] page change: X → Y (source: SOURCE)
+```
+
+**Source Values:**
+- `GAMEPAD Button Y` — User pressed gamepad Y button (previous page)
+- `GAMEPAD Button A` — User pressed gamepad A button (next page)
+- `ENCODER rotation CW` — User rotated encoder clockwise
+- `ENCODER rotation CCW` — User rotated encoder counter-clockwise
+- `AUTO` — System-initiated (reserved for future auto-page logic)
+
+**Example Logs:**
+```
+[00:00:15.234] [INPUT] GAMEPAD Button Y: PRESSED
+[00:00:15.256] [INPUT] GAMEPAD Button Y: RELEASED
+[00:00:15.271] [MODE] page change: 2 → 1 (source: GAMEPAD Button Y)
+
+[00:00:17.123] [INPUT] ENCODER Rotation: position 142 → 143 (delta: +1, CLOCKWISE)
+[00:00:17.145] [MODE] page change: 1 → 2 (source: ENCODER rotation CW)
+```
+
+**Latency:**  
+Page change logged within 5 ms of actual display update.
+
+**Related Requirements:** FR-025 (Display Switch Diagnostics)
+
+---
+
+### BR-034: Encoder Input Activity Logging
+
+**Description:**  
+All encoder state changes logged: rotation (position delta, direction), button press/release.
+
+**Rotation Logging:**
+- Trigger: Encoder position changes (seesaw reports new position)
+- Format: `[HH:MM:SS.sss] [INPUT] ENCODER Rotation: position OLD → NEW (delta: ±N, DIRECTION)`
+- Direction: CLOCKWISE (delta > 0) or CCW (delta < 0)
+- Example:
+  ```
+  [00:00:17.123] [INPUT] ENCODER Rotation: position 142 → 143 (delta: +1, CLOCKWISE)
+  [00:00:18.456] [INPUT] ENCODER Rotation: position 143 → 141 (delta: -2, CCW)
+  ```
+
+**Button Press/Release Logging:**
+- Trigger: Encoder button GPIO changes state
+- Format: `[HH:MM:SS.sss] [INPUT] ENCODER Button: PRESSED` or `RELEASED`
+- Example:
+  ```
+  [00:00:21.567] [INPUT] ENCODER Button: PRESSED
+  [00:00:21.589] [MODE] Large Display enter (page 4, valueIndex 0)
+  [00:00:28.890] [INPUT] ENCODER Button: PRESSED
+  [00:00:28.912] [MODE] Large Display exit (returning to page 4)
+  ```
+
+**Frequency:**
+- Only on state change (not every poll cycle)
+- Rotation logged every time position value changes
+- Button logged on press and release (2 messages per click)
+
+**Related Requirements:** FR-025 (Display Switch Diagnostics)
+
+---
+
+### BR-035: Gamepad Input Activity Logging
+
+**Description:**  
+Gamepad button state changes logged (not every poll cycle, only transitions).
+
+**Format:**
+```
+[HH:MM:SS.sss] [INPUT] GAMEPAD Button X: STATE
+```
+
+**Button Names:** Y, A, X, B
+
+**State Values:** PRESSED, RELEASED
+
+**Example Logs:**
+```
+[00:00:15.234] [INPUT] GAMEPAD Button Y: PRESSED
+[00:00:15.256] [INPUT] GAMEPAD Button Y: RELEASED
+[00:00:15.278] [INPUT] GAMEPAD Button A: PRESSED
+[00:00:15.301] [INPUT] GAMEPAD Button A: RELEASED
+```
+
+**Frequency:**
+- Only on state change (press or release)
+- No logging for every poll cycle (would create noise)
+- Approximately 4–8 messages per gamepad interaction (2 per button press, up to 4 buttons)
+
+**Related Requirements:** FR-025 (Display Switch Diagnostics)
+
+---
+
+### BR-036: Spontaneous Display Switch Detection
+
+**Description:**  
+If `currentPage` changes without logged user input (gamepad/encoder), log error and diagnostic info.
+
+**Trigger:**  
+Display page changes but preceding INPUT log for GAMEPAD or ENCODER does not exist within 500 ms.
+
+**Detection Algorithm:**
+1. Track `currentPage` every loop iteration
+2. On change, check for recent [INPUT] or [MODE] log
+3. If none found within 500 ms: log [ERROR] message
+4. Include timestamp, previous page, new page
+
+**Error Log Format:**
+```
+[HH:MM:SS.sss] [ERROR] Spontaneous display switch: X → Y (no input detected)
+```
+
+**Diagnostic Actions:**
+- Continue normal operation (do not crash/freeze)
+- Log may trigger investigation/24-hour diagnostics run
+- Correlate with preceding [I2C] and [SENSOR] logs to identify cause
+
+**Example Scenario:**
+```
+[00:05:23.456] [SENSOR] BME280 read time: 12345 µs
+[00:05:24.123] [I2C] WARNING: SCD30 read timeout (5 retries, last attempt 5002 µs)
+[00:05:24.145] [ERROR] Spontaneous display switch: 3 → 4 (no input detected)
+```
+
+**Related Requirements:** FR-025 (Display Switch Diagnostics)
+
+---
+
+### BR-037: Version & Build Information at Boot
+
+**Description:**  
+System outputs version number and build timestamp on every boot within first 100 ms.
+
+**Boot Banner Format:**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.004] Compiler: arm-none-eabi-g++ 9.3.1
+[00:00:00.005] ESP32-WROOM-32 Detected
+[00:00:00.006] ========================================
+```
+
+**Version Format:**  
+Semantic versioning: `MAJOR.MINOR.PATCH` (e.g., `3.1.0`)
+
+**Build Date Format:**  
+ISO 8601: `YYYY-MM-DDTHH:MM:SSZ` (UTC timezone)
+
+**Implementation:**
+- `#define VERSION "3.1.0"` in diagnostics.h (manually updated)
+- `#define BUILD_DATE "2026-10-22T16:54:00Z"` in diagnostics.h (manually updated)
+- Output in `setup()` via `logPrintf()` (includes BR-031 timestamps)
+
+**Update Frequency:**  
+Version incremented after each feature merge; build date set at feature release.
+
+**Example Boot Output:**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.004] Compiler: arm-none-eabi-g++ 9.3.1
+[00:00:00.005] ESP32-WROOM-32 Detected
+[00:00:00.006] ========================================
+[00:00:00.007] [BOOT] Starting setup...
+[00:00:00.015] [BOOT] TFT Display initialized
+[00:00:00.020] [BOOT] Initializing I2C...
+```
+
+**Related Requirements:** FR-026 (Version & Build Information Display)
+
+---
+
+### BR-038: Serial Output Performance & Overhead
+
+**Description:**  
+Logging system operates with <5% performance overhead and no memory leaks during 24-hour continuous operation.
+
+**Performance Constraints:**
+- Per-message timestamp overhead: ~50–100 µs (integer arithmetic only)
+- No impact on loop cycle time (logging not on critical path)
+- Loop cycle time target: <50 ms average
+- Input polling: 10 ms (100 Hz)
+- Sensor slot scheduling: 200 ms
+
+**Memory Constraints:**
+- Code size: +500 bytes (logPrintf function)
+- Stack memory: +50 bytes per message (temporary format buffer)
+- Heap memory: stable (no growth) during 24-hour runtime
+- Total footprint: <1% of available 4MB SRAM
+
+**Serial Bandwidth:**
+- Baud rate: 115200 (fixed)
+- Theoretical throughput: ~14.4 KB/s
+- Expected message rate: ~50–100 messages/min (steady state)
+- Expected bandwidth: ~200–400 bytes/min (~0.3–0.6% utilization)
+
+**Success Metrics:**
+- Heap memory at T=0: X bytes; at T=24h: X±1% bytes (stable)
+- Loop cycle time variance: <10% with/without logging
+- No Serial buffer overflow or data corruption
+- No observer effect (logging does not change system behavior)
+
+**Related Requirements:** FR-027 (Logging Performance & Stability)
+
+---
+
+## Ambiguities & [UNKNOWN] Items
+
+| Item | Impact | Note |
+|------|--------|------|
+| Gamepad seesaw firmware version | BR-003, BR-019 | Assumed ≥3.x; not checked at runtime |
+| I2C timeout values | BR-002 | Wire library internal timeouts [UNKNOWN] |
+| TSL2591 GAIN_MED and INTEGRATIONTIME_200MS exact values | BR-026 | Enums from Adafruit library; not defined in firmware |
+| VEML6075 config register 0x00 meaning | BR-024 | Hardcoded value 0x0000; exact effect unknown without datasheet |
+| INA219 200 ms gap threshold rationale | BR-022 | Empirically chosen; no documentation of origin |
+| Encoder delta per mechanical tick | BR-011 | Assumed ±1 per tick; actual hardware behavior unknown |
+| (NEW) Spontaneous display switch root cause | BR-036 | Electrical noise, I2C glitch, or firmware bug? (To be diagnosed) |
+| (NEW) Serial bottleneck risk at 100 msgs/min | BR-038 | Will 115200 baud handle steady-state volume? (Monitor in tests) |
 

@@ -1,7 +1,8 @@
 # API & External Interfaces: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-25  
-**Project Type:** Embedded Firmware (No HTTP/REST APIs)
+**Last Updated:** 2026-10-22  
+**Project Type:** Embedded Firmware (No HTTP/REST APIs)  
+**Related Specs:** FEATURE-SPEC-012 (Logging & Diagnostics)
 
 ---
 
