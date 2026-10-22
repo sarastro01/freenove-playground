@@ -131,3 +131,26 @@ String Si1145Sensor::getStatus() const {
   }
   return "OK";
 }
+
+// ============================================================================
+// PHASE 3 Refactoring: getValues() Accessor
+// ============================================================================
+// Provides const reference to Si1145Values struct for main.cpp display layer.
+// The struct is populated from internal cached values on each call.
+// This is a backward-compatibility bridge that enables encapsulation
+// without moving the struct definition to the header.
+//
+// Implementation detail: Uses static local struct to avoid heap allocation.
+// Thread-safe for single-threaded Arduino context.
+// 
+const struct Si1145Values& Si1145Sensor::getValues() const {
+  static struct Si1145Values valuesBuffer;
+  
+  // Populate buffer from internal state
+  valuesBuffer.visible = values.visible;
+  valuesBuffer.infrared = values.infrared;
+  valuesBuffer.uv = values.uv;
+  valuesBuffer.uvIndex = values.uvIndex;
+  
+  return valuesBuffer;
+}

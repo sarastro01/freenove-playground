@@ -195,14 +195,6 @@ struct Tsl2591Values {
   uint16_t integrationTime;    // Integration time in ms
 };
 
-// SI1145 multi-spectrum sensor cache struct (FEATURE-SPEC-005)
-struct Si1145Values {
-  uint16_t visible;       // Visible light raw (16-bit)
-  uint16_t infrared;      // Infrared raw (16-bit)
-  uint16_t uv;            // UV raw (register 0x2C)
-  float uvIndex;          // UV index (calculated: uv / 100.0f)
-};
-
 Ina219Values ina219Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
@@ -210,7 +202,7 @@ Scd30Values scd30Values{};
 Scd30State scd30State{};
 Bme280Values bme280Values{};       // BME280 cache (struct def in Bme280Sensor.h)
 Tsl2591Values tsl2591Values{};     // TSL2591 cache
-Si1145Values si1145Values{};       // SI1145 cache
+Si1145Values si1145Values{};       // SI1145 cache (struct def in Si1145Sensor.h)
 EncoderValues encoderValues{};
 GamepadValues gamepadValues{};
 Ds2484Values ds2484Values{};  // DS2484 1-Wire adapter and sensors
@@ -1132,26 +1124,11 @@ void readSi1145(Si1145Values &values)
   
   uint32_t startTime = micros();
   
-  // Read sensor values using Adafruit_SI1145 API
-  uint16_t visible = si1145.readVisible();
-  uint16_t infrared = si1145.readIR();
-  uint16_t uv = si1145.readUV();  // Raw UV from register 0x2C
+  // PHASE 3: Delegate to sensor class
+  si1145Sensor.update();
   
-  // Error check: If all three values are 0, likely I2C error
-  if (visible == 0 && infrared == 0 && uv == 0) {
-    // Serial.println("ERROR: SI1145 read returned all zeros");
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Calculate UV index (standard Adafruit formula: raw / 100.0)
-  float uvIndex = uv / 100.0f;
-  
-  // Update cache (only on successful read)
-  values.visible = visible;
-  values.infrared = infrared;
-  values.uv = uv;
-  values.uvIndex = uvIndex;
+  // Copy from sensor accessor to global struct
+  values = si1145Sensor.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;

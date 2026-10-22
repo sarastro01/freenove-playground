@@ -32,6 +32,19 @@
 #include "BaseSensor.h"
 #include <Adafruit_SI1145.h>
 
+// ============================================================================
+// Si1145Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+// This struct is also defined in main.cpp for backward compatibility
+// Both definitions must remain in sync
+//
+struct Si1145Values {
+  uint16_t visible;       ///< Visible light raw (16-bit)
+  uint16_t infrared;      ///< Infrared raw (16-bit)
+  uint16_t uv;            ///< UV raw (register 0x2C)
+  float uvIndex;          ///< UV index (calculated: uv / 100.0f)
+};
+
 /**
  * @class Si1145Sensor
  * @brief SI1145 multi-spectrum light sensor implementation
@@ -216,6 +229,22 @@ public:
    * @return UV Index as float (0.0 to ~15.0+)
    */
   float getUVIndex() const { return values.uvIndex; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * Returns all current sensor values packed into Si1145Values struct.
+   * Used by main.cpp display layer instead of direct global variable access.
+   * This enables better encapsulation without moving the struct definition.
+   * 
+   * @return Const reference to Si1145Values struct with current sensor state
+   * 
+   * @note The returned struct is reconstructed from internal values on each call.
+   *       For performance-critical code, consider caching the result.
+   * 
+   * @see Si1145Values (defined in main.cpp)
+   */
+  const struct Si1145Values& getValues() const;
 };
 
 #endif  // SI1145_SENSOR_H
