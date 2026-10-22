@@ -18,6 +18,7 @@
 
 // PHASE-4: Include sensor registry and all sensor classes
 #include "sensors/sensors.h"
+#include "diagnostics.h"
 
 #define SDA_PIN 32
 #define SCL_PIN 25
@@ -139,6 +140,9 @@ Adafruit_DS248x ds2484Master;
 // PHASE-4: Sensor Registry and Instances
 // Registry manages all 8 functional sensor instances polymorphically (excludes GamepadSensor and EncoderSensor with pre-existing errors)
 SensorRegistry sensorRegistry;
+
+// Diagnostic monitoring
+DiagnosticStats diagStats = {0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0};
 
 // Create instances of all 8 working sensor classes
 Ina219Sensor ina219Sensor;
@@ -2648,6 +2652,9 @@ void setup()
   delay(100);  // Give serial time to init
   Serial.println("\n\n[SETUP] ========== BOOT START ==========");
   
+  // Initialize diagnostics FIRST
+  initDiagnostics();
+  
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
   
@@ -2721,6 +2728,9 @@ void loop()
   static uint32_t nextDisplayMs = 0;
   static uint32_t nextInaSampleUs = 0;
   uint32_t now = millis();
+
+  // Monitor heap every 10 seconds
+  monitorHeap(now);
 
   // PRIORITY 1: Read gamepad input FIRST (no drawing, just read state)
   if (available.gamepad && (int32_t)(now - nextGamepadMs) >= 0) {
