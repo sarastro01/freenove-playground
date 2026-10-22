@@ -35,6 +35,21 @@
 #include "BaseSensor.h"
 #include <Adafruit_TSL2591.h>
 
+// ============================================================================
+// Tsl2591Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+// This struct is also defined in main.cpp for backward compatibility
+// Both definitions must remain in sync
+//
+struct Tsl2591Values {
+  uint32_t fullSpectrum;       ///< Full spectrum raw (16-bit CHAN0)
+  uint32_t infrared;           ///< Infrared raw (16-bit CHAN1)
+  uint32_t visible;            ///< Visible light (calculated)
+  float lux;                   ///< Illuminance in lux
+  uint16_t gain;               ///< Sensor gain setting
+  uint16_t integrationTime;    ///< Integration time in ms
+};
+
 /**
  * @class Tsl2591Sensor
  * @brief TSL2591 digital light sensor implementation
@@ -243,6 +258,22 @@ public:
    * @return Integration time in milliseconds
    */
   uint16_t getIntegrationTime() const { return values.integrationTime; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * Returns all current sensor values packed into Tsl2591Values struct.
+   * Used by main.cpp display layer instead of direct global variable access.
+   * This enables better encapsulation without moving the struct definition.
+   * 
+   * @return Const reference to Tsl2591Values struct with current sensor state
+   * 
+   * @note The returned struct is reconstructed from internal values on each call.
+   *       For performance-critical code, consider caching the result.
+   * 
+   * @see Tsl2591Values (defined in main.cpp)
+   */
+  const struct Tsl2591Values& getValues() const;
 };
 
 #endif  // TSL2591_SENSOR_H

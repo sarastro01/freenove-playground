@@ -185,23 +185,13 @@ struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8
 // PHASE-4: Import DS2484 struct definitions from sensor class (avoid redefinition)
 #include "sensors/Ds2484Types.h"
 
-// TSL2591 light sensor cache struct (FEATURE-SPEC-005)
-struct Tsl2591Values {
-  uint32_t fullSpectrum;       // Full spectrum raw (16-bit CHAN0)
-  uint32_t infrared;           // Infrared raw (16-bit CHAN1)
-  uint32_t visible;            // Visible light (calculated)
-  float lux;                   // Illuminance in lux
-  uint16_t gain;               // Sensor gain setting
-  uint16_t integrationTime;    // Integration time in ms
-};
-
 Ina219Values ina219Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
 Scd30State scd30State{};
 Bme280Values bme280Values{};       // BME280 cache (struct def in Bme280Sensor.h)
-Tsl2591Values tsl2591Values{};     // TSL2591 cache
+Tsl2591Values tsl2591Values{};     // TSL2591 cache (struct def in Tsl2591Sensor.h)
 Si1145Values si1145Values{};       // SI1145 cache (struct def in Si1145Sensor.h)
 EncoderValues encoderValues{};
 GamepadValues gamepadValues{};
@@ -1091,31 +1081,11 @@ void readTsl2591(Tsl2591Values &values)
 {
   if (!available.tsl2591) return;
   
-  // Read sensor values using Adafruit_TSL2591 API
-  uint32_t fullLum = tsl2591.getFullLuminosity();
-  uint32_t fullSpectrum = fullLum & 0xFFFF;        // Lower 16 bits (CHAN0)
-  uint32_t infrared = fullLum >> 16;               // Upper 16 bits (CHAN1)
-  uint32_t visible = (fullSpectrum > infrared) ? (fullSpectrum - infrared) : 0;
-  float lux = tsl2591.calculateLux(fullSpectrum, infrared);
-  uint16_t gain = tsl2591.getGain();
-  uint16_t integrationTime = tsl2591.getTiming();
+  // PHASE 3: Delegate to sensor class
+  tsl2591Sensor.update();
   
-  // Error check: If both channels read as zero, likely I2C error
-  if (fullSpectrum == 0 && infrared == 0) {
-    // Serial.println("ERROR: TSL2591 read returned zero values");
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Update cache (only on successful read)
-  values.fullSpectrum = fullSpectrum;
-  values.infrared = infrared;
-  values.visible = visible;
-  values.lux = lux;
-  values.gain = gain;
-  values.integrationTime = integrationTime;
-  
-  // NOTE: Timing measurement removed - this sync function is no longer used (replaced by async startTsl2591Measurement/checkTsl2591Async)
+  // Copy from sensor accessor to global struct
+  values = tsl2591Sensor.getValues();
 }
 
 void readSi1145(Si1145Values &values)

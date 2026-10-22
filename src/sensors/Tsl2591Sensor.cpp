@@ -143,3 +143,28 @@ String Tsl2591Sensor::getStatus() const {
   }
   return "OK";
 }
+
+// ============================================================================
+// PHASE 3 Refactoring: getValues() Accessor
+// ============================================================================
+// Provides const reference to Tsl2591Values struct for main.cpp display layer.
+// The struct is populated from internal cached values on each call.
+// This is a backward-compatibility bridge that enables encapsulation
+// without moving the struct definition to the header.
+//
+// Implementation detail: Uses static local struct to avoid heap allocation.
+// Thread-safe for single-threaded Arduino context.
+// 
+const struct Tsl2591Values& Tsl2591Sensor::getValues() const {
+  static struct Tsl2591Values valuesBuffer;
+  
+  // Populate buffer from internal state
+  valuesBuffer.fullSpectrum = values.fullSpectrum;
+  valuesBuffer.infrared = values.infrared;
+  valuesBuffer.visible = values.visible;
+  valuesBuffer.lux = values.lux;
+  valuesBuffer.gain = values.gain;
+  valuesBuffer.integrationTime = values.integrationTime;
+  
+  return valuesBuffer;
+}
