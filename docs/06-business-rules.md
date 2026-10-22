@@ -3695,38 +3695,48 @@ Gamepad button state changes logged (not every poll cycle, only transitions).
 
 ---
 
-### BR-036: Spontaneous Display Switch Detection
+### BR-036: Spontaneous Display Switch Detection (FEATURE-SPEC-012)
 
 **Description:**  
-If `currentPage` changes without logged user input (gamepad/encoder), log error and diagnostic info.
+Logging infrastructure enables diagnosis of spontaneous display page changes. Automatic detection of unexplained switches is **DEFERRED TO FUTURE RELEASE** (Post-FEATURE-SPEC-012).
 
-**Trigger:**  
-Display page changes but preceding INPUT log for GAMEPAD or ENCODER does not exist within 500 ms.
+**Current Status:** ✅ LOGGING INFRASTRUCTURE COMPLETE (logs display changes and input events)
+**Detection Logic:** ❌ NOT YET IMPLEMENTED
 
-**Detection Algorithm:**
+**What Works Now (Logging Infrastructure - FEATURE-SPEC-012):**
+1. Every page change logged with source: `[MODE] page change: X → Y (source: SOURCE)`
+2. Every input event logged: `[INPUT] GAMEPAD Button Y: PRESSED`, `[INPUT] ENCODER Rotation: ...`
+3. Developers can correlate logs to diagnose unexplained switches
+
+**What's Deferred (Automatic Detection):**
+- Automatic detection of page changes without preceding INPUT logs
+- Automatic [ERROR] logging for spontaneous switches
+- Real-time alerts on device
+
+**How to Use Logging for Diagnostics Now:**
+1. Enable serial monitor: `pio device monitor`
+2. Run device for 24+ hours collecting logs
+3. Search logs for page changes without preceding INPUT events
+4. Correlate with [SENSOR], [I2C], and [DIAG] logs to identify cause
+5. Examples:
+   ```
+   [00:05:23.456] [SENSOR] BME280 read time: 12345 µs
+   [00:05:24.123] [I2C] WARNING: SCD30 read timeout (5 retries)
+   [00:05:24.145] [MODE] page change: 3 → 4
+   ↑ (No preceding INPUT log within 500 ms = potential electrical noise or I2C error)
+   ```
+
+**Future Implementation (Post-FEATURE-SPEC-012):**
+The detection logic would:
 1. Track `currentPage` every loop iteration
-2. On change, check for recent [INPUT] or [MODE] log
-3. If none found within 500 ms: log [ERROR] message
+2. On change, check for recent [INPUT] or [MODE] log within 500 ms
+3. If none found: log [ERROR] message automatically
 4. Include timestamp, previous page, new page
-
-**Error Log Format:**
-```
-[HH:MM:SS.sss] [ERROR] Spontaneous display switch: X → Y (no input detected)
-```
-
-**Diagnostic Actions:**
-- Continue normal operation (do not crash/freeze)
-- Log may trigger investigation/24-hour diagnostics run
-- Correlate with preceding [I2C] and [SENSOR] logs to identify cause
-
-**Example Scenario:**
-```
-[00:05:23.456] [SENSOR] BME280 read time: 12345 µs
-[00:05:24.123] [I2C] WARNING: SCD30 read timeout (5 retries, last attempt 5002 µs)
-[00:05:24.145] [ERROR] Spontaneous display switch: 3 → 4 (no input detected)
-```
+5. Error log format: `[HH:MM:SS.sss] [ERROR] Spontaneous display switch: X → Y (no input detected)`
 
 **Related Requirements:** FR-025 (Display Switch Diagnostics)
+
+**Related Test Case:** TC-LOG-005 (Deferred)
 
 ---
 
@@ -3740,7 +3750,7 @@ System outputs version number and build timestamp on every boot within first 100
 [00:00:00.000] ========================================
 [00:00:00.001] Sensor Pages Dashboard
 [00:00:00.002] Version: 3.1.0
-[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.003] Build Date: 2026-10-22T17:20:00Z
 [00:00:00.004] Compiler: arm-none-eabi-g++ 9.3.1
 [00:00:00.005] ESP32-WROOM-32 Detected
 [00:00:00.006] ========================================

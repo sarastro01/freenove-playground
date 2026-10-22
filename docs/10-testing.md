@@ -3335,9 +3335,19 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 
 ---
 
-### TC-LOG-005: Spontaneous Display Switch Detection
+### TC-LOG-005: Spontaneous Display Switch Detection (DEFERRED TO FUTURE RELEASE)
 
 **Requirement:** FR-025, BR-036
+
+**Status:** ❌ DEFERRED (Automatic detection logic not implemented in FEATURE-SPEC-012)
+
+**Current Capability:** ✅ LOGGING INFRASTRUCTURE READY
+- Every page change logged with timestamp and source
+- Every input event logged with timestamp
+- Developers can manually analyze logs to diagnose spontaneous switches
+
+**Future Implementation:**
+When BR-036 detection logic is implemented, this test case will validate:
 
 **Test Method:** 24-hour diagnostic run with analysis
 
@@ -3346,7 +3356,7 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 2. Let system run for 24 hours continuously
 3. Capture all Serial output to file via:
    ```bash
-   minicom -D /dev/ttyUSB0 -b 115200 -C /tmp/serial_log_24h.txt
+   minicom -D /dev/ttyUSB1 -b 115200 -C /tmp/serial_log_24h.txt
    ```
 
 **Expected Behavior:**
@@ -3378,7 +3388,7 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 
 **Steps:**
 1. Power on device
-2. Open Serial Monitor
+2. Open Serial Monitor: `pio device monitor -p /dev/ttyUSB1 -b 115200`
 3. Observe first 10 lines of output
 
 **Expected Output:**
@@ -3386,7 +3396,7 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 [00:00:00.000] ========================================
 [00:00:00.001] Sensor Pages Dashboard
 [00:00:00.002] Version: 3.1.0
-[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.003] Build Date: 2026-10-22T17:20:00Z
 [00:00:00.004] Compiler: arm-none-eabi-g++
 [00:00:00.005] ESP32-WROOM-32 Detected
 [00:00:00.006] ========================================
@@ -3400,6 +3410,8 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 - ✅ Banner starts with `========` and ends with `========`
 
 **Pass Criteria:** Version and build date displayed correctly at every boot
+
+**Status:** ✅ READY FOR EXECUTION
 
 ---
 

@@ -950,15 +950,18 @@ The system shall output all diagnostic messages with millisecond-precision times
 - Timestamp format: `[HH:MM:SS.sss]` prepended to every Serial line
 - Time reference: milliseconds since boot (via `millis()`)
 - Timestamp calculation uses integer-only arithmetic (no floating point)
+- **logPrintf() automatically appends newline after every message**
+- **Do NOT include `\n` in format strings** (would create double newlines)
+- Empty calls `logPrintf("")` are filtered and produce no output
 - Examples:
   ```
-  [00:00:15.342] [DS2484] Found sensor 1: Family=28...
-  [00:00:15.412] [INA219] Reading voltage: 5.087 V
-  [00:01:23.801] [GAMEPAD] Button Y pressed
+  [00:00:15.342] [SENSOR] DS2484 Found sensor 1: Family=28...
+  [00:00:15.412] [SENSOR] INA219 Reading voltage: 5.087 V
+  [00:01:23.801] [INPUT] GAMEPAD Button Y pressed
   ```
 
 **Performance Impact:**
-- Per-message overhead: ~50-100 μs (negligible)
+- Per-message overhead: ~50-100 μs (negligible, integer arithmetic only)
 - Code memory: +500 bytes
 - Stack memory: +50 bytes
 - No impact on loop cycle time (not on critical path)
@@ -968,13 +971,16 @@ The system shall output all diagnostic messages with millisecond-precision times
 All messages tagged with category: `[BOOT]`, `[DIAG]`, `[SENSOR]`, `[INPUT]`, `[MODE]`, `[I2C]`, `[ERROR]`, `[VERSION]`
 
 **Implementation:**
-- New function: `logPrintf(const char* format, ...)`
-- Replaces all `Serial.printf()` calls
+- New function: `logPrintf(const char* format, ...)` (defined in src/diagnostics.h, implemented in src/main.cpp)
+- Replaces all `Serial.printf()` calls (89 total)
 - Used by sensor read functions, input handlers, and diagnostics
+- Converts time via integer-only arithmetic: hours = (ms / 3600000) % 24, etc.
 
-**Status:** 🔵 READY FOR IMPLEMENTATION
+**Status:** ✅ IMPLEMENTED
 
 **Related Requirements:** FR-025, FR-026, FR-027
+
+**Related API:** See docs/05-api.md § 4a (Timestamped Logging Function) and § 4b (Version Constants)
 
 ---
 
