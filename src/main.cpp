@@ -72,7 +72,9 @@ constexpr uint8_t CONFIG_PAGE_TITLE_MAX_LEN = 20;
 
 // Timing Configuration (milliseconds)
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
-constexpr uint32_t INPUT_REFRESH_MS = 10;        // 100 Hz for responsive buttons
+constexpr uint32_t INPUT_REFRESH_MS = 10;        // Legacy shared input timing
+constexpr uint32_t GAMEPAD_REFRESH_MS = 25;     // 40 Hz (25 ms interval)
+constexpr uint32_t ENCODER_REFRESH_MS = 20;      // 50 Hz (20 ms interval)
 constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;
 constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (10 slots = 2000 ms cycle)
 constexpr uint32_t SLOT_COUNT = 10;
@@ -145,6 +147,42 @@ Adafruit_DS248x ds2484Master;                // DS2484 I2C-to-1-Wire adapter
 // ============================================================================
 SensorRegistry sensorRegistry;               // Registry manages all 8 sensor wrappers polymorphically
 DiagnosticStats diagStats = {0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0};
+
+// Cooperative I2C bus serialization. The loop is single-threaded, but this
+// guard prevents a scheduled read from starting while another read is active.
+static bool i2cBusLocked = false;
+static uint32_t i2cLockTimeout = 0;
+
+static bool tryLockI2cBus(const char* requester)
+{
+#if I2C_SCHEDULING_ENABLED
+  const uint32_t now = millis();
+  if (i2cBusLocked && (int32_t)(now - i2cLockTimeout) >= 0) {
+    i2cBusLocked = false;  // Recover from an interrupted/overlong read.
+  }
+  if (i2cBusLocked) {
+    logPrintf("[I2C-SCHED] %s skipped: bus locked", requester);
+    return false;
+  }
+  i2cBusLocked = true;
+  i2cLockTimeout = now + I2C_LOCK_TIMEOUT_MS;
+#endif
+  return true;
+}
+
+static void unlockI2cBus()
+{
+#if I2C_SCHEDULING_ENABLED
+  i2cBusLocked = false;
+#endif
+}
+
+static void logI2cTiming(const char* sensor, uint32_t durationUs)
+{
+  logPrintf("[I2C-TIMING] %s:value time:%lu ms bus:%s errors:%lu",
+            sensor, durationUs / 1000UL, i2cBusLocked ? "locked" : "free",
+            diagStats.i2cErrors);
+}
 
 Ina219Sensor ina219Sensor;
 Bme280Sensor bme280Sensor;
@@ -1041,7 +1079,7 @@ bool readScd30(Scd30Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("SCD30 read time: %lu µs", duration);
+  logI2cTiming("SCD30", duration);
   return true;
 }
 
@@ -1089,7 +1127,7 @@ bool readVeml6075(Veml6075Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("VEML6075 read time: %lu µs", duration);
+  logI2cTiming("VEML6075", duration);
   return true;
 }
 
@@ -1103,7 +1141,7 @@ bool readVeml6070(Veml6070Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("VEML6070 read time: %lu µs", duration);
+  logI2cTiming("VEML6070", duration);
   return true;
 }
 
@@ -1123,18 +1161,18 @@ void readBme280(Bme280Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("BME280 read time: %lu µs", duration);
+  logI2cTiming("BME280", duration);
 }
 
 void readTsl2591(Tsl2591Values &values)
 {
   if (!available.tsl2591) return;
-  
+  const uint32_t startTime = micros();
   // PHASE 3: Delegate to sensor class
   tsl2591Sensor.update();
-  
   // Copy from sensor accessor to global struct
   values = tsl2591Sensor.getValues();
+  logI2cTiming("TSL2591", micros() - startTime);
 }
 
 void readSi1145(Si1145Values &values)
@@ -1151,7 +1189,7 @@ void readSi1145(Si1145Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("SI1145 read time: %lu µs", duration);
+  logI2cTiming("SI1145", duration);
 }
 
 // DS2484 1-Wire temperature sensor functions
@@ -1390,13 +1428,44 @@ void updateEncoderLed()
 void readEncoderAt50Hz()
 {
   if (!available.encoder) return;
+  if (!tryLockI2cBus("Encoder")) return;
 
   uint32_t startTime = micros();
-  int32_t position = encoder.getEncoderPosition();
-  encoderValues.delta = position - encoderLastPosition;
+  const int32_t previousPosition = encoderLastPosition;
+  static uint32_t consecutiveI2cErrors = 0;
+  int32_t position = previousPosition;
+  bool readSucceeded = false;
+  logPrintf("[ENCODER] Reading position (previous: %ld)", (long)previousPosition);
+  for (uint8_t attempt = 1; attempt <= I2C_MAX_RETRY_ATTEMPTS; ++attempt) {
+    // A timeout is reported by the ESP32 I2C driver as error 263.  Probe the
+    // device before the normal read so a failed transaction can be recovered.
+    Wire.beginTransmission(ENCODER_ADDR);
+    const uint8_t i2cError = Wire.endTransmission();
+    if (i2cError == 0) {
+      position = encoder.getEncoderPosition();
+      encoderValues.pressed = encoder.digitalRead(ENCODER_BUTTON_PIN) == LOW;
+      readSucceeded = true;
+      consecutiveI2cErrors = 0;
+      break;
+    }
+    ++consecutiveI2cErrors;
+    logPrintf("[ENCODER] I2C error 263 (attempt %u/%u, timestamped)", attempt, I2C_MAX_RETRY_ATTEMPTS);
+    recoverI2cBus("encoder", ENCODER_ADDR, consecutiveI2cErrors, SDA_PIN, SCL_PIN);
+  }
+  if (!readSucceeded) {
+    logPrintf("[ENCODER] I2C read failed after %u attempts", I2C_MAX_RETRY_ATTEMPTS);
+  }
+  encoderValues.delta = position - previousPosition;
   encoderLastPosition = position;
   encoderValues.position = position;
-  encoderValues.pressed = encoder.digitalRead(ENCODER_BUTTON_PIN) == LOW;
+  logPrintf("[ENCODER] Got position: %ld (previous: %ld, delta: %+ld)",
+            (long)position, (long)previousPosition, (long)encoderValues.delta);
+  if (labs(encoderValues.delta) > ENCODER_POSITION_MAX_DELTA) {
+    logPrintf("[ENCODER] WARNING: Position delta exceeded limit (previous: %ld, current: %ld)",
+              (long)previousPosition, (long)position);
+  } else {
+    logPrintf("[ENCODER] Position valid");
+  }
 
   // FEATURE-SPEC-011: Encoder button press tracking (debounce via rising-edge detection)
   // Note: LED updates are now handled by updateEncoderLed() in navigation context,
@@ -1426,10 +1495,14 @@ void readEncoderAt50Hz()
     if (duration > encoderStats.maxTime) encoderStats.maxTime = duration;
   }
   #endif
+  unlockI2cBus();
+  logI2cTiming("Encoder", duration);
 }
 
 void readSensors()
 {
+  if (!tryLockI2cBus("Sensors")) return;
+  const uint32_t startTime = micros();
   // PHASE-4: Update all sensors via registry
   sensorRegistry.updateAll();
   
@@ -1446,6 +1519,8 @@ void readSensors()
   if (available.ds2484) {
     syncDs2484Values();       // Sync wrapper updates to global cache for display layer
   }
+  unlockI2cBus();
+  logI2cTiming("Sensors", micros() - startTime);
 }
 
 // ============================================================================
@@ -1523,7 +1598,7 @@ void checkTsl2591Async()
   // State machine back to IDLE
   tsl2591State = Tsl2591State::IDLE;
   
-  logPrintf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)", duration, elapsedMs);
+  logI2cTiming("TSL2591", duration);
 }
 
 /// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~1 ms)
@@ -1697,6 +1772,8 @@ void checkDs18b20Async()
 ///   Slot 6 (1200 ms): Start DS18B20 conversion (async) + check TSL2591 + check DS18B20
 void rotatedReadSensor(uint32_t slot)
 {
+  if (!tryLockI2cBus("Sensors")) return;
+  const uint32_t startTime = micros();
   // Clamp slot to valid range
   slot = slot % SLOT_COUNT;
   
@@ -1803,6 +1880,8 @@ void rotatedReadSensor(uint32_t slot)
       checkDs18b20Async();
       break;
   }
+  unlockI2cBus();
+  logI2cTiming("Sensors", micros() - startTime);
 }
 
 /// @brief Check if any sensor value has changed compared to last cached snapshot
@@ -2110,12 +2189,36 @@ void printIna219Stats()
 void readGamepadAt40Hz()
 {
   if (!available.gamepad) return;
+  if (!tryLockI2cBus("Gamepad")) return;
 
   uint32_t startTime = micros();
-  
-  gamepadValues.x = 1023 - gamepad.analogRead(14);
-  gamepadValues.y = 1023 - gamepad.analogRead(15);
-  gamepadValues.buttons = gamepad.digitalReadBulk(BUTTON_MASK);
+  const uint32_t previousButtons = gamepadValues.buttons;
+  static uint32_t consecutiveI2cErrors = 0;
+  bool readSucceeded = false;
+  logPrintf("[GAMEPAD] Reading state (previous buttons: 0x%08lX)", (unsigned long)previousButtons);
+  for (uint8_t attempt = 1; attempt <= I2C_MAX_RETRY_ATTEMPTS; ++attempt) {
+    Wire.beginTransmission(GAMEPAD_ADDR);
+    const uint8_t i2cError = Wire.endTransmission();
+    if (i2cError == 0) {
+      gamepadValues.x = 1023 - gamepad.analogRead(14);
+      gamepadValues.y = 1023 - gamepad.analogRead(15);
+      gamepadValues.buttons = gamepad.digitalReadBulk(BUTTON_MASK);
+      readSucceeded = true;
+      consecutiveI2cErrors = 0;
+      break;
+    }
+    ++consecutiveI2cErrors;
+    logPrintf("[GAMEPAD] I2C error 263 (attempt %u/%u)", attempt, I2C_MAX_RETRY_ATTEMPTS);
+    recoverI2cBus("gamepad", GAMEPAD_ADDR, consecutiveI2cErrors, SDA_PIN, SCL_PIN);
+  }
+  if (!readSucceeded) {
+    logPrintf("[GAMEPAD] I2C read failed after %u attempts", I2C_MAX_RETRY_ATTEMPTS);
+    gamepadValues.buttons = previousButtons;
+  }
+  if (gamepadValues.buttons != previousButtons) {
+    logPrintf("[GAMEPAD] Button state changed: 0x%08lX -> 0x%08lX",
+              (unsigned long)previousButtons, (unsigned long)gamepadValues.buttons);
+  }
   gamepadValues.hasEvent = false;
   
   uint32_t endTime = micros();
@@ -2136,12 +2239,16 @@ void readGamepadAt40Hz()
   
   // Skip getKeypadCount() as it causes I2C blocking with other sensors
   // Button states are read directly via digitalReadBulk() above
+  unlockI2cBus();
+  logI2cTiming("Gamepad", duration);
 }
 
 
 void readIna219At50Hz()
 {
   if (!available.ina219) return;
+  if (!tryLockI2cBus("INA219")) return;
+  const uint32_t startTime = micros();
 
   // PHASE 3a: Use ina219Sensor for hardware reads (single I2C instance)
   // Then copy to global ina219Values for backward compatibility
@@ -2149,6 +2256,8 @@ void readIna219At50Hz()
   
   // Populate global ina219Values from sensor
   ina219Values = ina219Sensor.getValues();
+  unlockI2cBus();
+  logI2cTiming("INA219", micros() - startTime);
 }
 
 // Format runtime as HH:MM:SS
@@ -2542,10 +2651,11 @@ void detectSensors()
     ds2484Values.lastScanMs = 0;  // Trigger immediate bus scan
     ds2484Values.lastConversionMs = 0;
     
-    // Perform initial 1-Wire bus scan to discover sensors
-    logPrintf("[SETUP] Starting initial DS2484 bus scan...");
-    performDs2484Scan();
-    logPrintf("[SETUP] Initial scan complete: found %d sensor(s)", ds2484Values.sensorCount);
+    // HOTFIX 2026-10-22: Skip initial DS2484 bus scan - causes I2C bus hang at boot
+    // The scan will be triggered periodically in the main loop (every 60 seconds)
+    // See: https://github.com/freenove/freenove-playground/issues/XXX
+    logPrintf("[SETUP] DS2484: Initial bus scan deferred to main loop (prevents I2C hang)");
+    // performDs2484Scan();  // DISABLED - causes boot hang
   } else {
     logPrintf("[SETUP] DS2484: NOT FOUND at 0x18");
   }
@@ -2642,10 +2752,13 @@ void setup()
   tft.init();
   tft.setRotation(3);
   
-  // FEATURE-SPEC-010: Scan I2C bus and display results
-  logPrintf("[SETUP] Scanning I2C bus...");
-  scanI2CBus();
+  // HOTFIX 2026-10-22: Disable I2C bus scan - causes I2C bus hang at boot
+  // The bus scan iterates through all 127 I2C addresses and can deadlock
+  // if any device is in an error state (e.g., DS2484 after overflow event)
+  // logPrintf("[SETUP] Scanning I2C bus...");
+  // scanI2CBus();  // DISABLED - causes boot hang
   
+  logPrintf("[SETUP] I2C bus scan disabled (boot safety)");
   drawHeader("Sensor Dashboard");
   
   logPrintf("[SETUP] Detecting sensors...");
@@ -2778,7 +2891,7 @@ void loop()
       // else: Button A is inactive in large display mode (do nothing)
     }
     
-    nextGamepadMs = now + INPUT_REFRESH_MS;
+    nextGamepadMs = now + GAMEPAD_REFRESH_MS;
   }
 
   // FEATURE-SPEC-011: Encoder Navigation Handler
@@ -2859,7 +2972,7 @@ void loop()
     readEncoderAt50Hz();
     // FEATURE-SPEC-011: Update LED based on current mode and page every 50 Hz
     updateEncoderLed();
-    nextEncoderMs = now + INPUT_REFRESH_MS;
+    nextEncoderMs = now + ENCODER_REFRESH_MS;
   }
 
   // PRIORITY 3: Read INA219 at independent schedule

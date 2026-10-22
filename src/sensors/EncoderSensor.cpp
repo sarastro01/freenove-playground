@@ -7,6 +7,7 @@
 
 #include "EncoderSensor.h"
 #include <Arduino.h>
+#include "../diagnostics.h"
 
 // Color presets (RGB format: 0xRRGGBB)
 const uint32_t EncoderSensor::COLOR_PRESETS[4] = {
@@ -35,7 +36,7 @@ bool EncoderSensor::initialize() {
   seesaw.enableEncoderInterrupt();
   
   // Get initial encoder position
-  int32_t initialPos = seesaw.getEncoderPosition();
+  int64_t initialPos = static_cast<int64_t>(seesaw.getEncoderPosition());
   
   // Initialize cached values
   values.position = initialPos;
@@ -77,9 +78,19 @@ bool EncoderSensor::update() {
   lastValues.colorIndex = values.colorIndex;
   
   // Read encoder position
-  int32_t newPosition = seesaw.getEncoderPosition();
-  values.delta = newPosition - values.position;
-  values.position = newPosition;
+  int64_t newPosition = static_cast<int64_t>(seesaw.getEncoderPosition());
+  int64_t delta = newPosition - values.position;
+  if (delta > ENCODER_POSITION_MAX_DELTA || delta < -ENCODER_POSITION_MAX_DELTA) {
+    logPrintf("[WARN] [Encoder] Position overflow detected: before=%lld, after=%lld, delta=%lld; resetting position to 0",
+              static_cast<long long>(values.position),
+              static_cast<long long>(newPosition),
+              static_cast<long long>(delta));
+    values.position = 0;
+    values.delta = 0;
+  } else {
+    values.delta = delta;
+    values.position = newPosition;
+  }
   
   // Read button state
   bool newPressed = seesaw.digitalRead(24) == 0;  // Button on pin 24, active low

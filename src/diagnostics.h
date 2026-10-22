@@ -2,6 +2,7 @@
 #define DIAGNOSTICS_H
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <stdarg.h>
 
 // ============================================================================
@@ -29,6 +30,13 @@ void logPrintf(const char* format, ...);
 #define ENABLE_REBOOT_REASON 1
 #define ENABLE_SENSOR_TIMING 1
 #define ENABLE_I2C_MONITORING 1
+#define I2C_LOCK_TIMEOUT_MS 50
+#define I2C_SCHEDULING_ENABLED 1
+
+// I2C read/recovery thresholds
+#define ENCODER_POSITION_MAX_DELTA 1000
+#define I2C_MAX_RETRY_ATTEMPTS 3
+#define I2C_ERROR_RECOVERY_DELAY_MS 10
 
 // Monitoring intervals (milliseconds)
 #define HEAP_MONITOR_INTERVAL 10000  // Every 10 seconds
@@ -37,6 +45,7 @@ void logPrintf(const char* format, ...);
 // Thresholds for warnings
 #define MIN_HEAP_WARNING 50000       // Warn if heap < 50KB
 #define SLOW_SENSOR_THRESHOLD_MS 500 // Warn if sensor read > 500ms
+#define ENCODER_OVERFLOW_THRESHOLD INT32_MAX
 
 // ============================================================================
 // REBOOT REASON STRINGS
@@ -75,6 +84,20 @@ struct DiagnosticStats {
 };
 
 extern DiagnosticStats diagStats;
+
+// Release the bus and re-initialize Wire after an ESP_ERR_TIMEOUT (263).
+// This is intentionally small and non-invasive so callers can retry their
+// existing device read without changing sensor logic.
+inline void recoverI2cBus(const char* device, uint8_t address, uint32_t consecutiveErrors, int sdaPin, int sclPin) {
+  logPrintf("[I2C] Recovery attempt for %s (addr 0x%02X, consecutive errors: %lu, error: 263)",
+            device, address, consecutiveErrors);
+  pinMode(sdaPin, OUTPUT);
+  pinMode(sclPin, OUTPUT);
+  digitalWrite(sdaPin, HIGH);
+  digitalWrite(sclPin, HIGH);
+  delay(I2C_ERROR_RECOVERY_DELAY_MS);
+  Wire.begin(sdaPin, sclPin);
+}
 
 inline void initDiagnostics() {
   #if ENABLE_REBOOT_REASON

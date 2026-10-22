@@ -8,8 +8,8 @@
  * Provides position tracking, button detection, and LED color/brightness control.
  *
  * **Parameters** (7 total):
- *   0: Position    - Cumulative encoder position (int32_t, ticks)
- *   1: Delta       - Position change since last update (int32_t)
+ *   0: Position    - Cumulative encoder position (int64_t, ticks)
+ *   1: Delta       - Position change since last update (int64_t)
  *   2: Pressed     - Button currently pressed (bool)
  *   3: Presses     - Total button presses since boot (uint32_t)
  *   4: Brightness  - LED brightness 0-255 (uint8_t)
@@ -58,7 +58,7 @@
  * @brief Encapsulates Adafruit Seesaw rotary encoder with NeoPixel LED
  *
  * Tracks:
- * - Encoder position (ticks, int32_t)
+ * - Encoder position (ticks, int64_t)
  * - Button press/release state
  * - Total presses since boot
  * - LED color (4 presets) and brightness (0-255)
@@ -71,8 +71,8 @@ class EncoderSensor : public BaseSensor {
 private:
   /// @brief Cached encoder state
   struct {
-    int32_t position;           ///< Current position (ticks)
-    int32_t delta;              ///< Change since last update
+    int64_t position;           ///< Current position (ticks)
+    int64_t delta;              ///< Change since last update
     bool pressed;               ///< Button currently pressed
     uint32_t presses;           ///< Total presses since boot
     uint8_t brightness;         ///< LED brightness (0-255)
@@ -82,7 +82,7 @@ private:
 
   /// @brief Previous values for change detection
   struct {
-    int32_t position;
+    int64_t position;
     bool pressed;
     uint32_t presses;
     uint8_t brightness;
@@ -207,13 +207,13 @@ public:
    * @brief Get current encoder position (ticks)
    * @return Absolute position from start
    */
-  int32_t getPosition() const { return values.position; }
+  int64_t getPosition() const { return values.position; }
 
   /**
    * @brief Get position change since last update
    * @return Delta (positive = clockwise, negative = counter-clockwise)
    */
-  int32_t getDelta() const { return values.delta; }
+  int64_t getDelta() const { return values.delta; }
 
   /**
    * @brief Check if button is currently pressed
