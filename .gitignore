@@ -25,3 +25,7 @@ __pycache__/
 logs/serial/*.log
 nohup.out
 
+# Serial Monitor Logs
+logs/serial/*.log
+nohup.out
+
