@@ -10,8 +10,8 @@
 - Hardware (ESP32 + sensors) available for testing
 - PlatformIO and toolchain installed
 
-**Last Updated:** 2026-09-25  
-**Status:** ✅ **Complete** (Updated to reference FEATURE-SPEC-008 Central Parameter Definitions)
+**Last Updated:** 2026-10-22  
+**Status:** ✅ **Complete** (Added Phase 6: Logging & Diagnostics; FEATURE-SPEC-012 integrated)
 
 ---
 
@@ -22,14 +22,15 @@
 3. [Phase 3: Domain Model](#phase-3-domain-model)
 4. [Phase 4: Database/Persistence](#phase-4-databasepersistence)
 5. [Phase 5: Business Logic](#phase-5-business-logic)
-6. [Phase 6: API/Backend](#phase-6-apibackend)
-7. [Phase 7: Frontend/UI](#phase-7-frontendui)
-8. [Phase 8: Authentication/Authorization](#phase-8-authenticationauthorization)
-9. [Phase 9: External Integrations](#phase-9-external-integrations)
-10. [Phase 10: Tests](#phase-10-tests)
-11. [Phase 11: Build](#phase-11-build)
-12. [Phase 12: Deployment](#phase-12-deployment)
-13. [Phase 13: Universal Large Display Mode](#phase-13-universal-large-display-mode-feature-spec-007)
+6. [Phase 6: Logging & Diagnostics](#phase-6-logging--diagnostics-feature-spec-012)
+7. [Phase 7: API/Backend](#phase-7-apibackend)
+8. [Phase 8: Frontend/UI](#phase-8-frontendui)
+9. [Phase 9: Authentication/Authorization](#phase-9-authenticationauthorization)
+10. [Phase 10: External Integrations](#phase-10-external-integrations)
+11. [Phase 11: Tests](#phase-11-tests)
+12. [Phase 12: Build](#phase-12-build)
+13. [Phase 13: Deployment](#phase-13-deployment)
+14. [Phase 14: Universal Large Display Mode](#phase-14-universal-large-display-mode-feature-spec-007)
 
 ---
 
@@ -639,6 +640,277 @@ grep "Serial.begin\|Wire.begin" src/main.cpp | wc -l  # Should be 2 or more
 ### Dependencies on Other Phases
 - **Blocking:** Phase 7 (UI depends on sensor data), Phase 10 (tests depend on algorithms)
 - **Blocked by:** Phase 1, 2, 3
+
+---
+
+## Phase 5b: Logging & Diagnostics (FEATURE-SPEC-012) — Integrated with Phase 5
+
+### Objective
+Implement timestamped Serial logging with category tags, input activity tracking, and spontaneous display switch detection. Enable 24-hour diagnostics to identify firmware bugs, electrical noise, or I2C communication issues.
+
+**Note:** This subsection is part of Phase 5 (Business Logic). Logging infrastructure must be added to the main.cpp created in Phase 5.
+
+### Requirements Met
+- **FR-023:** Non-Blocking Loop Architecture Validation (already implemented, no changes needed)
+- **FR-024:** Timestamped Serial Logging System
+- **FR-025:** Display Switch Diagnostics Logging
+- **FR-026:** Version & Build Information Display
+- **FR-027:** Logging Performance & Stability
+
+### Dependencies
+- [x] Phase 1 (project structure, platformio.ini)
+- [x] Phase 2 (dependencies installed)
+- [x] Phase 3 (domain model structs)
+- [x] Phase 5 (business logic, page navigation, input handling)
+- [x] docs/01-requirements.md (FR-023 through FR-027 defined)
+- [x] docs/02-architecture.md (Sections 3.10–3.11 Logging & Diagnostics architecture)
+- [x] docs/06-business-rules.md (BR-031 through BR-038 Logging rules)
+- [x] docs/10-testing.md (Test cases TC-LOG-001 through TC-LOG-008)
+
+### Implementation
+
+#### Step 5b.1: Add Logging Header
+
+**File:** `src/diagnostics.h` (NEW)
+
+```cpp
+#ifndef DIAGNOSTICS_H
+#define DIAGNOSTICS_H
+
+#include <Arduino.h>
+#include <stdarg.h>
+
+// Version and Build Information
+#define VERSION "3.1.0"
+#define BUILD_DATE "2026-10-22T16:54:00Z"
+
+// logPrintf() wrapper: prepends timestamp [HH:MM:SS.sss] to every Serial message
+void logPrintf(const char* format, ...);
+
+#endif
+```
+
+**Testing:** Verify header syntax with `grep -n "void logPrintf" src/diagnostics.h`
+
+#### Step 5b.2: Implement logPrintf()
+
+**File:** `src/main.cpp` (add in global helper functions section, ~500 bytes)
+
+```cpp
+#include "diagnostics.h"
+
+void logPrintf(const char* format, ...) {
+  // Calculate timestamp from millis() using integer-only arithmetic
+  uint32_t elapsedMs = millis();
+  uint8_t h = (elapsedMs / 3600000) % 24;
+  uint8_t m = (elapsedMs / 60000) % 60;
+  uint8_t s = (elapsedMs / 1000) % 60;
+  uint16_t ms = elapsedMs % 1000;
+  
+  // Prepend timestamp
+  Serial.printf("[%02d:%02d:%02d.%03d] ", h, m, s, ms);
+  
+  // Process variable arguments
+  va_list args;
+  va_start(args, format);
+  vfprintf(Serial, format, args);
+  va_end(args);
+  
+  // Append newline
+  Serial.println();
+}
+```
+
+**Performance:** ~50–100 µs per message (negligible impact)
+
+**Testing:** Verify compilation with `pio run -e esp32-target`
+
+#### Step 5b.3: Boot Banner
+
+**Integrate into `setup()` function (within first 100 ms):**
+
+```cpp
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  
+  // Boot banner with version and build date
+  logPrintf("========================================");
+  logPrintf("Sensor Pages Dashboard");
+  logPrintf("Version: %s", VERSION);
+  logPrintf("Build Date: %s", BUILD_DATE);
+  logPrintf("Compiler: arm-none-eabi-g++");
+  logPrintf("ESP32-WROOM-32 Detected");
+  logPrintf("========================================");
+  logPrintf("[BOOT] Starting setup...");
+  
+  // ... rest of setup() continues ...
+}
+```
+
+**Expected First 10 Lines:**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.004] Compiler: arm-none-eabi-g++
+[00:00:00.005] ESP32-WROOM-32 Detected
+[00:00:00.006] ========================================
+[00:00:00.007] [BOOT] Starting setup...
+[00:00:00.015] [BOOT] TFT Display initialized
+[00:00:00.020] [BOOT] Initializing I2C...
+```
+
+#### Step 5b.4: Input Activity Logging
+
+**Integrate into input handling functions (handleButtons(), handleEncoder()):**
+
+**Gamepad button changes:**
+```cpp
+if (currentButtonY != lastButtonY) {
+  logPrintf("[INPUT] GAMEPAD Button Y: %s", currentButtonY ? "PRESSED" : "RELEASED");
+  lastInputAtMs = millis();
+  lastButtonY = currentButtonY;
+}
+// ... similar for A, X, B buttons ...
+```
+
+**Encoder rotation:**
+```cpp
+if (newPosition != lastEncoderPosition) {
+  int16_t delta = newPosition - lastEncoderPosition;
+  logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: %+d, %s)",
+            lastEncoderPosition, newPosition, delta,
+            delta > 0 ? "CLOCKWISE" : "CCW");
+  lastInputAtMs = millis();
+  lastEncoderPosition = newPosition;
+}
+```
+
+**Encoder button:**
+```cpp
+if (encoderButtonPressed != lastEncoderButtonPressed) {
+  logPrintf("[INPUT] ENCODER Button: %s", 
+            encoderButtonPressed ? "PRESSED" : "RELEASED");
+  lastInputAtMs = millis();
+  lastEncoderButtonPressed = encoderButtonPressed;
+}
+```
+
+#### Step 5b.5: Page Change Logging
+
+**Integrate into page navigation logic (within main loop):**
+
+```cpp
+if (currentPage != lastReportedPage) {
+  logPrintf("[MODE] page change: %d → %d (source: %s)",
+            lastReportedPage, currentPage, pageChangeSource);
+  lastReportedPage = currentPage;
+}
+```
+
+**Track `pageChangeSource` during input processing:**
+```cpp
+if (buttonY_pressed) {
+  uint8_t oldPage = currentPage;
+  currentPage = (currentPage - 1 + 10) % 10;
+  pageChangeSource = "GAMEPAD Button Y";
+}
+```
+
+#### Step 5b.6: Large Display Mode Logging
+
+**Integrate into mode entry/exit logic:**
+
+```cpp
+if (encoderButton && !largeDisplayMode.active) {
+  largeDisplayMode.active = true;
+  largeDisplayMode.currentPage = currentPage;
+  largeDisplayMode.valueIndex = 0;
+  logPrintf("[MODE] Large Display enter (page %d, valueIndex %d)",
+            largeDisplayMode.currentPage, largeDisplayMode.valueIndex);
+}
+
+if (encoderButton && largeDisplayMode.active) {
+  largeDisplayMode.active = false;
+  logPrintf("[MODE] Large Display exit (returning to page %d)",
+            largeDisplayMode.currentPage);
+}
+```
+
+#### Step 5b.7: Sensor Timing Diagnostics (Optional)
+
+**Integrate into sensor read functions (readBme280, etc.):**
+
+```cpp
+void readBme280(Bme280Values &values) {
+  if (!available.bme280) return;
+  uint32_t startTime = micros();
+  // ... read sensor ...
+  uint32_t elapsedTime = micros() - startTime;
+  logPrintf("[SENSOR] BME280 read time: %d µs", elapsedTime);
+}
+```
+
+### Acceptance Criteria
+
+**Compilation:**
+- [ ] No errors with logging code added to Phase 5 src/main.cpp
+- [ ] diagnostics.h compiles without warnings
+- [ ] logPrintf defined with correct signature (va_list handling)
+
+**Boot Output:**
+- [ ] Boot banner appears on every power-on (first 100 ms)
+- [ ] Version and build date displayed in correct format
+- [ ] Timestamps monotonically increasing
+
+**Input Logging:**
+- [ ] Gamepad button presses logged with PRESSED/RELEASED
+- [ ] Encoder rotations logged with position delta and direction (CLOCKWISE/CCW)
+- [ ] Encoder button logged separately from rotation
+- [ ] No spam (only log on state change, not every poll cycle)
+
+**Page Change Logging:**
+- [ ] Every page change logged with source (GAMEPAD/ENCODER)
+- [ ] Page numbers 0–9 range
+- [ ] Logged within 50 ms of actual display update
+
+**Large Display Mode:**
+- [ ] Entry logged with page and valueIndex
+- [ ] Exit logged with return page
+- [ ] Timestamps correlate with user input
+
+**24-Hour Diagnostics:**
+- [ ] Run for 24 hours; capture full log
+- [ ] Heap memory stable (< 5% variation)
+- [ ] Loop cycle time < 50 ms average
+- [ ] No spontaneous page changes (all preceded by input log within 500 ms)
+
+### Testing
+
+See docs/10-testing.md § "New Test Cases: Logging & Diagnostics (FEATURE-SPEC-012)"
+
+**Test Cases:**
+- TC-LOG-001: Timestamp Format Validation
+- TC-LOG-002: Logging Category Tags Presence
+- TC-LOG-003: Page Change Logging (Source Identification)
+- TC-LOG-004: Input Activity Logging
+- TC-LOG-005: Spontaneous Display Switch Detection (24h run)
+- TC-LOG-006: Version & Build Information at Boot
+- TC-LOG-007: Logging Performance & Stability (24h run)
+- TC-LOG-008: Large Display Mode Entry/Exit Logging
+
+### Deliverables
+
+- [x] `src/diagnostics.h` (version/build constants)
+- [x] `logPrintf()` implementation
+- [x] Boot banner (version, build date, compiler, CPU)
+- [x] Input activity logging (gamepad, encoder, button)
+- [x] Page change logging with source
+- [x] Large Display mode logging
+- [x] Sensor timing diagnostics (optional)
+- [x] All test cases pass
 
 ---
 

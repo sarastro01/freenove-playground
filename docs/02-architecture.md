@@ -2070,3 +2070,398 @@ void loop() {
 
 This two-stage pattern (registry.update() → sync to global → render) provides both encapsulation (registry owns wrappers) and compatibility (display still uses global caches).
 
+---
+
+### 3.10 Logging Subsystem (FEATURE-SPEC-012)
+
+The **Logging Subsystem** provides timestamped, categorized diagnostic output to Serial Monitor for system monitoring, debugging, and analysis of spontaneous display switches.
+
+#### **Architecture Overview**
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Serial Monitor (115200 baud)                       │
+│  Host Terminal (minicom, Arduino IDE, VS Code)      │
+└─────────────────────────────────────────┬───────────┘
+                                          ↑ [HH:MM:SS.sss]
+                                          │ [CATEGORY]
+                                          │ Message
+                                          │
+┌─────────────────────────────────────────┴───────────┐
+│  logPrintf() Wrapper Function                       │
+│  ├─ Prepend timestamp from millis()                 │
+│  ├─ Format: [HH:MM:SS.sss]                          │
+│  ├─ Append category tag (caller-supplied)           │
+│  └─ Call Serial.printf()                            │
+└─────────────────────────────────────────┬───────────┘
+                                          ↑
+                                          │
+┌─────────────────────────────────────────┴───────────┐
+│  Logging Points (throughout src/main.cpp)           │
+│  ├─ setup() — Boot banner, initialization           │
+│  ├─ loop() — Input activity, page changes           │
+│  ├─ readBme280(), readIna219(), etc. — Sensor timing│
+│  ├─ handleButtons() — Gamepad events                │
+│  ├─ handleEncoder() — Encoder rotation/button       │
+│  └─ pageXXX() — Large Display mode enter/exit       │
+└─────────────────────────────────────────────────────┘
+```
+
+#### **logPrintf() Function Signature**
+
+```cpp
+// In diagnostics.h or main.cpp
+void logPrintf(const char* format, ...) {
+  // 1. Calculate timestamp from millis()
+  uint32_t elapsedMs = millis();
+  uint8_t h = (elapsedMs / 3600000) % 24;
+  uint8_t m = (elapsedMs / 60000) % 60;
+  uint8_t s = (elapsedMs / 1000) % 60;
+  uint16_t ms = elapsedMs % 1000;
+  
+  // 2. Prepend timestamp
+  Serial.printf("[%02d:%02d:%02d.%03d] ", h, m, s, ms);
+  
+  // 3. Call vfprintf() to handle variable args
+  va_list args;
+  va_start(args, format);
+  vfprintf(Serial, format, args);
+  va_end(args);
+  
+  // 4. Append newline
+  Serial.println();
+}
+```
+
+**Performance Characteristics:**
+- Per-message overhead: ~50–100 µs (pure integer arithmetic, no floating point)
+- Code size: +500 bytes
+- Stack usage: +50 bytes (temporary format buffer)
+- No impact on loop cycle time (not on critical path)
+
+#### **Timestamp Calculation**
+
+Uses integer-only arithmetic for reliability:
+
+```cpp
+uint32_t elapsedMs = millis();
+uint8_t h = (elapsedMs / 3600000) % 24;  // Hours (0–23)
+uint8_t m = (elapsedMs / 60000) % 60;    // Minutes (0–59)
+uint8_t s = (elapsedMs / 1000) % 60;     // Seconds (0–59)
+uint16_t ms = elapsedMs % 1000;          // Milliseconds (0–999)
+```
+
+**Rollover Behavior:** After ~49.7 days of continuous operation, `millis()` wraps from 2³² to 0. All logs reset to [00:00:00.000]. Application continues operating normally.
+
+#### **Logging Categories**
+
+Eight categories enable filtering and diagnosis:
+
+| Category | Tag | Purpose | Example |
+|----------|-----|---------|---------|
+| Bootstrap | `[BOOT]` | Setup, initialization | I2C bus ready, sensor detection |
+| Diagnostics | `[DIAG]` | System health, heap, timing | "Heap: 212456 bytes", loop cycle times |
+| Sensors | `[SENSOR]` | Sensor reads, I2C timing | "BME280 read time: 12345 µs" |
+| Input | `[INPUT]` | User button/encoder activity | "GAMEPAD Button Y: PRESSED" |
+| Mode | `[MODE]` | Display page changes, modes | "page change: 2 → 1 (source: GAMEPAD)" |
+| I2C | `[I2C]` | Communication errors, timeouts | "NACK from device 0x36", "timeout" |
+| Error | `[ERROR]` | Error conditions, failures | "Invalid sensor data", "spontaneous switch" |
+| Version | `[VERSION]` | Version/build info | "Version: 3.1.0, Build: 2026-10-22" |
+
+#### **Usage Examples**
+
+**Boot Sequence (setup()):**
+```cpp
+logPrintf("[BOOT] Starting setup...");
+logPrintf("[BOOT] TFT Display initialized");
+logPrintf("[I2C] Scanning I2C bus...");
+logPrintf("[SENSOR] BME280 detected @ 0x77");
+```
+
+**Sensor Read Timing (readBme280()):**
+```cpp
+uint32_t startTime = micros();
+bme280.readTemperature();
+bme280.readHumidity();
+bme280.readPressure();
+uint32_t elapsedTime = micros() - startTime;
+logPrintf("[SENSOR] BME280 read time: %d µs", elapsedTime);
+```
+
+**Page Navigation (handleButtons()):**
+```cpp
+if (buttonY_pressed) {
+  logPrintf("[INPUT] GAMEPAD Button Y: PRESSED");
+  currentPage = (currentPage - 1 + 10) % 10;
+  logPrintf("[MODE] page change: %d → %d (source: GAMEPAD Button Y)", 
+            previousPage, currentPage);
+}
+```
+
+**Encoder Rotation (handleEncoder()):**
+```cpp
+int16_t positionDelta = newPosition - oldPosition;
+logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: %+d, %s)",
+          oldPosition, newPosition, positionDelta, 
+          positionDelta > 0 ? "CLOCKWISE" : "CCW");
+```
+
+#### **Serial Monitor Configuration**
+
+**Connection:**
+- Baud rate: 115200 (9600 effective baud per character, ~14.4 KB/s max throughput)
+- Data format: 8 bits, 1 stop bit, no parity
+- Buffer size: 256 bytes (host-side)
+- Output encoding: Plain text (UTF-8)
+
+**Viewing Options:**
+
+Option 1 — VS Code Serial Monitor:
+```
+View → Command Palette → "Serial: Open Serial Monitor"
+```
+
+Option 2 — Arduino IDE:
+```
+Tools → Serial Monitor (Ctrl+Shift+M), set baud to 115200
+```
+
+Option 3 — Linux minicom (with capture):
+```bash
+minicom -D /dev/ttyUSB0 -b 115200 -C /tmp/serial_log.txt
+```
+
+Option 4 — Node.js serialport:
+```bash
+npm install -g serialport-monitor
+serialport-monitor -p /dev/ttyUSB0 -b 115200
+```
+
+#### **Performance Impact**
+
+**Overhead Analysis:**
+- Per-message cost: ~50–100 µs
+  - Timestamp calculation: ~20 µs
+  - Serial.printf() transmission: ~30–80 µs (depends on message length)
+- Loop cycle time: ~8–10 ms average
+- Logging impact: <1% (negligible, not on critical path)
+
+**Bandwidth Analysis:**
+- Expected message rate: ~50–100 messages/min (steady state)
+- Typical message size: 50–100 bytes
+- Serial throughput needed: ~200–400 bytes/min
+- Available bandwidth: ~14.4 KB/s (115200 baud)
+- Utilization: ~0.3–0.6% (well within limits)
+
+**Memory Impact:**
+- Code: +500 bytes (logPrintf function)
+- Stack: +50 bytes per call (temporary buffer)
+- Heap: 0 bytes (no dynamic allocation)
+- Total: negligible (<1% of 4MB flash, <0.1% of 520KB SRAM)
+
+---
+
+### 3.11 Diagnostic Infrastructure (FEATURE-SPEC-012)
+
+The **Diagnostic Infrastructure** enables real-time monitoring and analysis of system behavior, particularly for detecting and diagnosing spontaneous display switches.
+
+#### **Diagnostic Capabilities**
+
+```
+┌──────────────────────────────────────────────────┐
+│  Spontaneous Display Switch Detection & Diagnosis│
+│  (Correlates input activity with page changes)    │
+└──────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────┐
+│  Input Activity Logging                           │
+│  ├─ Gamepad button press/release                  │
+│  ├─ Encoder position changes (with delta)         │
+│  ├─ Encoder button press/release                  │
+│  └─ Timestamps for all events                     │
+└──────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────┐
+│  Display Mode Logging                             │
+│  ├─ Page change reason (GAMEPAD/ENCODER/AUTO)     │
+│  ├─ Large Display Mode entry/exit                 │
+│  ├─ Mode transition timing (<100 ms latency)      │
+│  └─ Timestamp correlation with input              │
+└──────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────┐
+│  Sensor Timing Diagnostics                        │
+│  ├─ Per-sensor read latency (in microseconds)     │
+│  ├─ I2C communication errors/timeouts             │
+│  ├─ Invalid data detection                        │
+│  └─ Timing anomalies                              │
+└──────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────┐
+│  System Health Monitoring                         │
+│  ├─ Heap memory (free bytes, largest block)       │
+│  ├─ Loop cycle time (average, max)                │
+│  ├─ Serial output rate (messages/min)             │
+│  └─ 24-hour stability tracking                    │
+└──────────────────────────────────────────────────┘
+```
+
+#### **Display Switch Correlation Logic**
+
+**Goal:** Identify unexplained page changes (likely caused by electrical noise, I2C glitch, or firmware bug).
+
+**Algorithm:**
+
+1. **Track Current Page:**
+   ```cpp
+   uint8_t lastReportedPage = currentPage;
+   
+   if (currentPage != lastReportedPage) {
+     // Page changed - check if preceded by input
+     logPrintf("[MODE] page change: %d → %d (source: ...)", 
+               lastReportedPage, currentPage);
+   }
+   ```
+
+2. **Verify Input Precedes Change:**
+   ```cpp
+   // In input handler: set flag on any input
+   lastInputAtMs = millis();
+   
+   // In main loop: check correlation
+   if (pageChanged && (millis() - lastInputAtMs) > 500) {
+     // No input within 500 ms before page change
+     logPrintf("[ERROR] Spontaneous display switch: %d → %d (no input detected)",
+               lastPage, currentPage);
+   }
+   ```
+
+3. **Diagnostic Analysis (24-hour run):**
+   - Extract all `[MODE]` lines from log
+   - For each page change, check for preceding `[INPUT]` within 500 ms
+   - Count unexplained changes (spontaneous)
+   - If count > 0: correlate with `[I2C]` and `[SENSOR]` errors
+
+#### **Input Activity Tracking**
+
+**Encoder State Machine:**
+- Track `currentPosition` from `encoder.getPosition()`
+- Detect delta: `newPosition - oldPosition`
+- Log rotation only on change (not every poll cycle)
+- Log button press on GPIO transition (not every poll)
+
+**Gamepad State Machine:**
+- Track `lastButtonState` for each button (Y, A, X, B)
+- Detect transition: `newState != lastButtonState`
+- Log only on state change (press or release)
+- No logging for held buttons (reduces noise)
+
+**Example Logging Pattern:**
+```cpp
+// In handleEncoder()
+int16_t newPosition = encoder.getPosition();
+if (newPosition != lastEncoderPosition) {
+  int16_t delta = newPosition - lastEncoderPosition;
+  logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: %+d, %s)",
+            lastEncoderPosition, newPosition, delta,
+            delta > 0 ? "CLOCKWISE" : "CCW");
+  lastEncoderPosition = newPosition;
+  lastInputAtMs = millis();
+}
+
+// In handleButtons()
+if (currentButtonY != lastButtonY) {
+  logPrintf("[INPUT] GAMEPAD Button Y: %s", 
+            currentButtonY ? "PRESSED" : "RELEASED");
+  lastInputAtMs = millis();
+}
+lastButtonY = currentButtonY;
+```
+
+#### **Large Display Mode Diagnostics**
+
+**Entry Logging:**
+```cpp
+largeDisplayMode.active = true;
+largeDisplayMode.currentPage = currentPage;
+largeDisplayMode.valueIndex = 0;
+logPrintf("[MODE] Large Display enter (page %d, valueIndex %d)",
+          largeDisplayMode.currentPage, largeDisplayMode.valueIndex);
+```
+
+**Exit Logging:**
+```cpp
+largeDisplayMode.active = false;
+logPrintf("[MODE] Large Display exit (returning to page %d)",
+          largeDisplayMode.currentPage);
+```
+
+#### **System Health Monitoring**
+
+**Periodic Diagnostics (every 5 minutes during 24-hour run):**
+```cpp
+if ((millis() / 300000) != lastDiagnosticsPeriod) {  // Every 5 minutes
+  lastDiagnosticsPeriod = millis() / 300000;
+  
+  // Heap info
+  extern char* heap_bottom;
+  char* heap_top = (char*) sbrk(0);
+  uint32_t heapFree = heapSize - (heap_top - heap_bottom);
+  logPrintf("[DIAG] Heap info: free=%d bytes, largest_block=%d bytes",
+            heapFree, largestBlock);
+  
+  // Loop cycle time
+  logPrintf("[DIAG] Loop cycle time: avg=%d ms, max=%d ms",
+            avgCycleTime, maxCycleTime);
+  
+  // Serial rate
+  logPrintf("[DIAG] Serial output rate: %d msgs/min", messagesPerMinute);
+}
+```
+
+**24-Hour Stability Metrics:**
+- Heap memory change: should be < 5% over 24h (no leaks)
+- Loop cycle time: should remain < 50 ms average
+- Message rate: should stay 50–100 msgs/min (steady)
+- No errors logged (indicates stable operation)
+
+#### **Analysis Workflow**
+
+**For Spontaneous Display Switch Investigation:**
+
+1. **Collect Data:**
+   ```bash
+   # Run for 24 hours with Serial logging
+   minicom -D /dev/ttyUSB0 -b 115200 -C /tmp/serial_24h.log &
+   sleep 86400  # 24 hours
+   killall minicom
+   ```
+
+2. **Parse Logs:**
+   ```bash
+   # Extract all page changes
+   grep "\[MODE\] page change" /tmp/serial_24h.log > /tmp/page_changes.txt
+   
+   # Extract all input events
+   grep "\[INPUT\]" /tmp/serial_24h.log > /tmp/input_events.txt
+   ```
+
+3. **Correlate:**
+   ```bash
+   # For each page change, check for preceding input within 500 ms
+   # If none found: spontaneous switch (error condition)
+   for line in $(cat /tmp/page_changes.txt); do
+     timestamp=$(echo $line | grep -oE '\[[0-9:]+\.[0-9]+\]')
+     # Check /tmp/input_events.txt for earlier timestamp
+     # If no match: increment spontaneous count
+   done
+   ```
+
+4. **Diagnose Root Cause:**
+   - If spontaneous switches correlate with `[I2C]` errors: I2C communication glitch
+   - If correlate with `[SENSOR]` timeouts: possible electrical noise
+   - If random timing: could be firmware bug or timer interrupt issue
+   - If never occur: system stable (as expected)
+
+---
+

@@ -1,8 +1,9 @@
 # Testing Strategy & Coverage: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-25  
+**Last Updated:** 2026-10-22  
 **Current Status:** ⚠️ **NO AUTOMATED TESTS** (Manual testing only, includes DS2484 1-Wire tests)  
-**Test Framework:** None (PlatformIO Unity available but not used)
+**Test Framework:** None (PlatformIO Unity available but not used)  
+**Related Specs:** FEATURE-SPEC-005, FEATURE-SPEC-008, FEATURE-SPEC-012 (NEW)
 
 ---
 
@@ -3195,7 +3196,322 @@ Call: `valueIndex = (valueIndex + 1) % 7`
 
 ---
 
-### Summary: Encoder Navigation Test Coverage
+### New Test Cases: Logging & Diagnostics (FEATURE-SPEC-012)
+
+### TC-LOG-001: Timestamp Format Validation
+
+**Requirement:** FR-024 (Timestamped Logging System)
+
+**Test Method:** Manual - Serial Monitor observation
+
+**Steps:**
+1. Power on device
+2. Open Serial Monitor (115200 baud)
+3. Observe first 20 lines of boot output
+4. Verify timestamp format: `[HH:MM:SS.sss]`
+
+**Expected Output:**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T16:54:00Z
+[00:00:00.006] ========================================
+[00:00:00.015] [BOOT] Starting setup...
+[00:00:00.450] [BOOT] I2C bus initialized at 400 kHz
+```
+
+**Acceptance Criteria:**
+- ✅ Every line includes `[HH:MM:SS.sss]` timestamp (13 characters)
+- ✅ Timestamps increment monotonically (no jumps backward)
+- ✅ Hours: 00–23 range
+- ✅ Minutes: 00–59 range
+- ✅ Seconds: 00–59 range
+- ✅ Milliseconds: 000–999 range
+- ✅ First timestamp is `[00:00:00.000]` or very close
+
+**Pass Criteria:** All timestamps valid and monotonically increasing
+
+---
+
+### TC-LOG-002: Logging Category Tags Presence
+
+**Requirement:** FR-024, BR-032
+
+**Test Method:** Manual - Serial Monitor observation (first 2 minutes)
+
+**Steps:**
+1. Power on device
+2. Let system run for 2 minutes
+3. Observe Serial output
+4. Count messages with each category tag
+
+**Expected Categories Present:**
+- `[BOOT]` — Startup messages (0–500 ms)
+- `[DIAG]` — Diagnostics (ongoing)
+- `[SENSOR]` — Sensor reads (every 200–500 ms)
+- `[INPUT]` — Input events (when user presses buttons/rotates encoder)
+- `[MODE]` — Display changes (when user navigates pages)
+- `[I2C]` — I2C diagnostics (on errors or startup)
+- `[VERSION]` — Version info (boot)
+
+**Acceptance Criteria:**
+- ✅ At least 1 `[BOOT]` message during setup
+- ✅ At least 5 `[SENSOR]` messages in first 2 minutes (every 200–500 ms)
+- ✅ At least 1 `[I2C]` message during startup (sensor detection)
+- ✅ `[INPUT]` and `[MODE]` messages appear when user interacts
+
+**Pass Criteria:** All expected categories present; no unknown/malformed tags
+
+---
+
+### TC-LOG-003: Page Change Logging (Source Identification)
+
+**Requirement:** FR-025 (Display Switch Diagnostics)
+
+**Test Method:** Manual - Serial Monitor + Hardware interaction
+
+**Steps:**
+1. Power on device
+2. Open Serial Monitor
+3. Press gamepad Y button (previous page)
+4. Observe Serial output for page change message
+5. Rotate encoder clockwise (next page)
+6. Observe Serial output
+7. Repeat with counter-clockwise
+
+**Expected Output Examples:**
+```
+[00:00:15.234] [INPUT] GAMEPAD Button Y: PRESSED
+[00:00:15.271] [MODE] page change: 2 → 1 (source: GAMEPAD Button Y)
+
+[00:00:17.123] [INPUT] ENCODER Rotation: position 142 → 143 (delta: +1, CLOCKWISE)
+[00:00:17.145] [MODE] page change: 1 → 2 (source: ENCODER rotation CW)
+```
+
+**Acceptance Criteria:**
+- ✅ Every page change logged with `[MODE]` tag
+- ✅ Source correctly identified (GAMEPAD Button Y/A or ENCODER rotation CW/CCW)
+- ✅ Page numbers correct (0–9 range)
+- ✅ No gaps in logging (input logged before mode change)
+- ✅ Timestamp progression: INPUT log, then MODE log within 50 ms
+
+**Pass Criteria:** All page changes logged with correct source identification
+
+---
+
+### TC-LOG-004: Input Activity Logging (Encoder + Gamepad)
+
+**Requirement:** FR-025, BR-034, BR-035
+
+**Test Method:** Manual - Serial Monitor + Hardware interaction
+
+**Steps:**
+1. Power on device
+2. Open Serial Monitor
+3. Press gamepad button → observe log
+4. Release button → observe log
+5. Rotate encoder → observe log
+6. Press encoder button → observe log
+7. Release encoder button → observe log
+
+**Expected Output:**
+```
+[00:00:15.234] [INPUT] GAMEPAD Button Y: PRESSED
+[00:00:15.256] [INPUT] GAMEPAD Button Y: RELEASED
+[00:00:17.123] [INPUT] ENCODER Rotation: position 142 → 143 (delta: +1, CLOCKWISE)
+[00:00:21.567] [INPUT] ENCODER Button: PRESSED
+[00:00:21.589] [INPUT] ENCODER Button: RELEASED
+```
+
+**Acceptance Criteria:**
+- ✅ Every gamepad button press/release logged
+- ✅ Encoder rotation logged with position delta and direction
+- ✅ Encoder button press/release logged
+- ✅ No input events during idle period (no poll-spam)
+- ✅ Timestamps consistent with actual interaction timing
+
+**Pass Criteria:** All expected input events logged; no duplicates or missing transitions
+
+---
+
+### TC-LOG-005: Spontaneous Display Switch Detection (DEFERRED TO FUTURE RELEASE)
+
+**Requirement:** FR-025, BR-036
+
+**Status:** ❌ DEFERRED (Automatic detection logic not implemented in FEATURE-SPEC-012)
+
+**Current Capability:** ✅ LOGGING INFRASTRUCTURE READY
+- Every page change logged with timestamp and source
+- Every input event logged with timestamp
+- Developers can manually analyze logs to diagnose spontaneous switches
+
+**Future Implementation:**
+When BR-036 detection logic is implemented, this test case will validate:
+
+**Test Method:** 24-hour diagnostic run with analysis
+
+**Setup:**
+1. Power on device with Serial Monitor connected
+2. Let system run for 24 hours continuously
+3. Capture all Serial output to file via:
+   ```bash
+   minicom -D /dev/ttyUSB1 -b 115200 -C /tmp/serial_log_24h.txt
+   ```
+
+**Expected Behavior:**
+- Every page change is preceded by INPUT log (GAMEPAD or ENCODER)
+- No `[ERROR]` messages with "Spontaneous display switch"
+- If spontaneous switches detected: log error with timestamp
+
+**Analysis Steps:**
+1. Extract all `[MODE] page change` lines
+2. For each change, search backwards for `[INPUT]` within 500 ms
+3. Count changes without preceding input
+4. If count > 0: error found (indicates noise, I2C glitch, or firmware bug)
+
+**Acceptance Criteria:**
+- ✅ Zero spontaneous page changes during 24h run
+- ✅ OR if spontaneous changes occur: diagnostic logs identify cause
+
+**Pass Criteria:** 
+- No unexplained page changes, OR
+- Spontaneous changes identified and root cause documented
+
+---
+
+### TC-LOG-006: Version & Build Information at Boot
+
+**Requirement:** FR-026, BR-037
+
+**Test Method:** Manual - Serial Monitor observation
+
+**Steps:**
+1. Power on device
+2. Open Serial Monitor: `pio device monitor -p /dev/ttyUSB1 -b 115200`
+3. Observe first 10 lines of output
+
+**Expected Output:**
+```
+[00:00:00.000] ========================================
+[00:00:00.001] Sensor Pages Dashboard
+[00:00:00.002] Version: 3.1.0
+[00:00:00.003] Build Date: 2026-10-22T17:20:00Z
+[00:00:00.004] Compiler: arm-none-eabi-g++
+[00:00:00.005] ESP32-WROOM-32 Detected
+[00:00:00.006] ========================================
+```
+
+**Acceptance Criteria:**
+- ✅ Version displayed in format `MAJOR.MINOR.PATCH` (e.g., `3.1.0`)
+- ✅ Build date displayed in ISO 8601 format `YYYY-MM-DDTHH:MM:SSZ`
+- ✅ Both printed within first 100 ms of boot
+- ✅ Compiler and CPU variant detected and printed
+- ✅ Banner starts with `========` and ends with `========`
+
+**Pass Criteria:** Version and build date displayed correctly at every boot
+
+**Status:** ✅ READY FOR EXECUTION
+
+---
+
+### TC-LOG-007: Logging Performance & Stability (24-hour run)
+
+**Requirement:** FR-027, BR-038
+
+**Test Method:** Long-duration hardware test
+
+**Setup:**
+1. Power on device
+2. Connect USB serial monitor
+3. Run for 24 hours continuously
+4. Monitor heap memory at T=0, T=12h, T=24h
+
+**Measurement Points:**
+- T=0 min: Record heap free memory from `[DIAG]` logs
+- T=6h: Record heap memory
+- T=12h: Record heap memory
+- T=24h: Record heap memory
+- Monitor loop cycle time over 24h
+
+**Expected Output (every 5 minutes):**
+```
+[00:05:00.123] [DIAG] Heap info: free=212456 bytes, largest block=102400 bytes
+[00:05:00.124] [DIAG] Loop cycle time: avg=8.2ms, max=42ms
+[00:05:00.125] [DIAG] Serial output rate: 47 msgs/min
+```
+
+**Acceptance Criteria:**
+- ✅ Heap memory remains stable (variation < 5% over 24h)
+- ✅ No memory leaks (heap monotonically increasing)
+- ✅ Loop cycle time remains <50 ms average
+- ✅ No Serial buffer overflow or data corruption
+- ✅ System does not crash or freeze during 24h run
+
+**Pass Criteria:** Heap stable, no errors, loop timing consistent
+
+---
+
+### TC-LOG-008: Large Display Mode Entry/Exit Logging
+
+**Requirement:** FR-025, BR-033
+
+**Test Method:** Manual - Serial Monitor + Hardware interaction
+
+**Steps:**
+1. Power on device
+2. Open Serial Monitor
+3. Navigate to any page
+4. Press encoder button to enter Large Display Mode
+5. Observe Serial output
+6. Press encoder button again to exit
+7. Observe Serial output
+
+**Expected Output:**
+```
+[00:00:21.567] [INPUT] ENCODER Button: PRESSED
+[00:00:21.589] [MODE] Large Display enter (page 4, valueIndex 0)
+
+[00:00:28.890] [INPUT] ENCODER Button: PRESSED
+[00:00:28.912] [MODE] Large Display exit (returning to page 4)
+```
+
+**Acceptance Criteria:**
+- ✅ Large Display entry logged with page and value index
+- ✅ Large Display exit logged (returning to original page)
+- ✅ Entry/exit messages include timestamp
+- ✅ Value index starts at 0 on entry
+- ✅ Page number preserved on exit
+
+**Pass Criteria:** All mode transitions logged correctly
+
+---
+
+## Summary: Logging Test Coverage (FEATURE-SPEC-012)
+
+**New Test Cases:** 8
+- TC-LOG-001: Timestamp Format Validation
+- TC-LOG-002: Logging Category Tags Presence
+- TC-LOG-003: Page Change Logging (Source Identification)
+- TC-LOG-004: Input Activity Logging (Encoder + Gamepad)
+- TC-LOG-005: Spontaneous Display Switch Detection (24h run)
+- TC-LOG-006: Version & Build Information at Boot
+- TC-LOG-007: Logging Performance & Stability (24h run)
+- TC-LOG-008: Large Display Mode Entry/Exit Logging
+
+**Coverage:**
+- ✅ Timestamp format and monotonicity
+- ✅ Logging categories and tags
+- ✅ Page change source identification
+- ✅ Input activity correlation
+- ✅ Spontaneous switch detection & diagnosis
+- ✅ Version/build information display
+- ✅ Performance impact (24h stability)
+- ✅ Mode transitions logging
+
+**Status:** Ready for manual test execution
+
+---
 
 **Total Test Cases:** 22
 - Unit Tests: 10 (TC-ENC-NAV-001 through TC-ENC-NAV-010)

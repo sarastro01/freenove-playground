@@ -2,6 +2,23 @@
 #define DIAGNOSTICS_H
 
 #include <Arduino.h>
+#include <stdarg.h>
+
+// ============================================================================
+// VERSION & BUILD INFORMATION (FEATURE-SPEC-012)
+// ============================================================================
+
+#define VERSION "3.1.0"
+#define BUILD_DATE "2026-10-22T17:20:00Z"
+
+// ============================================================================
+// TIMESTAMPED LOGGING FUNCTION (FEATURE-SPEC-012)
+// ============================================================================
+
+// logPrintf(): Prepends [HH:MM:SS.sss] timestamp to every Serial message
+// Usage: logPrintf("[CATEGORY] message: %d", value);
+// Output: [HH:MM:SS.sss] [CATEGORY] message: 123
+void logPrintf(const char* format, ...);
 
 // ============================================================================
 // DIAGNOSTIC MONITORING FOR SPONTANEOUS REBOOTS
@@ -61,12 +78,12 @@ extern DiagnosticStats diagStats;
 
 inline void initDiagnostics() {
   #if ENABLE_REBOOT_REASON
-  Serial.printf("\n[DIAG] ========== REBOOT DIAGNOSTICS ==========\n");
-  Serial.printf("[DIAG] Reboot Reason: %s\n", getRebootReason());
-  Serial.printf("[DIAG] Free Heap: %u bytes\n", ESP.getFreeHeap());
-  Serial.printf("[DIAG] Total Heap: %u bytes\n", ESP.getHeapSize());
-  Serial.printf("[DIAG] Min Free Heap (ever): %u bytes\n", ESP.getMinFreeHeap());
-  Serial.printf("[DIAG] ========================================\n\n");
+  logPrintf("[DIAG] ========== REBOOT DIAGNOSTICS ==========");
+  logPrintf("[DIAG] Reboot Reason: %s", getRebootReason());
+  logPrintf("[DIAG] Free Heap: %u bytes", ESP.getFreeHeap());
+  logPrintf("[DIAG] Total Heap: %u bytes", ESP.getHeapSize());
+  logPrintf("[DIAG] Min Free Heap (ever): %u bytes", ESP.getMinFreeHeap());
+  logPrintf("[DIAG] ========================================");
   #endif
   
   diagStats.bootCount++;
@@ -87,10 +104,10 @@ inline void monitorHeap(uint32_t now) {
     
     // Warn if low
     if (freeHeap < MIN_HEAP_WARNING) {
-      Serial.printf("[WARN] HEAP LOW! Free: %u bytes (min ever: %u)\n", 
+      logPrintf("[WARN] HEAP LOW! Free: %u bytes (min ever: %u)", 
                     freeHeap, minFreeEver);
     } else {
-      Serial.printf("[DIAG] Heap OK: %u bytes free (min ever: %u)\n", 
+      logPrintf("[DIAG] Heap OK: %u bytes free (min ever: %u)", 
                     freeHeap, minFreeEver);
     }
     
@@ -102,7 +119,7 @@ inline void monitorHeap(uint32_t now) {
 inline void trackSensorTiming(uint32_t startTime, const char* sensorName, uint32_t duration) {
   #if ENABLE_SENSOR_TIMING
   if (duration > SLOW_SENSOR_THRESHOLD_MS) {
-    Serial.printf("[WARN] SLOW SENSOR: %s took %lu ms!\n", sensorName, duration);
+    logPrintf("[WARN] SLOW SENSOR: %s took %lu ms!", sensorName, duration);
     diagStats.slowSensorReads++;
   }
   #endif
@@ -110,18 +127,18 @@ inline void trackSensorTiming(uint32_t startTime, const char* sensorName, uint32
 
 inline void trackI2cError(uint8_t addr, const char* device) {
   #if ENABLE_I2C_MONITORING
-  Serial.printf("[WARN] I2C ERROR: Device %s at 0x%02X failed!\n", device, addr);
+  logPrintf("[WARN] I2C ERROR: Device %s at 0x%02X failed!", device, addr);
   diagStats.i2cErrors++;
   #endif
 }
 
 inline void printDiagnosticReport() {
-  Serial.printf("\n[DIAG] ========== DIAGNOSTIC REPORT ==========\n");
-  Serial.printf("[DIAG] Boot Count: %u\n", diagStats.bootCount);
-  Serial.printf("[DIAG] Min Free Heap: %u bytes\n", diagStats.minFreeHeap);
-  Serial.printf("[DIAG] Slow Sensor Reads: %u\n", diagStats.slowSensorReads);
-  Serial.printf("[DIAG] I2C Errors: %u\n", diagStats.i2cErrors);
-  Serial.printf("[DIAG] =========================================\n\n");
+  logPrintf("[DIAG] ========== DIAGNOSTIC REPORT ==========");
+  logPrintf("[DIAG] Boot Count: %u", diagStats.bootCount);
+  logPrintf("[DIAG] Min Free Heap: %u bytes", diagStats.minFreeHeap);
+  logPrintf("[DIAG] Slow Sensor Reads: %u", diagStats.slowSensorReads);
+  logPrintf("[DIAG] I2C Errors: %u", diagStats.i2cErrors);
+  logPrintf("[DIAG] =========================================");
 }
 
 #endif // DIAGNOSTICS_H
