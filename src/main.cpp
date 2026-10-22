@@ -171,7 +171,7 @@ struct SensorStatus {
 SensorStatus available{};
 
 // PHASE 3a: Ina219Values struct moved to Ina219Sensor.h (included via sensors.h)
-struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t comp2; float uvaComp; float uvbComp; float index; };
+// PHASE 3e: Veml6075Values struct moved to Veml6075Sensor.h (included via sensors.h)
 struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
 struct Scd30Values { float co2; float temp; float humidity; };
 struct Scd30State {
@@ -186,7 +186,7 @@ struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8
 #include "sensors/Ds2484Types.h"
 
 Ina219Values ina219Values{};
-Veml6075Values veml6075Values{};
+Veml6075Values veml6075Values{};  // struct def in Veml6075Sensor.h
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
 Scd30State scd30State{};

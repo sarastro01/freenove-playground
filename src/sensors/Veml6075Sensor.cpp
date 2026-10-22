@@ -125,3 +125,15 @@ String Veml6075Sensor::getStatus() const {
   }
   return "OK";
 }
+
+const struct Veml6075Values& Veml6075Sensor::getValues() const {
+  static struct Veml6075Values valuesBuffer;
+  valuesBuffer.uva = values.uvaRaw;        // Map internal uvaRaw to uva in buffer
+  valuesBuffer.uvb = values.uvbRaw;        // Map internal uvbRaw to uvb in buffer
+  valuesBuffer.comp1 = values.comp1;
+  valuesBuffer.comp2 = values.comp2;
+  valuesBuffer.uvaComp = values.uvaComp;
+  valuesBuffer.uvbComp = values.uvbComp;
+  valuesBuffer.index = values.index;
+  return valuesBuffer;
+}

@@ -33,6 +33,19 @@
 #include "BaseSensor.h"
 #include <SparkFun_VEML6075_Arduino_Library.h>
 
+// ============================================================================
+// Veml6075Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+struct Veml6075Values {
+  uint16_t uva;            ///< UVA raw (16-bit)
+  uint16_t uvb;            ///< UVB raw (16-bit)
+  uint16_t comp1;          ///< Compensation 1
+  uint16_t comp2;          ///< Compensation 2
+  float uvaComp;           ///< UVA compensated
+  float uvbComp;           ///< UVB compensated
+  float index;             ///< UV Index
+};
+
 /**
  * @class Veml6075Sensor
  * @brief VEML6075 UVA/UVB sensor implementation
@@ -218,6 +231,13 @@ public:
    * @return UV Index (typically 0-15+)
    */
   float getUVIndex() const { return values.index; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * @return Const reference to Veml6075Values struct
+   */
+  const struct Veml6075Values& getValues() const;
 };
 
 #endif  // VEML6075_SENSOR_H
