@@ -78,14 +78,12 @@ extern DiagnosticStats diagStats;
 
 inline void initDiagnostics() {
   #if ENABLE_REBOOT_REASON
-  logPrintf("");
   logPrintf("[DIAG] ========== REBOOT DIAGNOSTICS ==========");
   logPrintf("[DIAG] Reboot Reason: %s", getRebootReason());
   logPrintf("[DIAG] Free Heap: %u bytes", ESP.getFreeHeap());
   logPrintf("[DIAG] Total Heap: %u bytes", ESP.getHeapSize());
   logPrintf("[DIAG] Min Free Heap (ever): %u bytes", ESP.getMinFreeHeap());
   logPrintf("[DIAG] ========================================");
-  logPrintf("");
   #endif
   
   diagStats.bootCount++;
@@ -135,14 +133,12 @@ inline void trackI2cError(uint8_t addr, const char* device) {
 }
 
 inline void printDiagnosticReport() {
-  logPrintf("");
   logPrintf("[DIAG] ========== DIAGNOSTIC REPORT ==========");
   logPrintf("[DIAG] Boot Count: %u", diagStats.bootCount);
   logPrintf("[DIAG] Min Free Heap: %u bytes", diagStats.minFreeHeap);
   logPrintf("[DIAG] Slow Sensor Reads: %u", diagStats.slowSensorReads);
   logPrintf("[DIAG] I2C Errors: %u", diagStats.i2cErrors);
   logPrintf("[DIAG] =========================================");
-  logPrintf("");
 }
 
 #endif // DIAGNOSTICS_H
