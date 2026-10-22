@@ -914,6 +914,258 @@ See docs/10-testing.md § "New Test Cases: Logging & Diagnostics (FEATURE-SPEC-0
 
 ---
 
+## Phase 5c: Host-Level Persistent Serial Monitoring (Python Monitor) — NEW
+
+### Objective
+Implement persistent logging infrastructure on the host machine to capture, store, analyze, and diagnose firmware behavior over extended periods (24+ hours). Enable post-mortem analysis of production issues without losing data.
+
+**Note:** This is HOST-SIDE infrastructure (not firmware). Runs on Linux/macOS/Windows host machine connected via USB serial to ESP32.
+
+### Requirements Met
+- **FR-024b:** External Persistent Serial Monitor (NEW)
+- **FR-025:** Display Switch Diagnostics with disk persistence
+- **FR-027:** Logging Stability over 24+ hour operation
+
+### Dependencies
+- [x] Phase 5 (firmware logPrintf() implementation)
+- [x] Phase 5b (boot banner and logging infrastructure)
+- [x] Host Python 3.6+ installation
+- [x] pyserial library
+
+### Implementation
+
+#### Step 5c.1: Install Python Dependencies
+
+**Requirement:** pyserial library for serial communication
+
+```bash
+pip install pyserial
+```
+
+**Verification:**
+```bash
+python3 -c "import serial; print(serial.__version__)"
+```
+
+**Location:** Install globally or in project virtualenv (recommended: global for ease of use)
+
+#### Step 5c.2: Create Python Serial Monitor Script
+
+**File:** `scripts/serial_monitor.py` (NEW, ~369 lines)
+
+This script:
+1. Reads serial data from /dev/ttyUSB0 at 115200 baud
+2. Writes all output to disk: `logs/serial/serial_monitor_YYYY-MM-DD.log`
+3. Displays output to terminal with:
+   - Timestamps in [HH:MM:SS.mmm] format
+   - Color-coding by severity (ERROR=red, WARN=yellow, INFO=blue, OK=green)
+   - Optional compact mode (--compact flag) that filters to show only critical errors
+4. Implements I2C error categorization:
+   - OK (blue): time < 50ms, errors:0, bus:free
+   - SLOW (yellow): time ≥ 50ms
+   - BUS_ERROR (red): errors > 0
+   - CRITICAL (bold red): Error 263 or "bus:locked"
+5. Provides search functionality (--search flag) for post-mortem analysis
+
+**Key Features:**
+- Automatic log rotation at midnight (one file per day)
+- Line buffering: writes flushed immediately (no data loss on crash)
+- Chronological order: oldest entries at top, newest at bottom
+- Statistics tracking: count of Lines, Errors, I2C-Errors, Slow-I2C every 200 lines
+- Non-blocking I/O: won't freeze if serial port disconnects
+- Graceful error handling: reconnects automatically if device reboots
+
+**Installation:** Copy `scripts/serial_monitor.py` from repository (already provided)
+
+**Testing:** Verify script is executable:
+```bash
+python3 scripts/serial_monitor.py --help
+```
+
+#### Step 5c.3: Create Log Directory Structure
+
+**File:** `logs/serial/` (NEW directory)
+
+```bash
+mkdir -p logs/serial
+```
+
+**Purpose:** Persistent storage for dated log files
+
+**Auto-Creation:** Monitor script creates directory if it doesn't exist on first run
+
+#### Step 5c.4: Create Quick Reference Card
+
+**File:** `SERIAL_MONITOR_QUICK_REFERENCE.txt` (NEW, ~200 lines)
+
+One-page reference for:
+- Command-line usage examples
+- I2C error categorization rules
+- Typical error patterns and troubleshooting
+- Search workflow for production issues
+
+**Installation:** Copy from repository (already provided)
+
+#### Step 5c.5: Create Comprehensive Documentation
+
+**File:** `SERIAL_MONITOR_README.md` (NEW, ~400 lines)
+
+Full documentation including:
+- Architecture overview (data flow: Firmware → Serial → Monitor → Disk)
+- Installation and setup instructions
+- Usage examples (normal mode, compact mode, search mode)
+- I2C error categorization logic with examples
+- Log file format specification
+- Retention policy recommendations
+- Post-mortem analysis workflows
+- Troubleshooting guide
+
+**Installation:** Copy from repository (already provided)
+
+### Usage Workflow
+
+#### Starting the Monitor
+
+**Normal mode** (shows all output with color coding):
+```bash
+python3 scripts/serial_monitor.py
+```
+
+**Compact mode** (shows only critical errors in terminal, all data persisted):
+```bash
+python3 scripts/serial_monitor.py --compact &
+```
+
+**Background persistent mode** (recommended for long-term testing):
+```bash
+nohup python3 scripts/serial_monitor.py --compact > /tmp/monitor.log 2>&1 &
+```
+
+#### Viewing Logs
+
+**Current day's log:**
+```bash
+tail -100 logs/serial/serial_monitor_2026-10-22.log
+```
+
+**Search for error patterns:**
+```bash
+python3 scripts/serial_monitor.py --search "Error 263"
+python3 scripts/serial_monitor.py --search "bus:locked"
+python3 scripts/serial_monitor.py --search "CRITICAL"
+```
+
+**Analyze over multiple days:**
+```bash
+grep "📊 Lines:" logs/serial/serial_monitor_2026-10-*.log
+```
+
+### Testing
+
+#### TC-PMON-001: Persistent Logging to Disk
+
+**Objective:** Verify that all serial output is written to disk
+
+**Test Steps:**
+1. Start monitor: `python3 scripts/serial_monitor.py --compact &`
+2. Let device run for 5 minutes
+3. Check log file: `ls -lh logs/serial/serial_monitor_*.log`
+4. Verify file size > 1 MB (1–2 MB per hour)
+5. Spot-check content: `head -20 logs/serial/serial_monitor_*.log`
+
+**Expected Result:** Log file exists, contains timestamped output, grows continuously
+
+**Pass Criteria:** File size ≥ 500 KB after 30 minutes, all output has [HH:MM:SS.mmm] timestamp
+
+#### TC-PMON-002: Compact Mode Filtering Accuracy
+
+**Objective:** Verify that compact mode shows only critical errors
+
+**Test Steps:**
+1. Start in compact mode: `python3 scripts/serial_monitor.py --compact`
+2. Observe terminal output for 2 minutes
+3. Stop and check log file
+4. Count lines in terminal output vs log file
+
+**Expected Result:**
+- Terminal: shows only [I2C-TIMING] lines with time ≥ 50ms, errors > 0, or Error 263
+- Log file: contains ALL output, same as normal mode
+
+**Pass Criteria:** Terminal output ≤ 10% of log file size, all terminal lines match "SLOW", "BUS_ERROR", or "CRITICAL" categorization
+
+#### TC-PMON-003: I2C Error Categorization Correctness
+
+**Objective:** Verify that I2C-TIMING lines are correctly categorized
+
+**Test Steps:**
+1. Collect 1 hour of data: `python3 scripts/serial_monitor.py --compact &`
+2. Let device run, collect diverse I2C transactions
+3. Extract sample lines: `grep "\[I2C-TIMING\]" logs/serial/serial_monitor_*.log | head -20`
+4. Manually verify each line against categorization rules:
+   - time < 50ms, errors:0, bus:free → should be OK (hidden)
+   - time ≥ 50ms → should be SLOW (yellow)
+   - errors > 0 → should be BUS_ERROR (red)
+   - Error 263 or bus:locked → should be CRITICAL (bold red)
+
+**Expected Result:** All categorizations match rules
+
+**Pass Criteria:** 100% accuracy, no miscategorizations
+
+#### TC-PMON-004: Log Rotation at Midnight
+
+**Objective:** Verify that logs rotate to new file at midnight
+
+**Test Setup:** This is a time-dependent test; can be scheduled or simulated
+
+**Test Steps:**
+1. Start monitor at 23:55 UTC: `python3 scripts/serial_monitor.py --compact &`
+2. Let run through midnight
+3. Verify directory: `ls -la logs/serial/`
+
+**Expected Result:** Two files:
+- `serial_monitor_2026-10-22.log` (created on Oct 22, stops at midnight)
+- `serial_monitor_2026-10-23.log` (created at 00:00 Oct 23)
+
+**Pass Criteria:** Rotation occurs exactly at midnight, no data loss at transition
+
+### Acceptance Criteria
+
+- [x] Python monitor script runs without errors
+- [x] Serial output appears in terminal (normal mode)
+- [x] All output persisted to `logs/serial/serial_monitor_YYYY-MM-DD.log`
+- [x] Compact mode filters correctly (shows only critical errors)
+- [x] I2C categorization accurate (OK/SLOW/BUS_ERROR/CRITICAL)
+- [x] Search functionality works (--search "Error 263")
+- [x] Log rotation occurs at midnight
+- [x] 24-hour stability test completes with file growth 24–48 MB
+- [x] No data corruption observed in log files
+- [x] Python dependency (pyserial) clearly documented
+
+### Deliverables
+
+- [x] `scripts/serial_monitor.py` (369 lines, Python 3.6+)
+- [x] `scripts/monitor.sh` (quick wrapper)
+- [x] `logs/serial/` (directory for log storage)
+- [x] `SERIAL_MONITOR_README.md` (comprehensive documentation)
+- [x] `SERIAL_MONITOR_QUICK_REFERENCE.txt` (one-page guide)
+- [x] Updated `docs/02-architecture.md` (Section 3.10.1 Host-Level Monitoring)
+- [x] Updated `docs/14-reconstruction-plan.md` (this section, Phase 5c)
+- [x] Test results from TC-PMON-001 through TC-PMON-004
+
+### Integration Notes
+
+**Relationship to Firmware (Phase 5b):**
+- This Python monitor consumes output from firmware's logPrintf()
+- No changes to firmware required; monitor is host-side only
+- Works immediately after Phase 5b is complete
+
+**Deployment Dependency:**
+- Python monitor setup MUST occur after firmware is deployed
+- Cannot be used without working serial connection to device
+- Part of "Deployment Phase" workflow
+
+---
+
 ## Phase 6: API/Backend
 
 ### Objective
