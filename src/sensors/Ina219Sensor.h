@@ -35,6 +35,27 @@
 #include "BaseSensor.h"
 #include <Adafruit_INA219.h>
 
+// ============================================================================
+// Ina219Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+// This struct is also defined in main.cpp for backward compatibility
+// Both definitions must remain in sync
+// 
+// Future refactoring (Phase 4+): This will be the canonical definition
+// and main.cpp will include it instead of duplicating
+//
+struct Ina219Values {
+  float shunt;          ///< mV - voltage across shunt
+  float bus;            ///< V - bus supply voltage
+  float load;           ///< V - approximate load voltage
+  float current;        ///< mA - current through shunt
+  float power;          ///< mW - power consumption
+  float chargeMah;      ///< mAh - accumulated charge
+  bool initialized;     ///< Whether sensor has been read once
+  uint32_t lastSampleUs;    ///< Timestamp of last sample (us)
+  uint32_t startTimeUs;     ///< Sensor initialization time (us)
+};
+
 /**
  * @class Ina219Sensor
  * @brief INA219 current/power monitor sensor implementation
@@ -272,6 +293,22 @@ public:
     *outMaxTime = stats.maxTime;
     *outAvgTime = (stats.readCount > 0) ? (stats.totalTime / stats.readCount) : 0;
   }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * Returns all current sensor values packed into Ina219Values struct.
+   * Used by main.cpp display layer instead of direct global variable access.
+   * This enables better encapsulation without moving the struct definition.
+   * 
+   * @return Const reference to Ina219Values struct with current sensor state
+   * 
+   * @note The returned struct is reconstructed from internal values on each call.
+   *       For performance-critical code, consider caching the result.
+   * 
+   * @see Ina219Values (defined in main.cpp)
+   */
+  const struct Ina219Values& getValues() const;
 
 protected:
   /**

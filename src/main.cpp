@@ -170,7 +170,7 @@ struct SensorStatus {
 };
 SensorStatus available{};
 
-struct Ina219Values { float shunt; float bus; float load; float current; float power; float chargeMah; bool initialized; uint32_t lastSampleUs; uint32_t startTimeUs; };
+// PHASE 3a: Ina219Values struct moved to Ina219Sensor.h (included via sensors.h)
 struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t comp2; float uvaComp; float uvbComp; float index; };
 struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
 struct Scd30Values { float co2; float temp; float humidity; };
@@ -482,15 +482,15 @@ String ina219_getValue(uint8_t index) {
   if (index >= INA219_PARAM_COUNT || !available.ina219) return "";
   switch (index) {
     case 0: {  // Runtime
-      const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
+      const uint32_t runtimeUs = micros() - ina219Sensor.getValues().startTimeUs;
       return formatRuntime(runtimeUs);
     }
-    case 1: return String(ina219Values.load, 3);
-    case 2: return String(ina219Values.bus, 3);
-    case 3: return String(ina219Values.current, 1);
-    case 4: return String(ina219Values.chargeMah, 3);
-    case 5: return String(ina219Values.shunt, 2);
-    case 6: return String((uint16_t)ina219Values.power);
+    case 1: return String(ina219Sensor.getValues().load, 3);
+    case 2: return String(ina219Sensor.getValues().bus, 3);
+    case 3: return String(ina219Sensor.getValues().current, 1);
+    case 4: return String(ina219Sensor.getValues().chargeMah, 3);
+    case 5: return String(ina219Sensor.getValues().shunt, 2);
+    case 6: return String((uint16_t)ina219Sensor.getValues().power);
     default: return "";
   }
 }
@@ -1838,12 +1838,12 @@ void rotatedReadSensor(uint32_t slot)
 bool valuesChanged()
 {
   // INA219 changed?
-  if (ina219Values.load != lastIna219Values.load ||
-      ina219Values.bus != lastIna219Values.bus ||
-      ina219Values.current != lastIna219Values.current ||
-      ina219Values.power != lastIna219Values.power ||
-      ina219Values.shunt != lastIna219Values.shunt ||
-      ina219Values.chargeMah != lastIna219Values.chargeMah) {
+  if (ina219Sensor.getValues().load != lastIna219Values.load ||
+      ina219Sensor.getValues().bus != lastIna219Values.bus ||
+      ina219Sensor.getValues().current != lastIna219Values.current ||
+      ina219Sensor.getValues().power != lastIna219Values.power ||
+      ina219Sensor.getValues().shunt != lastIna219Values.shunt ||
+      ina219Sensor.getValues().chargeMah != lastIna219Values.chargeMah) {
     return true;
   }
   
@@ -1962,7 +1962,7 @@ bool largeDisplayValueChanged()
 /// @brief Update cached values snapshot after display redraw (for next comparison)
 void updateCachedValues()
 {
-  lastIna219Values = ina219Values;
+  lastIna219Values = ina219Sensor.getValues();
   lastBme280Values = bme280Values;
   lastTsl2591Values = tsl2591Values;
   lastSi1145Values = si1145Values;
@@ -2170,40 +2170,12 @@ void readIna219At50Hz()
 {
   if (!available.ina219) return;
 
-  const uint32_t nowUs = micros();
-  if (ina219Values.initialized) {
-    const uint32_t elapsedUs = nowUs - ina219Values.lastSampleUs;
-    if (elapsedUs < 200000) {
-      ina219Values.chargeMah += ina219Values.current * (float)elapsedUs / 3600000000.0f;
-    }
-  } else {
-    // Store start time when first initialized
-    ina219Values.startTimeUs = nowUs;
-    ina219Values.initialized = true;
-  }
-
-  ina219Values.lastSampleUs = nowUs;
-  uint32_t readStartUs = micros();
-  ina219Values.shunt = -ina219.getShuntVoltage_mV();
-  ina219Values.bus = ina219.getBusVoltage_V();
-  ina219Values.current = -ina219.getCurrent_mA();
-  ina219Values.power = ina219.getPower_mW();
-  uint32_t readEndUs = micros();
-  uint32_t readDuration = readEndUs - readStartUs;
-  ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
+  // PHASE 3a: Use ina219Sensor for hardware reads (single I2C instance)
+  // Then copy to global ina219Values for backward compatibility
+  ina219Sensor.update();
   
-  // Aggregate stats for 1-second reporting
-  #if ENABLE_STATS_REPORTING
-  ina219Stats.readCount++;
-  ina219Stats.totalTime += readDuration;
-  if (ina219Stats.readCount == 1) {
-    ina219Stats.minTime = readDuration;
-    ina219Stats.maxTime = readDuration;
-  } else {
-    if (readDuration < ina219Stats.minTime) ina219Stats.minTime = readDuration;
-    if (readDuration > ina219Stats.maxTime) ina219Stats.maxTime = readDuration;
-  }
-  #endif
+  // Populate global ina219Values from sensor
+  ina219Values = ina219Sensor.getValues();
 }
 
 // Format runtime as HH:MM:SS

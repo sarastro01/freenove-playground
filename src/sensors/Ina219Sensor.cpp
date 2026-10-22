@@ -186,3 +186,26 @@ String Ina219Sensor::formatRuntime(uint32_t seconds) const {
   snprintf(buffer, sizeof(buffer), "%02u:%02u:%02u", hours, minutes, secs);
   return String(buffer);
 }
+
+// ============================================================================
+// PHASE 3a Accessor: getValues() for main.cpp display/caching integration
+// ============================================================================
+// Returns a copy of the internal values struct in main.cpp-compatible format
+// This enables gradual refactoring without moving struct definitions
+
+const struct Ina219Values& Ina219Sensor::getValues() const {
+  static Ina219Values result;
+  
+  // Populate result struct with current internal values
+  result.shunt = values.shunt;
+  result.bus = values.bus;
+  result.load = values.load;
+  result.current = values.current;
+  result.power = values.power;
+  result.chargeMah = values.chargeMah;
+  result.initialized = values.initialized;
+  result.lastSampleUs = values.lastSampleUs;
+  result.startTimeUs = values.startTimeUs;
+  
+  return result;
+}
