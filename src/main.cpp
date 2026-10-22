@@ -115,12 +115,19 @@ const char* const PAGE_TITLES[PAGE_COUNT] = {
   "DS2484"       // Page 9
 };
 
+// ============================================================================
+// SECTION 1: HARDWARE DISPLAY
+// ============================================================================
 // Display Configuration: FNK0114N 3.5" TFT with ILI9341 controller
 // Physical Resolution: 320×480 pixels
 // Display Mode: LANDSCAPE (rotation=3 via User_Setup.h)
 // Effective Coordinate System: x=0-480 (horizontal), y=0-320 (vertical)
 // Header: y=0-38, Content Area: y=40-320
 TFT_eSPI tft = TFT_eSPI(320, 480);
+
+// ============================================================================
+// SECTION 2: HARDWARE DEVICES (Adafruit Library Instances)
+// ============================================================================
 Adafruit_INA219 ina219(0x40);
 Adafruit_TSL2591 tsl2591(2591);
 Adafruit_SI1145 si1145;
@@ -128,34 +135,29 @@ Adafruit_BME280 bme280;
 Adafruit_seesaw gamepad;
 Adafruit_seesaw encoder;
 seesaw_NeoPixel encoderLed(1, ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800, &Wire);
-SCD30 scd30Sensor;  // FEATURE-SPEC-009: SparkFun SCD30 Library instance
+SCD30 scd30Sensor;                           // SparkFun SCD30 library instance
+VEML6075 veml6075Sensor;                     // SparkFun VEML6075 library instance
+Adafruit_VEML6070 veml6070Sensor;            // Adafruit VEML6070 library instance
+Adafruit_DS248x ds2484Master;                // DS2484 I2C-to-1-Wire adapter
 
-// FEATURE-SPEC-010: UV Sensors upgraded to libraries
-VEML6075 veml6075Sensor;  // SparkFun VEML6075 instance
-Adafruit_VEML6070 veml6070Sensor;  // Adafruit VEML6070 instance
-
-// DS2484 I2C-to-1-Wire adapter via Adafruit library
-Adafruit_DS248x ds2484Master;
-
-// PHASE-4: Sensor Registry and Instances
-// Registry manages all 8 functional sensor instances polymorphically (excludes GamepadSensor and EncoderSensor with pre-existing errors)
-SensorRegistry sensorRegistry;
-
-// Diagnostic monitoring
+// ============================================================================
+// SECTION 3: SENSOR WRAPPERS & REGISTRY
+// ============================================================================
+SensorRegistry sensorRegistry;               // Registry manages all 8 sensor wrappers polymorphically
 DiagnosticStats diagStats = {0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0};
 
-// Create instances of all 8 working sensor classes
 Ina219Sensor ina219Sensor;
-// GamepadSensor gamepadSensor;  // DISABLED: pre-existing compilation errors
-// EncoderSensor encoderSensor;  // DISABLED: pre-existing compilation errors
 Bme280Sensor bme280Sensor;
 Si1145Sensor si1145Sensor;
 Tsl2591Sensor tsl2591Sensor;
 Veml6075Sensor veml6075Sensor_new;
-Veml6070Sensor veml6070Sensor_new;
-Scd30Sensor scd30Sensor_new;
+Veml6070Sensor veml6070Sensor_class;
+Scd30Sensor scd30Sensor_class;
 Ds2484Sensor ds2484Sensor;
 
+// ============================================================================
+// SECTION 4: SENSOR STATUS & AVAILABILITY
+// ============================================================================
 struct SensorStatus {
   bool ina219;
   bool veml6075;
@@ -166,90 +168,27 @@ struct SensorStatus {
   bool scd30;
   bool bme280;
   bool gamepad;
-  bool ds2484;      // DS2484 I2C-to-1-Wire adapter detected
+  bool ds2484;
 };
 SensorStatus available{};
 
-// PHASE 3a: Ina219Values struct moved to Ina219Sensor.h (included via sensors.h)
-// PHASE 3e: Veml6075Values struct moved to Veml6075Sensor.h (included via sensors.h)
-struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
-struct Scd30Values { float co2; float temp; float humidity; };
-struct Scd30State {
-  uint32_t lastAscQuery;    // Timestamp of last ASC status query (ms)
-  bool pendingAscWrite;     // Whether an ASC toggle is in-flight
-};
-
-struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
-struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
-
-// PHASE-4: Import DS2484 struct definitions from sensor class (avoid redefinition)
+// ============================================================================
+// SECTION 5: SENSOR DATA CACHES (Global)
+// ============================================================================
+// Struct definitions moved to sensor headers; included via sensors.h
+// PHASE 3a (INA219), 3b (BME280), 3c (SI1145), 3d (TSL2591), 3e (VEML6075), 3f (VEML6070), 3g (SCD30)
 #include "sensors/Ds2484Types.h"
 
 Ina219Values ina219Values{};
-Veml6075Values veml6075Values{};  // struct def in Veml6075Sensor.h
+Bme280Values bme280Values{};
+Si1145Values si1145Values{};
+Tsl2591Values tsl2591Values{};
+Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
-Scd30State scd30State{};
-Bme280Values bme280Values{};       // BME280 cache (struct def in Bme280Sensor.h)
-Tsl2591Values tsl2591Values{};     // TSL2591 cache (struct def in Tsl2591Sensor.h)
-Si1145Values si1145Values{};       // SI1145 cache (struct def in Si1145Sensor.h)
-EncoderValues encoderValues{};
-GamepadValues gamepadValues{};
-Ds2484Values ds2484Values{};  // DS2484 1-Wire adapter and sensors
-uint32_t fwVersion = 0;
-uint32_t optionsMask = 0;
-float seesawTemperature = 0.0f;
-uint8_t currentPage = 2;  // Start with INA219 page (Page 2)
-uint8_t lastPage = 255;
+Ds2484Values ds2484Values{};
 
-// FEATURE-SPEC-007: Universal Large Display Mode (All Pages)
-struct {
-  bool active;              // Large display mode currently active
-  uint8_t currentPage;      // Page index where mode was entered (0-9)
-  uint8_t valueIndex;       // Current value being displayed (0 to pageValueCount-1)
-  bool needsFullRedraw;     // Redraw entire screen (not just incremental update)
-  String lastDisplayedValue; // Track last displayed value to detect changes
-} largeDisplayMode = {false, 0, 0, false, ""};
-
-int32_t encoderLastPosition = 0;
-uint32_t encoderPressCount = 0;
-uint32_t encoderPressedSince = 0;
-bool encoderLastPressed = false;
-uint8_t encoderColorIndex = 0;
-uint8_t encoderBrightness = 64;
-const uint32_t encoderColors[] = {
-  seesaw_NeoPixel::Color(0, 96, 255), seesaw_NeoPixel::Color(0, 255, 32),
-  seesaw_NeoPixel::Color(255, 48, 0), seesaw_NeoPixel::Color(180, 0, 255)
-};
-const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
-
-// ============================================================================
-// FEATURE-SPEC-006: Non-Blocking Rotated Sensor Architecture
-// ============================================================================
-
-// State machines for asynchronous sensor reads (FEATURE-SPEC-006)
-enum class Tsl2591State {
-  IDLE,       // 0: Not measuring; ready to start
-  MEASURING   // 1: Measurement in progress (ADC integrating)
-};
-static Tsl2591State tsl2591State = Tsl2591State::IDLE;
-static uint32_t tsl2591MeasureStartMs = 0;  // Measurement start timestamp
-
-enum class Ds18b20State {
-  IDLE,       // 0: Not converting; ready to start
-  CONVERTING  // 1: Conversion in progress (1-Wire measuring)
-};
-static Ds18b20State ds18b20State = Ds18b20State::IDLE;
-static uint32_t ds18b20ConvertStartMs = 0;  // Conversion start timestamp
-
-// Sensor Timing Configuration (modifiable)
-static uint32_t TSL2591_INTEGRATION_TIME_MS = TSL2591_INTEGRATION_TIME_DEFAULT_MS;
-static uint32_t DS18B20_CONVERSION_TIME_MS = DS18B20_CONVERSION_TIME_DEFAULT_MS;
-
-// Track current sensor slot for rotation dispatch (FEATURE-SPEC-006)
-static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Previous slot number (init to invalid)
-
-// Cached values for display refresh optimization (FEATURE-SPEC-006)
+// Change detection caches for display refresh optimization
 static Ina219Values lastIna219Values{};
 static Bme280Values lastBme280Values{};
 static Tsl2591Values lastTsl2591Values{};
@@ -258,40 +197,119 @@ static Veml6075Values lastVeml6075Values{};
 static Veml6070Values lastVeml6070Values{};
 static Scd30Values lastScd30Values{};
 static Ds2484Values lastDs2484Values{};
-static GamepadValues lastGamepadValues{};
-static EncoderValues lastEncoderValues{};
-static uint32_t lastTimerSeconds = 0xFFFFFFFF;
-static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limiting: max 5 Hz (200ms interval)
 
 // ============================================================================
-// STATISTICS STRUCTURES (Accessible regardless of ENABLE_STATS_REPORTING setting)
+// SECTION 6: DISPLAY & UI STATE
+// ============================================================================
+uint8_t currentPage = 2;                     // Start with INA219 page (Page 2)
+uint8_t lastPage = 255;
+uint32_t nextLargeDisplayRefreshMs = 0;      // Rate limiting: max 5 Hz (200ms interval)
+
+struct {
+  bool active;                               // Large display mode currently active
+  uint8_t currentPage;                       // Page index where mode was entered (0-9)
+  uint8_t valueIndex;                        // Current value being displayed (0 to pageValueCount-1)
+  bool needsFullRedraw;                      // Redraw entire screen (not just incremental update)
+  String lastDisplayedValue;                 // Track last displayed value to detect changes
+} largeDisplayMode = {false, 0, 0, false, ""};
+
+static uint32_t lastTimerSeconds = 0xFFFFFFFF;
+
+// ============================================================================
+// SECTION 7: INPUT DEVICE STATE - ENCODER
+// ============================================================================
+struct EncoderValues { 
+  int32_t position; int32_t delta; bool pressed; 
+  uint32_t presses; uint8_t brightness; const char *color; 
+};
+EncoderValues encoderValues{};
+static EncoderValues lastEncoderValues{};
+
+int32_t encoderLastPosition = 0;
+uint32_t encoderPressCount = 0;
+uint32_t encoderPressedSince = 0;
+bool encoderLastPressed = false;
+uint8_t encoderColorIndex = 0;
+uint8_t encoderBrightness = 64;
+
+const uint32_t encoderColors[] = {
+  seesaw_NeoPixel::Color(0, 96, 255), seesaw_NeoPixel::Color(0, 255, 32),
+  seesaw_NeoPixel::Color(255, 48, 0), seesaw_NeoPixel::Color(180, 0, 255)
+};
+const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
+
+// ============================================================================
+// SECTION 8: INPUT DEVICE STATE - GAMEPAD
+// ============================================================================
+struct GamepadValues { 
+  int x; int y; uint32_t buttons; 
+  uint8_t eventCount; uint8_t lastEvent; bool hasEvent; 
+};
+GamepadValues gamepadValues{};
+static GamepadValues lastGamepadValues{};
+
+// ============================================================================
+// SECTION 9: SCD30 STATE MACHINE (ASC - Auto Self Calibration)
+// ============================================================================
+struct Scd30State {
+  uint32_t lastAscQuery;                     // Timestamp of last ASC status query (ms)
+  bool pendingAscWrite;                      // Whether an ASC toggle is in-flight
+};
+Scd30State scd30State{};
+
+// ============================================================================
+// SECTION 10: ASYNC SENSOR STATE MACHINES
+// ============================================================================
+enum class Tsl2591State { IDLE, MEASURING };
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+enum class Ds18b20State { IDLE, CONVERTING };
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+
+// Track current sensor slot for rotation dispatch
+static uint32_t lastSensorSlot = 0xFFFFFFFF;
+
+// ============================================================================
+// SECTION 11: CONFIGURATION & TUNING
+// ============================================================================
+static uint32_t TSL2591_INTEGRATION_TIME_MS = TSL2591_INTEGRATION_TIME_DEFAULT_MS;
+static uint32_t DS18B20_CONVERSION_TIME_MS = DS18B20_CONVERSION_TIME_DEFAULT_MS;
+
+uint32_t fwVersion = 0;
+uint32_t optionsMask = 0;
+float seesawTemperature = 0.0f;
+
+// ============================================================================
+// SECTION 12: STATISTICS & MONITORING
 // ============================================================================
 struct SensorReadStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint16_t readCount; // Number of reads in this interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint16_t readCount;
 };
 
 struct GamepadStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 struct EncoderStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 struct Ina219Stats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 static SensorReadStats bme280Stats, tsl2591Stats, si1145Stats, veml6075Stats, veml6070Stats, scd30Stats, ds18b20Stats;
@@ -299,9 +317,9 @@ static GamepadStats gamepadStats{};
 static EncoderStats encoderStats{};
 static Ina219Stats ina219Stats{};
 static uint32_t lastStatsUpdateMs = 0;
-static uint32_t lastGamepadStatsLogMs = 0;  // For 1-second gamepad stats reporting
-static uint32_t lastEncoderStatsLogMs = 0;  // For 1-second encoder stats reporting
-static uint32_t lastIna219StatsLogMs = 0;   // For 1-second INA219 stats reporting
+static uint32_t lastGamepadStatsLogMs = 0;
+static uint32_t lastEncoderStatsLogMs = 0;
+static uint32_t lastIna219StatsLogMs = 0;
 
 
 // ============================================================================
@@ -411,6 +429,43 @@ const ParameterTriple veml6075_params[] = {
   {"Compensation", "Factors", TFT_CYAN}
 };
 const uint8_t VEML6075_PARAM_COUNT = 6;
+
+// ============================================================================
+// FORWARD DECLARATIONS - Page Handler Functions (for PageHandler array)
+// ============================================================================
+void pageBme280();
+void pageGamepad();
+void pageIna219();
+void pageEncoder();
+void pageScd30(bool pageChanged);
+void pageSi1145();
+void pageTsl2591();
+void pageVeml6070();
+void pageVeml6075();
+void pageDs2484();
+
+// ============================================================================
+// PHASE 5: PAGE HANDLER ARRAY (Data-Driven Page Dispatch)
+// ============================================================================
+struct PageHandler {
+  const char* name;                  // Page title (e.g., "BME280")
+  void (*renderPage)(bool changed);  // Function pointer to page render function
+  uint16_t color;                    // LED indicator color for this page
+};
+
+// Array maps page index (0-9) to handler (replaces switch statement)
+const PageHandler pageHandlers[PAGE_COUNT] = {
+  {"BME280",   [](bool changed) { pageBme280(); }, 0x07E0},      // Page 0: Green
+  {"Gamepad",  [](bool changed) { pageGamepad(); }, 0xF81F},     // Page 1: Magenta
+  {"INA219",   [](bool changed) { pageIna219(); }, 0xF800},      // Page 2: Red
+  {"Encoder",  [](bool changed) { pageEncoder(); }, 0xFC00},     // Page 3: Orange
+  {"SCD30",    [](bool changed) { pageScd30(changed); }, 0x0810},// Page 4: Blue
+  {"SI1145",   [](bool changed) { pageSi1145(); }, 0xFFE0},      // Page 5: Yellow
+  {"TSL2591",  [](bool changed) { pageTsl2591(); }, 0x07FF},     // Page 6: Cyan
+  {"VEML6070", [](bool changed) { pageVeml6070(); }, 0xFC00},    // Page 7: Orange
+  {"VEML6075", [](bool changed) { pageVeml6075(); }, 0xF81F},    // Page 8: Magenta
+  {"DS2484",   [](bool changed) { pageDs2484(); }, 0xFBE0}       // Page 9: Light Gray
+};
 
 // ============================================================================
 // FORWARD DECLARATIONS - Required for Value Getters to use helper functions
@@ -980,13 +1035,9 @@ bool readScd30(Scd30Values &values)
 {
   uint32_t startTime = micros();
   
-  // FEATURE-SPEC-010: Use SparkFun SCD30 Library methods instead of raw I2C reads
-  // BUGFIX: Always read values (don't check dataAvailable first) to prevent flickering
-  // The library caches values internally, so reading when no new data is available
-  // just returns the last measurement, preventing display flicker
-  values.co2 = scd30Sensor.getCO2();
-  values.temp = scd30Sensor.getTemperature();
-  values.humidity = scd30Sensor.getHumidity();
+  // PHASE 3g: Delegate to sensor class wrapper
+  scd30Sensor_class.update();
+  values = scd30Sensor_class.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1046,11 +1097,9 @@ bool readVeml6070(Veml6070Values &values)
 {
   uint32_t startTime = micros();
   
-  // FEATURE-SPEC-010: Use Adafruit VEML6070 Library for robust I2C communication
-  uint16_t raw = veml6070Sensor.readUV();
-  values.raw = raw;
-  values.lsb = raw & 0xFF;
-  values.msb = (raw >> 8) & 0xFF;
+  // PHASE 3f: Delegate to sensor class wrapper
+  veml6070Sensor_class.update();
+  values = veml6070Sensor_class.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1136,6 +1185,18 @@ bool ds2484ResetBus()
 {
   // DS2484 reset bus via Adafruit library
   return ds2484Master.reset();
+}
+
+// PHASE 3h: Sync DS2484 wrapper values to global cache for display layer
+void syncDs2484Values()
+{
+  if (!available.ds2484) return;
+  
+  // Get current values from sensor wrapper (updated via registry)
+  const Ds2484Values &wrapperValues = ds2484Sensor.getValues();
+  
+  // Sync to global cache for backward compatibility
+  ds2484Values = wrapperValues;
 }
 
 void performDs2484Scan()
@@ -1381,10 +1442,9 @@ void readSensors()
   if (available.veml6070) readVeml6070(veml6070Values);
   // FEATURE-SPEC-010: Use SparkFun SCD30 dataAvailable() instead of scd30Ready()
   if (available.scd30 && scd30Sensor.dataAvailable()) readScd30(scd30Values);
+  // PHASE 3h: Sync DS2484 wrapper values to global cache
   if (available.ds2484) {
-    performDs2484Scan();      // 60-second bus scan
-    // NOTE: DS18B20 is async - conversion starts in rotatedReadSensor(), results checked later
-    // readDs2484Temperatures(); // Removed: async via startDs18b20Conversion()
+    syncDs2484Values();       // Sync wrapper updates to global cache for display layer
   }
 }
 
@@ -2328,17 +2388,10 @@ void drawCurrentPage(bool pageChanged)
       drawHeader(titles[currentPage]);
     }
   }
-  switch (currentPage) {
-    case 0: pageBme280(); break;
-    case 1: pageGamepad(); break;
-    case 2: pageIna219(); break;
-    case 3: pageEncoder(); break;
-    case 4: pageScd30(pageChanged); break;
-    case 5: pageSi1145(); break;
-    case 6: pageTsl2591(); break;
-    case 7: pageVeml6070(); break;
-    case 8: pageVeml6075(); break;
-    case 9: pageDs2484(); break;
+  
+  // PHASE 5: Data-driven page dispatch using PageHandler array (replaces switch statement)
+  if (currentPage < PAGE_COUNT) {
+    pageHandlers[currentPage].renderPage(pageChanged);
   }
 }
 
@@ -2571,12 +2624,12 @@ void setup()
   sensorRegistry.registerSensor(4, &si1145Sensor, "SI1145", 0xFFE0);  // Yellow
   sensorRegistry.registerSensor(5, &tsl2591Sensor, "TSL2591", 0x07FF);  // Cyan
   sensorRegistry.registerSensor(6, &veml6075Sensor_new, "VEML6075", 0xF81F);  // Magenta
-  sensorRegistry.registerSensor(7, &veml6070Sensor_new, "VEML6070", 0xFC00);  // Orange
-  sensorRegistry.registerSensor(8, &scd30Sensor_new, "SCD30", 0x0810);  // Blue
+  sensorRegistry.registerSensor(7, &veml6070Sensor_class, "VEML6070", 0xFC00);  // Orange
+  sensorRegistry.registerSensor(8, &scd30Sensor_class, "SCD30", 0x0810);  // Blue
   sensorRegistry.registerSensor(9, &ds2484Sensor, "DS2484", 0xFBE0);  // Light Gray
   
   // PHASE-4: Set device pointers for sensors that use global device instances
-  veml6070Sensor_new.setDevice(&veml6070Sensor);  // Pass global device instance to wrapper
+  veml6070Sensor_class.setDevice(&veml6070Sensor);  // Pass global device instance to wrapper
   
   // Initialize all sensors
   Serial.println("[SETUP] Initializing all sensors via registry...");

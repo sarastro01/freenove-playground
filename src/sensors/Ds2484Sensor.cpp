@@ -269,3 +269,19 @@ String Ds2484Sensor::formatRomId(const uint8_t *address) const {
   }
   return result;
 }
+
+const struct Ds2484Values& Ds2484Sensor::getValues() const {
+  static struct Ds2484Values valuesBuffer;
+  // Copy all cached values to static buffer
+  valuesBuffer.masterPresent = values.masterPresent;
+  valuesBuffer.sensorCount = values.sensorCount;
+  valuesBuffer.lastScanMs = values.lastScanMs;
+  valuesBuffer.lastConversionMs = values.lastConversionMs;
+  
+  // Copy sensor array
+  for (uint8_t i = 0; i < 3; i++) {
+    valuesBuffer.sensors[i] = values.sensors[i];
+  }
+  
+  return valuesBuffer;
+}

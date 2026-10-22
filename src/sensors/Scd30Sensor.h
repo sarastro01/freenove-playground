@@ -39,6 +39,15 @@
 #include "BaseSensor.h"
 #include <SparkFun_SCD30_Arduino_Library.h>
 
+// ============================================================================
+// Scd30Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+struct Scd30Values {
+  float co2;       ///< CO2 concentration (ppm)
+  float temp;      ///< Temperature (°C)
+  float humidity;  ///< Relative humidity (%RH)
+};
+
 /**
  * @class Scd30Sensor
  * @brief SCD30 CO2 and climate sensor implementation
@@ -235,6 +244,13 @@ public:
    * @return Temperature offset in °C
    */
   float getASCTempOffset() const { return values.ascTempOffset; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * @return Const reference to Scd30Values struct
+   */
+  const struct Scd30Values& getValues() const;
 };
 
 #endif  // SCD30_SENSOR_H

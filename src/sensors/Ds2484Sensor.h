@@ -200,6 +200,16 @@ public:
    */
   String getStatus() const override;
 
+  /**
+   * @brief Get const reference to cached DS2484 values
+   * 
+   * Returns const reference to internal values struct.
+   * Used by main.cpp display and caching logic.
+   * 
+   * @return Const reference to Ds2484Values struct
+   */
+  const struct Ds2484Values& getValues() const;
+
   // === DS2484-Specific Methods ===
 
   /**

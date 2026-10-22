@@ -126,3 +126,11 @@ uint8_t Veml6070Sensor::calculateUVLevel(uint16_t rawValue) const {
   if (level > 10) level = 10;
   return (uint8_t)level;
 }
+
+const struct Veml6070Values& Veml6070Sensor::getValues() const {
+  static struct Veml6070Values valuesBuffer;
+  valuesBuffer.raw = values.raw;
+  valuesBuffer.lsb = values.lsb;
+  valuesBuffer.msb = values.msb;
+  return valuesBuffer;
+}

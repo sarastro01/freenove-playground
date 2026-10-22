@@ -148,3 +148,11 @@ bool Scd30Sensor::setASCEnabled(bool enable) {
   values.pendingAscWrite = true;
   return true;
 }
+
+const struct Scd30Values& Scd30Sensor::getValues() const {
+  static struct Scd30Values valuesBuffer;
+  valuesBuffer.co2 = values.co2;
+  valuesBuffer.temp = values.temperature;
+  valuesBuffer.humidity = values.humidity;
+  return valuesBuffer;
+}

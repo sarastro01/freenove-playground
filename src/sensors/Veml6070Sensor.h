@@ -30,6 +30,15 @@
 #include "BaseSensor.h"
 #include <Adafruit_VEML6070.h>
 
+// ============================================================================
+// Veml6070Values Struct - Forward Declaration for getValues() Accessor
+// ============================================================================
+struct Veml6070Values {
+  uint16_t raw;  ///< Raw UV value (16-bit)
+  uint8_t lsb;   ///< LSB of raw value
+  uint8_t msb;   ///< MSB of raw value
+};
+
 /**
  * @class Veml6070Sensor
  * @brief VEML6070 UV sensor implementation
@@ -191,6 +200,13 @@ public:
    * @return UV level (0=Low to 10=Extreme)
    */
   uint8_t getUVLevel() const { return values.uvLevel; }
+
+  /**
+   * @brief Get complete sensor values for display/caching (PHASE 3 refactoring)
+   * 
+   * @return Const reference to Veml6070Values struct
+   */
+  const struct Veml6070Values& getValues() const;
 
 protected:
   /**
