@@ -1099,3 +1099,112 @@ This design choice ensures:
 - Serial monitor outputs debugging info (assume trusted access)
 - No secure boot or firmware encryption implemented
 
+---
+
+## Automatic Versioning Configuration
+
+**Feature:** Auto-Update VERSION and BUILD_DATE (implemented 2026-10-22)
+
+**Overview:** Every firmware build automatically increments the patch version and updates the build date to current UTC time. This ensures `VERSION` and `BUILD_DATE` are always in sync with the actual compilation.
+
+### Versioning Components
+
+**Files:**
+- `scripts/update_build_info.py` — Python script to update version/date
+- `extra_scripts/pre_build.py` — PlatformIO pre-build hook
+- `src/diagnostics.h` — Contains VERSION and BUILD_DATE constants
+- `platformio.ini` — Includes extra_scripts directive
+
+### Version Format
+
+**Semantic Versioning:** `major.minor.patch`
+- Example: `3.1.0`, `3.1.1`, `3.1.2`, etc.
+- **Patch component** increments by 1 on every build
+- **Major/minor components** updated manually (requires edit to script)
+
+### Build Date Format
+
+**ISO 8601 UTC:** `YYYY-MM-DDTHH:MM:SSZ`
+- Example: `2026-10-22T22:41:29Z`
+- Updated to current UTC time on every build
+
+### Build Workflow
+
+```bash
+$ platformio run
+
+🔨 Running pre-build: Updating build information...
+======================================================================
+   ✅ Updated diagnostics.h:
+      VERSION: 3.1.3 → 3.1.4
+      BUILD_DATE: 2026-10-22T22:41:29Z
+======================================================================
+
+[Compilation proceeds...]
+[Build succeeds]
+```
+
+### Configuration
+
+**PlatformIO configuration (platformio.ini):**
+```ini
+extra_scripts = extra_scripts/pre_build.py
+```
+
+This directive tells PlatformIO to execute `extra_scripts/pre_build.py` before compilation. The script:
+1. Calls `scripts/update_build_info.py`
+2. Updates `src/diagnostics.h` with new VERSION and BUILD_DATE
+3. Continues with normal compilation
+
+### Disabling Auto-Update (Temporary)
+
+If you need to disable automatic versioning:
+
+1. **Option 1:** Comment out extra_scripts in platformio.ini:
+   ```ini
+   # extra_scripts = extra_scripts/pre_build.py
+   ```
+
+2. **Option 2:** Manually edit VERSION/BUILD_DATE in src/diagnostics.h:
+   ```c
+   #define VERSION "3.1.2"
+   #define BUILD_DATE "2026-10-22T00:00:00Z"
+   ```
+
+3. Re-enable by uncommenting platformio.ini or re-running `python3 scripts/update_build_info.py`
+
+### Manual Version Update
+
+To manually update major or minor version, edit `scripts/update_build_info.py` and modify the initial version baseline. The next build will patch-increment from the new value.
+
+### Verification
+
+Check current version and build date in firmware:
+```bash
+# In diagnostics.h:
+grep "^#define VERSION\|^#define BUILD_DATE" src/diagnostics.h
+
+# Output example:
+#define VERSION "3.1.4"
+#define BUILD_DATE "2026-10-22T22:41:29Z"
+```
+
+Or observe on the device:
+- **Page 1** (Boot Banner): Displays VERSION and BUILD_DATE during startup
+- **Page 10** (System Info): Displays current VERSION and uptime
+
+### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| VERSION not updating | Pre-build hook disabled | Check `extra_scripts` line in platformio.ini |
+| BUILD_DATE stale | Script not executed | Verify Python 3 is available in PATH |
+| Build fails after script | Script error | Check diagnostics.h for syntax errors; revert if needed |
+| Import error on Windows | Path handling | extra_scripts assumes Unix paths; may need adjustment |
+
+### Related Documentation
+
+See [BUILD-VERSIONING.md](/docs/BUILD-VERSIONING.md) for complete technical details of the versioning system.
+
+---
+

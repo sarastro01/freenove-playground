@@ -43,3 +43,27 @@ cd /mnt/SSD_4TB_01/mnt/rslsync/folders/Privat02/Projects/2026/08/freenove-playgr
 ~/.platformio/penv/bin/pio run -t upload
 ~/.platformio/penv/bin/pio device monitor
 ```
+
+## Versioning und Build-Informationen
+
+Die Firmware aktualisiert die Versionsnummer und das Build-Datum automatisch bei jedem Kompilieren:
+
+- **VERSION**: Semantische Versionierung (major.minor.patch)
+  - Patch-Komponente wird bei jedem Build um 1 erhöht
+  - Beispiel: `3.1.0` → `3.1.1` → `3.1.2`
+
+- **BUILD_DATE**: ISO 8601 UTC Zeitstempel
+  - Beispiel: `2026-10-22T22:41:29Z`
+  - Wird auf aktuelle UTC-Zeit bei jedem Build gesetzt
+
+Diese Informationen werden angezeigt:
+- Im Boot-Banner auf dem TFT-Display
+- Auf Seite 10 (System Info) mit aktuellem Uptime
+
+**Automatisierung:**
+- Pre-Build-Hook: `extra_scripts/pre_build.py`
+- Update-Skript: `scripts/update_build_info.py`
+- Integriert in: `platformio.ini`
+
+Details siehe [BUILD-VERSIONING.md](docs/BUILD-VERSIONING.md) und [09-configuration.md](docs/09-configuration.md)
+
