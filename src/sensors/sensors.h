@@ -18,8 +18,8 @@
 #include "BaseSensor.h"
 #include "SensorRegistry.h"
 
-// Concrete sensor implementations (to be added in Phase 2-3)
-// #include "Ina219Sensor.h"
+// Concrete sensor implementations (added in Phase 2-3)
+#include "Ina219Sensor.h"  // Phase 2: Current/Power monitor
 // #include "Bme280Sensor.h"
 // #include "Scd30Sensor.h"
 // #include "EncoderSensor.h"
