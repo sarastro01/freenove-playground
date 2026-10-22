@@ -21,3 +21,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *$py.class
+# Serial Monitor Logs
+logs/serial/*.log
+nohup.out
+
