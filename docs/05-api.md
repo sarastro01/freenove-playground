@@ -424,7 +424,259 @@ These helper functions are designed generically to support extension to other se
 
 ---
 
-## 1. I2C Bus Protocol
+## 2. Central getValue Functions (FEATURE-SPEC-008 & Phase 5)
+
+Each sensor implements a central `String sensor_getValue(uint8_t index)` function that returns formatted value strings for display. These functions are used by both standard sensor page renderers and the large display mode.
+
+### Function Signatures
+
+All getValue functions follow this pattern:
+
+```cpp
+String bme280_getValue(uint8_t index);    // Returns formatted value string
+String gamepad_getValue(uint8_t index);
+String ina219_getValue(uint8_t index);
+String encoder_getValue(uint8_t index);
+String scd30_getValue(uint8_t index);
+String si1145_getValue(uint8_t index);
+String tsl2591_getValue(uint8_t index);
+String veml6070_getValue(uint8_t index);
+String veml6075_getValue(uint8_t index);
+```
+
+**Parameters:**
+- `index` (uint8_t): Zero-based parameter index (0 to PARAM_COUNT-1)
+- Returns: Formatted value as String (e.g., "23.45", "1013.25", "45%")
+
+**Behavior:**
+- Returns empty string `""` if sensor unavailable or index out of bounds
+- All formatting (decimal places, unit conversion) is centralized in function
+- Used by page renderers to display values with consistent formatting
+
+### Index Mappings by Sensor
+
+#### BME280 (Page 0)
+```cpp
+// Index → Parameter
+String bme280_getValue(uint8_t index) {
+  if (index >= BME280_PARAM_COUNT || !available.bme280) return "";
+  switch (index) {
+    case 0: return String(bme280Values.temperature, 2);      // "23.45"
+    case 1: return String(bme280Values.pressure, 2);         // "1013.25"
+    case 2: return String(bme280Values.humidity, 2);         // "45.30"
+    case 3: return String(bme280Values.dewPoint, 2);         // "14.12"
+    case 4: return String(bme280Values.altitude, 2);         // "234.56"
+    case 5: return String(bme280Values.aqiProxy, 2);         // "42.10"
+    case 6: return String(bme280Values.tempTrend, 3);        // "0.025"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** BME280_PARAM_COUNT = 7
+
+#### Gamepad (Page 1)
+```cpp
+// Index → Parameter
+String gamepad_getValue(uint8_t index) {
+  if (index >= GAMEPAD_PARAM_COUNT) return "";
+  switch (index) {
+    case 0: return String(gamepadValues.x);                  // "-500"
+    case 1: return String(gamepadValues.y);                  // "250"
+    case 2: return String(gamepadValues.buttons, HEX);       // "0x0F"
+    case 3: return String(gamepadValues.eventCount);         // "3"
+    case 4: return String(gamepadValues.lastEvent, HEX);     // "0x42"
+    case 5: return (gamepadValues.hasEvent ? "Yes" : "No");  // "Yes" / "No"
+    case 6: return String(gamepadValues.pressure, 2);        // "120.5" (if available)
+    case 7: return String(gamepadValues.reserved);           // "0"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** GAMEPAD_PARAM_COUNT = 8
+
+#### INA219 (Page 2)
+```cpp
+// Index → Parameter
+String ina219_getValue(uint8_t index) {
+  if (index >= INA219_PARAM_COUNT || !available.ina219) return "";
+  switch (index) {
+    case 0: return String(ina219Values.shunt, 4);            // "0.0250"
+    case 1: return String(ina219Values.bus, 3);              // "5.000"
+    case 2: return String(ina219Values.load, 3);             // "4.975"
+    case 3: return String(ina219Values.current, 3);          // "-1.020"
+    case 4: return String(ina219Values.power, 2);            // "5.10"
+    case 5: return String(ina219Values.chargeMah, 2);        // "12345.67"
+    case 6: return (ina219Values.initialized ? "Init" : "--");
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** INA219_PARAM_COUNT = 7
+
+#### Encoder (Page 3)
+```cpp
+// Index → Parameter
+String encoder_getValue(uint8_t index) {
+  if (index >= ENCODER_PARAM_COUNT) return "";
+  switch (index) {
+    case 0: return String(encoderValues.position);           // "1234"
+    case 1: return String(encoderValues.delta);              // "2"
+    case 2: return (encoderValues.pressed ? "Yes" : "No");   // "Yes" / "No"
+    case 3: return String(encoderValues.presses);            // "456"
+    case 4: return String(encoderValues.brightness);         // "128"
+    case 5: return String(encoderValues.color);              // "blue"
+    case 6: return String(encoderValues.reserved);           // "0"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** ENCODER_PARAM_COUNT = 7
+
+#### SCD30 (Page 4)
+```cpp
+// Index → Parameter
+String scd30_getValue(uint8_t index) {
+  if (index >= SCD30_PARAM_COUNT || !available.scd30) return "";
+  switch (index) {
+    case 0: return String(scd30Values.co2, 2);               // "456.78"
+    case 1: return String(scd30Values.temp, 2);              // "23.45"
+    case 2: return String(scd30Values.humidity, 2);          // "45.30"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** SCD30_PARAM_COUNT = 3
+
+#### SI1145 (Page 5)
+```cpp
+// Index → Parameter
+String si1145_getValue(uint8_t index) {
+  if (index >= SI1145_PARAM_COUNT || !available.si1145) return "";
+  switch (index) {
+    case 0: return String(si1145Values.visible);             // "2500"
+    case 1: return String(si1145Values.infrared);            // "1200"
+    case 2: return String(si1145Values.uvIndex, 2);          // "3.45"
+    case 3: return String(si1145Values.uvRaw);               // "150"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** SI1145_PARAM_COUNT = 4
+
+#### TSL2591 (Page 6)
+```cpp
+// Index → Parameter
+String tsl2591_getValue(uint8_t index) {
+  if (index >= TSL2591_PARAM_COUNT || !available.tsl2591) return "";
+  switch (index) {
+    case 0: return String(tsl2591Values.fullspectrum);       // "5000"
+    case 1: return String(tsl2591Values.infrared);           // "2000"
+    case 2: return String(tsl2591Values.visible);            // "3000"
+    case 3: return String(tsl2591Values.lux, 1);             // "1234.5"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** TSL2591_PARAM_COUNT = 4
+
+#### VEML6070 (Page 7)
+```cpp
+// Index → Parameter
+String veml6070_getValue(uint8_t index) {
+  if (index >= VEML6070_PARAM_COUNT || !available.veml6070) return "";
+  switch (index) {
+    case 0: return String(veml6070Values.raw);               // "1500"
+    case 1: return String(veml6070Values.lsb);               // "220"
+    case 2: return String(veml6070Values.msb);               // "5"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** VEML6070_PARAM_COUNT = 3
+
+#### VEML6075 (Page 8)
+```cpp
+// Index → Parameter
+String veml6075_getValue(uint8_t index) {
+  if (index >= VEML6075_PARAM_COUNT || !available.veml6075) return "";
+  switch (index) {
+    case 0: return String(veml6075Values.uva);               // "5000"
+    case 1: return String(veml6075Values.uvb);               // "3000"
+    case 2: return String(veml6075Values.uvaComp, 2);        // "4850.25"
+    case 3: return String(veml6075Values.uvbComp, 2);        // "2920.15"
+    case 4: return String(veml6075Values.index, 2);          // "5.23"
+    case 5: return String(veml6075Values.reserved);          // "0"
+    default: return "";
+  }
+}
+```
+
+**Parameter Count:** VEML6075_PARAM_COUNT = 6
+
+### Usage Example
+
+Page renderers use getValue to display sensor data:
+
+```cpp
+void displaySensorPage(const ParameterTriple* params, uint8_t paramCount, String (*getValueFunc)(uint8_t)) {
+  int displayY = 56;
+  const int lineHeight = 24;
+  
+  for (uint8_t i = 0; i < paramCount && displayY < 280; i++) {
+    String value = getValueFunc(i);  // Call getValue for this parameter
+    String label = String(params[i].label) + ":";
+    rowTriple(displayY, label.c_str(), value, params[i].unit, params[i].color);
+    displayY += lineHeight;
+  }
+}
+```
+
+### Large Display Mode Integration
+
+getValue functions are also used by large display renderer:
+
+```cpp
+void renderLargeDisplay(uint8_t pageIndex, uint8_t valueIndex) {
+  // Get value using appropriate getter for this page
+  String value = getValueForPage(pageIndex, valueIndex);
+  
+  // Get parameter definition for label, unit, color
+  const ParameterTriple* param = getParameterForPage(pageIndex, valueIndex);
+  
+  // Render large on screen
+  tft.setFreeFont(FF25);
+  tft.drawString(param->label, 60, 50, 2);     // Label in regular font
+  tft.drawString(value, 60, 120, 7);           // Value in huge font
+  tft.drawString(param->unit, 300, 140, 2);    // Unit
+}
+```
+
+### Summary Table
+
+| Sensor | Page | Function | Count | Available? |
+|--------|------|----------|-------|------------|
+| BME280 | 0 | bme280_getValue() | 7 | available.bme280 |
+| Gamepad | 1 | gamepad_getValue() | 8 | always |
+| INA219 | 2 | ina219_getValue() | 7 | available.ina219 |
+| Encoder | 3 | encoder_getValue() | 7 | always |
+| SCD30 | 4 | scd30_getValue() | 3 | available.scd30 |
+| SI1145 | 5 | si1145_getValue() | 4 | available.si1145 |
+| TSL2591 | 6 | tsl2591_getValue() | 4 | available.tsl2591 |
+| VEML6070 | 7 | veml6070_getValue() | 3 | available.veml6070 |
+| VEML6075 | 8 | veml6075_getValue() | 6 | available.veml6075 |
+| **Total** | **—** | **9 functions** | **49** | **—** |
+
+---
+
+## 3. I2C Bus Protocol
 
 ### Overview
 
@@ -968,7 +1220,7 @@ DS2484: Sensor 0 temp = 20.50C
 
 ---
 
-## 2. Serial Debug Output
+## 4. Serial Debug Output
 
 **Configuration:**
 - Baud rate: 115200
@@ -1008,7 +1260,7 @@ DS2484: Sensor 0 temp = 20.50C
 
 ---
 
-## 3. I2C Read Functions (Low-Level Helpers)
+## 5. I2C Read Functions (Low-Level Helpers)
 
 #### readReg16(address, reg, &value)
 
@@ -1065,7 +1317,7 @@ uint16_t value    // 16-bit value to write
 
 ---
 
-## 2. 1-Wire Bus Protocol (via DS2484 I2C Adapter)
+## 6. 1-Wire Bus Protocol (via DS2484 I2C Adapter)
 
 ### Overview
 
@@ -1154,7 +1406,7 @@ State: fetching
 
 ---
 
-## 3. SPI Bus Protocol
+## 7. SPI Bus Protocol
 
 ### Overview
 
@@ -1215,7 +1467,7 @@ State: fetching
 
 ---
 
-## 4. Serial UART Interface
+## 8. Serial UART Interface
 
 ### Overview
 
@@ -1240,7 +1492,7 @@ WARNING: Gamepad QT not found at 0x50
 
 ---
 
-## 5. What Does NOT Exist
+## 9. What Does NOT Exist
 
 ### ❌ HTTP / REST APIs
 - No HTTP server.
@@ -1285,7 +1537,7 @@ WARNING: Gamepad QT not found at 0x50
 
 ---
 
-## 6. Data Models (DTOs)
+## 10. Data Models (DTOs)
 
 All data structures are **in-memory C structs**, not serializable DTOs in the HTTP sense. However, for completeness:
 
@@ -1392,7 +1644,7 @@ struct Ds18b20Values {
 
 ---
 
-## 7. Communication Patterns
+## 11. Communication Patterns
 
 ### Read Pattern (Polling Sensors)
 
@@ -1439,7 +1691,7 @@ Cycle 96+:
 
 ---
 
-## 8. Error Handling (API Level)
+## 12. Error Handling (API Level)
 
 ### I2C Read Failure
 - **Symptom:** `Wire.endTransmission()` != 0 or `Wire.requestFrom()` returns fewer bytes.
@@ -1478,7 +1730,7 @@ Cycle 96+:
 
 ---
 
-## 9. Timing & Scheduling (API Perspective)
+## 13. Timing & Scheduling (API Perspective)
 
 ### Read Frequencies
 
@@ -1503,7 +1755,7 @@ if ((int32_t)(now - deadline) >= 0) {
 
 ---
 
-## 10. Concurrency Model
+## 14. Concurrency Model
 
 **Single-threaded, no async/await.**
 
@@ -1511,7 +1763,7 @@ All communication is synchronous, blocking, non-concurrent. No multitasking at a
 
 ---
 
-## 11. Data Serialization
+## 15. Data Serialization
 
 ### No Serialization to Disk
 - No JSON encoding.
@@ -1528,7 +1780,7 @@ All communication is synchronous, blocking, non-concurrent. No multitasking at a
 
 ---
 
-## 2. Non-Blocking Rotated Sensor Reading (FEATURE-SPEC-006) — **NEW**
+## 16. Non-Blocking Rotated Sensor Reading (FEATURE-SPEC-006) — **NEW**
 
 ### Overview
 

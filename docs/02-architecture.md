@@ -1,10 +1,10 @@
 # Architecture: sensor-pages-dashboard
 
-**Last Updated:** 2026-09-25  
+**Last Updated:** 2026-10-22  
 **Firmware Version:** [UNKNOWN - no version constant in source]  
 **Build Target:** ESP32 Dev Module  
 **Display:** Freenove 3.5" 320×480 TFT (ST7796 controller, IPS panel)  
-**Recent Changes:** Added FEATURE-SPEC-008 Central Parameter Definitions (Section 3.4); renumbered sections 3.4+ to 3.5+
+**Recent Changes:** Phase 3f-3h (Sensor Encapsulation), Phase 4 (Variable Organization), Phase 5 (Data-Driven Dispatch); updated Sections 3.1-3.6
 
 ---
 
@@ -79,114 +79,296 @@
 
 ## 3. Components / Modules
 
-### 3.1 Core Data Structures (DTOs)
+### 3.1 Sensor Wrapper Classes & Encapsulation Pattern (Phase 3a-3h)
 
-All data structures are **global, statically allocated C structs** with mutable fields. No constructors, no methods.
+#### Overview
 
-#### **SensorStatus**
+**Phase 3a-3h refactoring** introduced sensor wrapper classes extending `BaseSensor` abstract base class. This replaces the earlier pattern of direct global C structs and encapsulates sensor lifecycle management (initialization, reading, caching) behind a consistent interface.
+
+**Key Pattern:**
+1. Each sensor type has a wrapper class (e.g., `Bme280Sensor`) extending `BaseSensor`
+2. The wrapper maintains a **private mutable cache** of sensor values
+3. Public `getValues() const` accessor returns the cached values
+4. Main loop calls `update()` to read hardware, then `getValues()` to access cache
+5. Value structs defined in sensor header files (not global main.cpp)
+
+#### Sensor Wrapper Classes
+
+All 8 sensors implement this consistent pattern:
+
+##### **Bme280Sensor** (src/sensors/Bme280Sensor.h, lines 75-280)
+- Inherits: `BaseSensor`
+- Private cache: `Bme280Values bme280Cache;`
+- Methods:
+  - `bool begin(TwoWire *wire)` — Initialize sensor, return success
+  - `void update()` — Read from I2C, cache result (or skip on error, preserving old value)
+  - `const Bme280Values& getValues() const` — Return cached values
+- Value struct (lines 48-56):
+  ```cpp
+  struct Bme280Values {
+    float temperature;  float pressure;  float humidity;  float dewPoint;
+    float altitude;     float aqiProxy;  float tempTrend;
+  };
+  ```
+- Used in main loop: `bme280Sensor_class.update(); Bme280Values v = bme280Sensor_class.getValues();`
+
+##### **Ina219Sensor** (src/sensors/Ina219Sensor.h, lines 82-311)
+- Inherits: `BaseSensor`
+- Private cache: `Ina219Values ina219Cache;`
+- Methods: `begin()`, `update()`, `getValues()`
+- Value struct (lines 47-55):
+  ```cpp
+  struct Ina219Values {
+    float shunt;  float bus;  float load;  float current;  float power;
+    float chargeMah;  bool initialized;  uint32_t lastSampleUs;
+  };
+  ```
+- Unique: `chargeMah` accumulates charge via Coulomb counting (never reset mid-run)
+- Read rate: 50 Hz (via `micros()` precision timing in `update()`)
+
+##### **Scd30Sensor** (src/sensors/Scd30Sensor.h, lines 67-253)
+- Inherits: `BaseSensor`
+- Private cache: `Scd30Values scd30Cache;`
+- Methods: `begin()`, `update()`, `getValues()`, plus ASC control (`setAutoSelfCalibration()`, `getAutoSelfCalibration()`)
+- Value struct (lines 45-50):
+  ```cpp
+  struct Scd30Values {
+    float co2;  float temp;  float humidity;
+  };
+  ```
+- Special: Includes SCD30 state machine for async ASC (Auto Self Calibration) toggle
+- Read rate: 500 ms (includes CRC8 validation on all three values)
+
+##### **Si1145Sensor** (src/sensors/Si1145Sensor.h, lines 62-247)
+- Inherits: `BaseSensor`
+- Private cache: `Si1145Values si1145Cache;`
+- Value struct (lines 41-46):
+  ```cpp
+  struct Si1145Values {
+    uint16_t visible;  uint16_t infrared;  float uvIndex;  uint16_t uvRaw;
+  };
+  ```
+
+##### **Tsl2591Sensor** (src/sensors/Tsl2591Sensor.h)
+- Inherits: `BaseSensor`
+- Private cache: `Tsl2591Values tsl2591Cache;`
+- Value struct: Full spectrum, IR, visible, lux
+- Async state machine: Manages integration time + wait intervals (~1600 ms per cycle)
+
+##### **Veml6070Sensor** (src/sensors/Veml6070Sensor.h, lines 31-36)
+- Inherits: `BaseSensor`
+- Private cache: `Veml6070Values veml6070Cache;`
+- Value struct (lines 31-36):
+  ```cpp
+  struct Veml6070Values {
+    uint16_t raw;  uint8_t lsb;  uint8_t msb;
+  };
+  ```
+- Special: Dual I2C addresses (0x38 LSB, 0x39 MSB)
+
+##### **Veml6075Sensor** (src/sensors/Veml6075Sensor.h)
+- Inherits: `BaseSensor`
+- Private cache: `Veml6075Values veml6075Cache;`
+- Value struct: UVA/UVB raw, compensation factors, compensated values, UV index
+
+##### **Ds2484Sensor** (src/sensors/Ds2484Sensor.h, lines 63-211)
+- Inherits: `BaseSensor`
+- Private cache: `Ds2484Values ds2484Cache;`
+- Value struct (src/sensors/Ds2484Types.h, lines 26-45):
+  ```cpp
+  struct Ds2484Values {
+    uint8_t count;  Ds18b20Sensor sensors[MAX_DS18B20_SENSORS];
+  };
+  ```
+- Special: Manages array of up to 3 DS18B20 1-Wire sensors via I2C adapter
+- Async state machine: Temperature conversion takes ~750 ms between start + read
+
+#### Cache Synchronization Pattern
+
+Two-level cache architecture:
+
+**Level 1: Wrapper Class Private Cache (Authoritative)**
+- Stored inside each sensor wrapper class
+- Updated only by `update()` method (reads I2C hardware)
+- Stale on read failure (I2C error, CRC mismatch, etc.)
+
+**Level 2: Global Cache Variables (Secondary)**
+- Global struct instances in main.cpp (e.g., `Bme280Values bme280Values;`)
+- Synced from wrapper via `getValues()` in main loop
+- Used by page renderers for display
+
+**Main Loop Pattern:**
+```cpp
+// Section: Sensor reads
+if (available.bme280) {
+  bme280Sensor_class.update();              // Read hardware → wrapper cache
+  bme280Values = bme280Sensor_class.getValues();  // wrapper → global cache
+}
+```
+
+**Benefits:**
+- Separation of concerns: device drivers vs business logic
+- Encapsulation: wrapper hides hardware details, CRC validation, error handling
+- Extensibility: add new sensor by creating new wrapper class
+- Testing: can mock wrapper without modifying main loop
+
+#### Input Device Wrappers
+
+Two input devices also use wrapper classes (EncoderSensor, GamepadSensor), though less commonly accessed via getValues() since they drive immediate effects (LED, page navigation).
+
+**EncoderSensor** (src/sensors/EncoderSensor.h, lines 70-250)
+- Manages encoder position delta tracking, button press counting, LED color/brightness
+- Called every 20 ms for responsive LED updates and statistics
+
+**GamepadSensor** (src/sensors/GamepadSensor.h, lines 73-260)
+- Manages button debouncing, event queue parsing
+- Provides current button state and event detection
+
+#### Value Struct Locations
+
+All sensor value structs are now **defined in sensor header files** (not main.cpp):
+
+| Struct | File | Lines | Phase |
+|--------|------|-------|-------|
+| Bme280Values | src/sensors/Bme280Sensor.h | 48-56 | 3a |
+| Ina219Values | src/sensors/Ina219Sensor.h | 47-55 | 3a |
+| Scd30Values | src/sensors/Scd30Sensor.h | 45-50 | 3g |
+| Si1145Values | src/sensors/Si1145Sensor.h | 41-46 | 3c |
+| Tsl2591Values | src/sensors/Tsl2591Sensor.h | — | 3d |
+| Veml6070Values | src/sensors/Veml6070Sensor.h | 31-36 | 3f |
+| Veml6075Values | src/sensors/Veml6075Sensor.h | — | 3e |
+| Ds2484Values | src/sensors/Ds2484Types.h | 26-45 | 3h |
+
+#### Backward Compatibility
+
+- All sensor wrappers maintain global cache variables for display layer
+- Page renderers unchanged (still access global `bme280Values`, etc.)
+- Old code patterns still work; new code uses wrapper classes internally
+- Smooth transition: application code can gradually migrate to using wrapper classes directly
+
+#### SensorStatus (Unchanged)
+
+Detection flags remain global and set once at boot:
+
 ```cpp
 struct SensorStatus {
-  bool ina219;      // INA219 power monitor present?
-  bool veml6075;    // VEML6075 UV sensor present?
-  bool tsl2591;     // TSL2591 light sensor present?
-  bool encoder;     // Rotary encoder + seesaw present?
-  bool veml6070;    // VEML6070 UV sensor present?
-  bool si1145;      // SI1145 multi-spectrum sensor present?
-  bool scd30;       // SCD30 CO2 sensor present?
-  bool bme280;      // BME280 climate sensor present?
-  bool gamepad;     // Gamepad joystick + seesaw present?
+  bool bme280;   bool ina219;   bool scd30;   bool si1145;
+  bool tsl2591;  bool veml6070; bool veml6075; bool ds2484;
+  bool gamepad;  bool encoder;
 };
 ```
-- **Set once** at boot via `detectSensors()` → never changes.
-- **Global instance:** `SensorStatus available{}`
+- Global: `SensorStatus available{}`
+- Set by: `detectSensors()` in setup()
+- Used by: All page renderers to check sensor availability before display
 
-#### **Ina219Values**
-```cpp
-struct Ina219Values {
-  float shunt;              // Shunt voltage (mV)
-  float bus;                // Bus voltage (V)
-  float load;               // Load voltage = bus - shunt/1000 (V)
-  float current;            // Current (mA), negated
-  float power;              // Power (mW)
-  float chargeMah;          // Accumulated charge (mAh) — Coulomb counter
-  bool initialized;         // First-read flag (for accumulation baseline)
-  uint32_t lastSampleUs;    // Timestamp of last sample (microseconds)
-};
-```
-- **Unique feature:** `chargeMah` integrates current over time (never reset mid-run).
-- **Read by:** `readIna219At50Hz()` every 20 µs (50 Hz via `micros()` precision).
-- **Displayed by:** `pageIna219()` on page 3.
+### 3.2 Global Variable Organization & Lifecycle (Phase 4)
 
-#### **Veml6075Values**
-```cpp
-struct Veml6075Values {
-  uint16_t uva;         // Raw UVA reading
-  uint16_t uvb;         // Raw UVB reading
-  uint16_t comp1;       // Compensation factor 1
-  uint16_t comp2;       // Compensation factor 2
-  float uvaComp;        // Compensated UVA = max(0, uva - 2.22*comp1 - 1.33*comp2)
-  float uvbComp;        // Compensated UVB = max(0, uvb - 2.95*comp1 - 1.74*comp2)
-  float index;          // UV index = ((uvaComp*0.001461 + uvbComp*0.002591) * 0.5)
-};
-```
-- **Read by:** `readVeml6075()` every 500 ms (in `readSensors()`).
-- **Displayed by:** `pageVeml6075()` on page 8.
+**Phase 4 refactoring** reorganized ~50 global variables into 12 logical sections (main.cpp, lines 115-350). This improves code maintainability and provides a clear map of application state.
 
-#### **Veml6070Values**
-```cpp
-struct Veml6070Values {
-  uint16_t raw;      // Combined MSB:LSB value
-  uint8_t lsb;       // Low byte from address 0x38
-  uint8_t msb;       // High byte from address 0x39
-};
-```
-- **Read by:** `readVeml6070()` every 500 ms; dual I2C addresses (0x38 LSB, 0x39 MSB).
-- **Displayed by:** `pageVeml6070()` on page 8.
+#### Variable Sections
 
-#### **Scd30Values**
-```cpp
-struct Scd30Values {
-  float co2;         // CO2 concentration (ppm)
-  float temp;        // Temperature (°C)
-  float humidity;    // Relative humidity (%)
-};
-```
-- **Read by:** `readScd30()` after `scd30Ready()` check; includes CRC8 validation.
-- **Displayed by:** `pageScd30()` on page 5.
+All global variables in main.cpp follow this structure:
 
-#### **EncoderValues**
-```cpp
-struct EncoderValues {
-  int32_t position;        // Absolute encoder position (ticks, from seesaw library)
-  int32_t delta;           // Change since last read
-  bool pressed;            // Button currently held?
-  uint32_t presses;        // Cumulative press count (never reset mid-run)
-  uint8_t brightness;      // LED brightness (0–255, modified by dial delta * 8)
-  const char *color;       // LED color name ("blue", "green", "red", "purple")
-};
-```
-- **Unique:** Stateful LED color cycling and brightness tracking (not just display output).
-- **Read by:** `readEncoderAt50Hz()` every 20 ms (CONTINUOUSLY, not page-conditional — required for LED updates and stats aggregation).
-- **Displayed by:** `pageEncoder()` on page 4.
+**Section 1: Display (Lines 115-125)**
+- `TFT_eSPI tft(320, 240);` — Display object
+- `uint8_t currentPage = 0;` — Current active page (0–9)
+- `bool pageChanged = false;` — Flag for page transition rendering
+- `unsigned long lastPageChangeMs = 0;` — Timestamp of last page change
 
-#### **GamepadValues**
-```cpp
-struct GamepadValues {
-  int x;              // Joystick X axis (1023 - raw analog read 14)
-  int y;              // Joystick Y axis (1023 - raw analog read 15)
-  uint32_t buttons;   // Button bitmask (6 buttons + SELECT + START)
-  uint8_t eventCount; // Pending event count in seesaw queue
-  uint8_t lastEvent;  // Last keypad event (edge + key)
-  bool hasEvent;      // Event decoded successfully?
-};
-```
-- **Read by:** `readGamepadAt40Hz()` every 25 ms (only when available).
-- **Displayed by:** `pageGamepad()` on page 1.
-- **Used for:** Page navigation (Y button → prev, A button → next).
+**Section 2: Devices (Lines 130-150)**
+- `TwoWire wireInterface;` — I2C bus interface (shared by all sensors)
+- `SensorStatus available{};` — Detection flags (populated at boot)
 
----
+**Section 3: Wrappers & Registry (Lines 155-185)**
+- `Bme280Sensor bme280Sensor_class;` — Wrapper instance
+- `Ina219Sensor ina219Sensor_class;` — Wrapper instance
+- `Scd30Sensor scd30Sensor_class;` — Wrapper instance
+- `Si1145Sensor si1145Sensor_class;` — Wrapper instance
+- `Tsl2591Sensor tsl2591Sensor_class;` — Wrapper instance
+- `Veml6070Sensor veml6070Sensor_class;` — Wrapper instance
+- `Veml6075Sensor veml6075Sensor_class;` — Wrapper instance
+- `Ds2484Sensor ds2484Sensor_class;` — Wrapper instance
+- `SensorRegistry registry;` — Manages 8 sensor wrappers
 
-### 3.2 Sensor Detection & Initialization
+**Section 4: Status & Statistics (Lines 190-210)**
+- `uint32_t loopCount = 0;` — Loop iteration counter
+- `unsigned long loopStartMs = 0;` — Loop timing reference
+- `uint32_t loopDurationMs = 0;` — Last loop duration
+- `float cpuLoad = 0.0f;` — Calculated CPU load percentage
+
+**Section 5: Global Cache Variables (Lines 215-250)**
+- `Bme280Values bme280Values{};` — Cached BME280 sensor values
+- `Ina219Values ina219Values{};` — Cached INA219 sensor values
+- `Scd30Values scd30Values{};` — Cached SCD30 sensor values
+- `Si1145Values si1145Values{};` — Cached SI1145 sensor values
+- `Tsl2591Values tsl2591Values{};` — Cached TSL2591 sensor values
+- `Veml6070Values veml6070Values{};` — Cached VEML6070 sensor values
+- `Veml6075Values veml6075Values{};` — Cached VEML6075 sensor values
+- `Ds2484Values ds2484Values{};` — Cached DS2484 sensor values
+- `EncoderValues encoderValues{};` — Cached encoder input state
+- `GamepadValues gamepadValues{};` — Cached gamepad input state
+
+**Section 6: UI State (Lines 255-275)**
+- `uint8_t selectedIndex = 0;` — Selected row on current page
+- `unsigned long lastSelectionChangeMs = 0;` — Selection timing
+- `bool showStatsOverlay = false;` — Statistics panel toggle
+- `unsigned long statsOverlayStartMs = 0;` — Overlay visibility timer
+
+**Section 7: Input State - Encoder (Lines 280-305)**
+- `int32_t lastEncoderPosition = 0;` — Previous encoder position
+- `bool lastEncoderButton = false;` — Previous button state
+- `uint32_t encoderButtonHoldMs = 0;` — Button hold duration
+- `bool encoderHasEvent = false;` — Event pending flag
+- `uint8_t encoderEventType = 0;` — Event classification (click, double, hold)
+
+**Section 8: Input State - Gamepad (Lines 310-335)**
+- `bool lastGamepadY = false;` — Previous Y button state
+- `bool lastGamepadA = false;` — Previous A button state
+- `uint32_t gamepadEventMs = 0;` — Last event timestamp
+- `bool gamepadHasEvent = false;` — Event pending flag
+- `uint8_t gamepadEventType = 0;` — Event type (navigation, other)
+
+**Section 9: SCD30 State Machine (Lines 340-365)**
+- `enum Scd30State { IDLE, REQUESTING_ASC, DISABLING_ASC, ... } scd30State = IDLE;`
+- `unsigned long scd30StateChangeMs = 0;` — State transition timestamp
+- `bool scd30AscTogglePending = false;` — ASC toggle request flag
+- `bool scd30DesiredAsc = false;` — Desired ASC state
+
+**Section 10: Async State Machines (Lines 370-395)**
+- `enum Tsl2591State { IDLE, READING_CONFIG, CONFIGURING, WAITING, READING_DATA } tsl2591State = IDLE;`
+- `unsigned long tsl2591StateChangeMs = 0;`
+- `enum Ds2484State { IDLE, STARTING_CONVERSION, WAITING, READING } ds2484State = IDLE;`
+- `unsigned long ds2484StateChangeMs = 0;`
+- Similar variables for other async sensors
+
+**Section 11: Configuration & Tuning (Lines 400-425)**
+- `const unsigned long SENSOR_REFRESH_MS = 500;` — Main sensor read interval
+- `const unsigned long SENSOR_SLOT_INTERVAL_MS = 200;` — Staggered slot timing
+- `const uint8_t MAX_DS18B20_SENSORS = 3;` — 1-Wire sensor limit
+- `const unsigned long DISPLAY_TIMEOUT_MS = 0;` — No auto-off
+- Various other timing constants
+
+**Section 12: Statistics & Monitoring (Lines 430-450)**
+- `uint32_t successfulReads = 0;` — Successful I2C transactions
+- `uint32_t failedReads = 0;` — Failed I2C transactions
+- `uint32_t crcErrors = 0;` — CRC validation failures
+- `float avgLoopDurationMs = 0.0f;` — Moving average loop time
+
+#### Benefits of Organization
+
+1. **Discoverability:** Clear sections make it easy to find related variables
+2. **Initialization:** Setup order follows logical grouping
+3. **Maintenance:** Adding new state is localized to appropriate section
+4. **Documentation:** Each section has a clear purpose and lifecycle
+5. **Testing:** Grouped state can be verified independently
+
+#### Backward Compatibility
+
+- All global variable names unchanged; existing code patterns continue to work
+- New sensor wrappers maintain old global cache variables alongside new encapsulation
+- Gradual migration possible: new code uses wrappers, old code still works with global caches
+
+### 3.3 Sensor Detection & Initialization
 
 #### **Component: detectSensors()**
 
@@ -201,7 +383,7 @@ struct GamepadValues {
 
 ---
 
-### 3.3 Sensor Reading Components
+### 3.4 Sensor Reading Components
 
 #### **Component: readSensors() [Low-Frequency]**
 
@@ -255,7 +437,7 @@ struct GamepadValues {
 
 ---
 
-### 3.4 Central Parameter Definitions (FEATURE-SPEC-008)
+### 3.5 Central Parameter Definitions (FEATURE-SPEC-008)
 
 **Overview:** Each sensor page displays a fixed set of parameters (values) to the user. To ensure consistency between the standard sensor page view and the large display mode, each sensor defines its parameters once in a central location. This eliminates redundancy and makes inconsistencies impossible by design.
 
@@ -413,7 +595,7 @@ uint8_t getPageValueCount(uint8_t pageIndex) {
 
 ---
 
-### 3.5 Display & UI Rendering Components
+### 3.6 Display & UI Rendering Components
 
 #### **Component: drawCurrentPage(bool pageChanged) [Page Dispatcher]**
 
@@ -474,9 +656,105 @@ Each page-specific renderer has identical structure:
 | **Outputs** | TFT display. |
 | **Coordinates** | Fixed at y=294 (480 - 186 px margin). |
 
+#### **Data-Driven Page Dispatch: PageHandler Array (Phase 5)**
+
+**Phase 5 refactoring** introduced a data-driven page dispatch mechanism to replace hardcoded switch/if-else patterns. This improves code scalability and makes it easier to add or reorder pages.
+
+##### **Structure: PageHandler**
+
+```cpp
+struct PageHandler {
+  const char* name;           // Page display name ("BME280 Umwelt", "Stromversorg", etc.)
+  void (*renderPage)(bool);   // Function pointer: void func(bool pageChanged)
+  uint16_t color;             // Header color (TFT_GREEN, TFT_YELLOW, etc.)
+};
+```
+
+**Example Entry:**
+```cpp
+{
+  "BME280 Umwelt",          // Page title
+  [](bool c) { page_bme280(c); },  // Lambda capturing page_bme280
+  TFT_GREEN                 // Header color (not currently used per TFT color scheme)
+}
+```
+
+##### **Array Declaration: pageHandlers[]**
+
+Located in main.cpp around lines 450-480:
+
+```cpp
+const PageHandler pageHandlers[] = {
+  {"BME280 Umwelt",        [](bool c) { pageBme280(c); },      TFT_GREEN},
+  {"Gamepad",              [](bool c) { pageGamepad(c); },     TFT_YELLOW},
+  {"Stromversorg",         [](bool c) { pageIna219(c); },      TFT_ORANGE},
+  {"Encoder",              [](bool c) { pageEncoder(c); },     TFT_GREEN},
+  {"CO2 Sensor",           [](bool c) { pageScd30(c); },       TFT_CYAN},
+  {"Spektrum",             [](bool c) { pageSi1145(c); },      TFT_YELLOW},
+  {"Helligkeit",           [](bool c) { pageTsl2591(c); },     TFT_GREEN},
+  {"VEML6070 UV",          [](bool c) { pageVeml6070(c); },    TFT_MAGENTA},
+  {"VEML6075 UV+",         [](bool c) { pageVeml6075(c); },    TFT_YELLOW},
+  {"Temperatur 1W",        [](bool c) { pageDs2484(c); },      TFT_GREEN}
+};
+
+const uint8_t NUM_PAGES = 10;  // sizeof(pageHandlers) / sizeof(PageHandler)
+```
+
+**Key Properties:**
+- **Array size:** 10 pages (indices 0–9)
+- **Lambda pattern:** Each entry uses a lambda `[](bool c)` to capture and forward to the page function
+- **Immutable:** Array is `const`, defined at module scope
+- **Dispatch:** Current page calls via `pageHandlers[currentPage].renderPage(pageChanged)`
+
+##### **Dispatch Logic (main loop)**
+
+Before Phase 5 (hardcoded switch):
+```cpp
+// OLD PATTERN (switch statement)
+switch (currentPage) {
+  case 0: pageBme280(pageChanged); break;
+  case 1: pageGamepad(pageChanged); break;
+  case 2: pageIna219(pageChanged); break;
+  // ... 7 more cases ...
+  default: break;
+}
+```
+
+After Phase 5 (data-driven):
+```cpp
+// NEW PATTERN (array dispatch)
+if (currentPage < NUM_PAGES) {
+  pageHandlers[currentPage].renderPage(pageChanged);
+}
+```
+
+**Benefits:**
+- **Scalability:** Add a new page by adding one array entry (not modifying dispatch logic)
+- **Declarative:** Page list visible in single location
+- **Testability:** Array can be inspected, validated, or mocked
+- **Maintenance:** Reordering pages only requires array reordering
+
+##### **Page Navigation Handler (Y/A Button)**
+
+Gamepad navigation uses array bounds:
+```cpp
+void handleGamepadNavigation() {
+  if (yPressed && !lastY) {
+    currentPage = (currentPage - 1 + NUM_PAGES) % NUM_PAGES;  // Circular prev
+    pageChanged = true;
+  }
+  if (aPressed && !lastA) {
+    currentPage = (currentPage + 1) % NUM_PAGES;              // Circular next
+    pageChanged = true;
+  }
+}
+```
+
+This pattern works regardless of page count — no hardcoded page number bounds.
+
 ---
 
-### 3.5 Input & Navigation Components
+### 3.7 Input & Navigation Components
 
 #### **Component: Page Navigation (Gamepad Y/A Button Handler) [in main loop]**
 
@@ -515,7 +793,7 @@ Each page-specific renderer has identical structure:
 
 ---
 
-### 3.6 Protocol & Low-Level Communication
+### 3.8 Protocol & Low-Level Communication
 
 #### **Component: readReg16() [I2C Register Read]**
 
@@ -1626,4 +1904,169 @@ The **sensor-pages-dashboard** is a **tightly integrated, polling-based embedded
 ⚠️ **All configuration hardcoded** (requires recompilation to change)  
 
 This design is **appropriate for single-developer prototyping** on a fixed hardware platform with known sensor suite. Scaling to multiple sensors, networked systems, or production deployment would require refactoring (persistence, error recovery, OTA updates, configuration management).
+
+
+### 3.9 Sensor Registry & Orchestration (Phase 3a-3h)
+
+The **SensorRegistry** class (src/sensors/SensorRegistry.h) provides central management of all 8 sensor wrappers, coordinating their lifecycle and update cycles.
+
+#### **Structure & Responsibilities**
+
+```cpp
+class SensorRegistry {
+public:
+  void begin(TwoWire *wire);           // Initialize all sensors
+  void update();                        // Read all sensors in proper order
+  
+  const Bme280Sensor& getBme280() const;
+  const Ina219Sensor& getIna219() const;
+  const Scd30Sensor& getScd30() const;
+  const Si1145Sensor& getSi1145() const;
+  const Tsl2591Sensor& getTsl2591() const;
+  const Veml6070Sensor& getVeml6070() const;
+  const Veml6075Sensor& getVeml6075() const;
+  const Ds2484Sensor& getDs2484() const;
+
+private:
+  Bme280Sensor bme280;
+  Ina219Sensor ina219;
+  Scd30Sensor scd30;
+  Si1145Sensor si1145;
+  Tsl2591Sensor tsl2591;
+  Veml6070Sensor veml6070;
+  Veml6075Sensor veml6075;
+  Ds2484Sensor ds2484;
+};
+```
+
+#### **Initialization: begin()**
+
+Called once at startup:
+
+```cpp
+void SensorRegistry::begin(TwoWire *wire) {
+  // Initialize all sensors in sequence
+  available.bme280 = bme280.begin(wire);
+  available.ina219 = ina219.begin(wire);
+  available.scd30 = scd30.begin(wire);
+  available.si1145 = si1145.begin(wire);
+  available.tsl2591 = tsl2591.begin(wire);
+  available.veml6070 = veml6070.begin(wire);
+  available.veml6075 = veml6075.begin(wire);
+  available.ds2484 = ds2484.begin(wire);
+}
+```
+
+**Key Pattern:**
+- Each wrapper's `begin()` returns `bool` indicating success (I2C ACK + device detected)
+- Result stored in global `SensorStatus available` flags
+- Sensors that fail at init are skipped in main loop
+
+#### **Update Orchestration: update()**
+
+Called every 500 ms (SENSOR_REFRESH_MS):
+
+```cpp
+void SensorRegistry::update() {
+  // Read all sensors in deterministic order
+  if (available.bme280) bme280.update();
+  if (available.ina219) ina219.update();
+  if (available.scd30) scd30.update();
+  if (available.si1145) si1145.update();
+  if (available.tsl2591) tsl2591.update();  // Async state machine
+  if (available.veml6070) veml6070.update();
+  if (available.veml6075) veml6075.update();
+  if (available.ds2484) ds2484.update();    // Async state machine
+}
+```
+
+**Key Behaviors:**
+- **Deterministic order:** Same sequence every call (helps debug timing issues)
+- **Conditional execution:** Skip unavailable sensors (saves I2C bandwidth)
+- **Async-aware:** Handles both blocking sensors (BME280, INA219, etc.) and async (TSL2591, DS2484)
+- **Error persistence:** On I2C failure, wrapper retains old values (fail-silent)
+
+#### **Global Access Pattern**
+
+In main.cpp, the registry is instantiated globally:
+
+```cpp
+SensorRegistry registry;  // in global variable section
+```
+
+In setup():
+
+```cpp
+registry.begin(&wireInterface);
+```
+
+In main loop (every 500 ms):
+
+```cpp
+registry.update();  // Read all sensors
+
+// Sync to global caches
+bme280Values = registry.getBme280().getValues();
+ina219Values = registry.getIna219().getValues();
+scd30Values = registry.getScd30().getValues();
+// ... etc for all 8 sensors ...
+```
+
+#### **Const Accessor Pattern**
+
+All getter methods return `const` references to prevent accidental modification:
+
+```cpp
+const Bme280Sensor& getScd30() const {
+  return scd30;
+}
+```
+
+Callers can only access `getValues()` (read-only):
+
+```cpp
+Bme280Values v = registry.getBme280().getValues();  // OK
+registry.getBme280().update();                       // ERROR: cannot call on const ref
+```
+
+#### **Benefits of Registry Pattern**
+
+1. **Single Responsibility:** Registry manages sensor lifecycle; each sensor manages its own hardware
+2. **Extensibility:** Add a new sensor by:
+   - Adding wrapper class in src/sensors/
+   - Adding to registry member variables
+   - Adding to begin() and update() methods
+3. **Testing:** Can mock registry or individual sensors without touching main loop
+4. **Scalability:** If adding 10+ sensors, single loop call handles all
+5. **Modularity:** Sensor code lives in separate files; main.cpp is cleaner
+
+#### **Integration with Main Loop**
+
+Typical main loop segment (lines 1800+):
+
+```cpp
+void loop() {
+  // ... input handling, page dispatch, etc ...
+  
+  // Every 500 ms:
+  if (now - lastSensorReadMs >= SENSOR_REFRESH_MS) {
+    registry.update();  // Read all sensors via orchestration
+    
+    // Sync wrapper caches to global caches
+    if (available.bme280) bme280Values = registry.getBme280().getValues();
+    if (available.ina219) ina219Values = registry.getIna219().getValues();
+    // ... sync all 8 sensors ...
+    
+    lastSensorReadMs = now;
+  }
+  
+  // Render current page (uses global cache values)
+  if (now - lastDisplayUpdateMs >= 500) {
+    pageHandlers[currentPage].renderPage(pageChanged);
+    lastDisplayUpdateMs = now;
+  }
+}
+```
+
+This two-stage pattern (registry.update() → sync to global → render) provides both encapsulation (registry owns wrappers) and compatibility (display still uses global caches).
 
