@@ -1041,7 +1041,7 @@ bool readScd30(Scd30Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("SCD30 read time: %lu µs\n", duration);
+  logPrintf("SCD30 read time: %lu µs", duration);
   return true;
 }
 
@@ -1089,7 +1089,7 @@ bool readVeml6075(Veml6075Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("VEML6075 read time: %lu µs\n", duration);
+  logPrintf("VEML6075 read time: %lu µs", duration);
   return true;
 }
 
@@ -1103,7 +1103,7 @@ bool readVeml6070(Veml6070Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("VEML6070 read time: %lu µs\n", duration);
+  logPrintf("VEML6070 read time: %lu µs", duration);
   return true;
 }
 
@@ -1123,7 +1123,7 @@ void readBme280(Bme280Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("BME280 read time: %lu µs\n", duration);
+  logPrintf("BME280 read time: %lu µs", duration);
 }
 
 void readTsl2591(Tsl2591Values &values)
@@ -1151,7 +1151,7 @@ void readSi1145(Si1145Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("SI1145 read time: %lu µs\n", duration);
+  logPrintf("SI1145 read time: %lu µs", duration);
 }
 
 // DS2484 1-Wire temperature sensor functions
@@ -1236,12 +1236,12 @@ void performDs2484Scan()
     sensor.temperature = 0.0f;
     sensor.lastReadMs = nowMs;
     
-    logPrintf("[DS2484] Found sensor %d: Family=%02X, Address=%02X%02X%02X%02X%02X%02X%02X%02X\n", 
+    logPrintf("[DS2484] Found sensor %d: Family=%02X, Address=%02X%02X%02X%02X%02X%02X%02X%02X", 
       ds2484Values.sensorCount, address[0], address[1], address[2], address[3], address[4], address[5], address[6], address[7]);
     ds2484Values.sensorCount++;
   }
   
-  logPrintf("[DS2484] Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
+  logPrintf("[DS2484] Bus scan complete - found %d sensors", ds2484Values.sensorCount);
   ds2484Values.lastScanMs = nowMs;
 }
 
@@ -1337,12 +1337,12 @@ void readDs2484Temperatures()
     sensor.available = true;
     sensor.lastReadMs = nowMs;
     
-    // logPrintf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
+    // logPrintf("DS2484: Sensor %d temp = %.2f°C", i, sensor.temperature);
   }
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("DS2484 read time: %lu µs\n", duration);
+  logPrintf("DS2484 read time: %lu µs", duration);
   
   ds2484Values.lastConversionMs = nowMs;
 }
@@ -1471,7 +1471,7 @@ void startTsl2591Measurement()
   // 2. checkTsl2591Async(): call getFullLuminosity() after delay
   
   uint32_t endTime = micros();
-  // logPrintf("TSL2591 async START time: %lu µs\n", endTime - startTime);
+  // logPrintf("TSL2591 async START time: %lu µs", endTime - startTime);
 }
 
 /// @brief Check if TSL2591 measurement is complete; read result if ready (non-blocking if not ready)
@@ -1487,7 +1487,7 @@ void checkTsl2591Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < TSL2591_INTEGRATION_TIME_MS) {
-    // logPrintf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
+    // logPrintf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
     return;
   }
   
@@ -1523,7 +1523,7 @@ void checkTsl2591Async()
   // State machine back to IDLE
   tsl2591State = Tsl2591State::IDLE;
   
-  logPrintf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", duration, elapsedMs);
+  logPrintf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)", duration, elapsedMs);
 }
 
 /// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~1 ms)
@@ -1535,7 +1535,7 @@ void startDs18b20Conversion()
   if (!available.ds2484 || ds2484Values.sensorCount == 0) return;
   
   uint32_t startTime = micros();
-  logPrintf("[DS18B20] Starting conversion for %d sensors...\n", ds2484Values.sensorCount);
+  logPrintf("[DS18B20] Starting conversion for %d sensors...", ds2484Values.sensorCount);
   
   // Send Convert T command to all devices (0x44 via Skip ROM 0xCC)
   if (!ds2484Master.OneWireReset()) {
@@ -1558,7 +1558,7 @@ void startDs18b20Conversion()
   ds18b20ConvertStartMs = millis();
   
   uint32_t endTime = micros();
-  logPrintf("[DS18B20] Conversion started (took %lu µs)\n", endTime - startTime);
+  logPrintf("[DS18B20] Conversion started (took %lu µs)", endTime - startTime);
 }
 
 /// @brief Read DS18B20 temperature results from all discovered sensors (blocking, ~X ms)
@@ -1571,7 +1571,7 @@ void readDs18b20Results()
   
   const uint32_t nowMs = millis();
   uint32_t startTime = micros();
-  logPrintf("[DS18B20] Reading results from %d sensors...\n", ds2484Values.sensorCount);
+  logPrintf("[DS18B20] Reading results from %d sensors...", ds2484Values.sensorCount);
   
   uint8_t successCount = 0;
   // Read temperature for each discovered sensor
@@ -1581,14 +1581,14 @@ void readDs18b20Results()
     // Skip if already offline after 3 errors
     if (sensor.errorCount >= 3) {
       sensor.available = false;
-      logPrintf("[DS18B20] Sensor %d: OFFLINE (3+ errors)\n", i);
+      logPrintf("[DS18B20] Sensor %d: OFFLINE (3+ errors)", i);
       continue;
     }
     
     // Reset and select device using Match ROM
     if (!ds2484Master.OneWireReset()) {
       sensor.errorCount++;
-      logPrintf("[DS18B20] Sensor %d: Reset failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Reset failed (error %d/3)", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1596,7 +1596,7 @@ void readDs18b20Results()
     // Match ROM (0x55) command
     if (!ds2484Master.OneWireWriteByte(0x55)) {
       sensor.errorCount++;
-      logPrintf("[DS18B20] Sensor %d: Match ROM failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Match ROM failed (error %d/3)", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1612,7 +1612,7 @@ void readDs18b20Results()
     
     if (!romWriteOk) {
       sensor.errorCount++;
-      logPrintf("[DS18B20] Sensor %d: ROM address write failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: ROM address write failed (error %d/3)", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1620,7 +1620,7 @@ void readDs18b20Results()
     // Read Scratchpad command (0xBE)
     if (!ds2484Master.OneWireWriteByte(0xBE)) {
       sensor.errorCount++;
-      logPrintf("[DS18B20] Sensor %d: Read Scratchpad failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Read Scratchpad failed (error %d/3)", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1629,7 +1629,7 @@ void readDs18b20Results()
     uint8_t tempLsb, tempMsb;
     if (!ds2484Master.OneWireReadByte(&tempLsb) || !ds2484Master.OneWireReadByte(&tempMsb)) {
       sensor.errorCount++;
-      logPrintf("[DS18B20] Sensor %d: Temperature read failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Temperature read failed (error %d/3)", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1643,12 +1643,12 @@ void readDs18b20Results()
     sensor.lastReadMs = nowMs;
     successCount++;
     
-    logPrintf("[DS18B20] Sensor %d: TEMP = %.2f°C\n", i, sensor.temperature);
+    logPrintf("[DS18B20] Sensor %d: TEMP = %.2f°C", i, sensor.temperature);
   }
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  logPrintf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs\n", successCount, ds2484Values.sensorCount, duration);
+  logPrintf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs", successCount, ds2484Values.sensorCount, duration);
   
   // Reset state machine to IDLE for next conversion cycle
   ds18b20State = Ds18b20State::IDLE;
@@ -1667,7 +1667,7 @@ void checkDs18b20Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < DS18B20_CONVERSION_TIME_MS) {
-    logPrintf("[DS18B20] Waiting: %lu ms elapsed (need %lu ms)\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
+    logPrintf("[DS18B20] Waiting: %lu ms elapsed (need %lu ms)", elapsedMs, DS18B20_CONVERSION_TIME_MS);
     return;
   }
   
@@ -1680,7 +1680,7 @@ void checkDs18b20Async()
   // State machine back to IDLE
   ds18b20State = Ds18b20State::IDLE;
   
-  logPrintf("[DS18B20] Complete: read took %lu µs, total wait was %lu ms\n", endTime - startTime, elapsedMs);
+  logPrintf("[DS18B20] Complete: read took %lu µs, total wait was %lu ms", endTime - startTime, elapsedMs);
 }
 
 /// @brief Rotated sensor read dispatcher (FEATURE-SPEC-006 non-blocking architecture)
@@ -2016,7 +2016,7 @@ void updateInputStats()
       ds18b20Stats.readCount); */
   }
   
-  // logPrintf("=====================================\n");
+  // logPrintf("=====================================");
   
   // Reset counters for next interval
   bme280Stats = {};
@@ -2043,7 +2043,7 @@ void printGamepadStats()
   if ((int32_t)(nowMs - lastGamepadStatsLogMs) < 1000) return;
   
   if (gamepadStats.readCount > 0) {
-    logPrintf("Gamepad stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("Gamepad stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs",
       gamepadStats.readCount,
       gamepadStats.minTime,
       gamepadStats.maxTime,
@@ -2069,7 +2069,7 @@ void printEncoderStats()
   if ((int32_t)(nowMs - lastEncoderStatsLogMs) < 1000) return;
   
   if (encoderStats.readCount > 0) {
-    logPrintf("Encoder stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("Encoder stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs",
       encoderStats.readCount,
       encoderStats.minTime,
       encoderStats.maxTime,
@@ -2095,7 +2095,7 @@ void printIna219Stats()
   if ((int32_t)(nowMs - lastIna219StatsLogMs) < 1000) return;
   
   if (ina219Stats.readCount > 0) {
-    logPrintf("INA219  stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("INA219  stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs",
       ina219Stats.readCount,
       ina219Stats.minTime,
       ina219Stats.maxTime,
@@ -2417,7 +2417,7 @@ void scanI2CBus()
     
     if (error == 0) {
       addresses[count++] = addr;
-      logPrintf("[SETUP] Found device at 0x%02X\n", addr);
+      logPrintf("[SETUP] Found device at 0x%02X", addr);
       
       // Display on screen (max 14 lines on 320x240 display with text size 2)
       if (count <= 14) {
@@ -2433,7 +2433,7 @@ void scanI2CBus()
     logPrintf("[SETUP] No I2C devices found!");
   } else {
     tft.printf("\nTotal: %d device(s)", count);
-    logPrintf("[SETUP] Total devices found: %d\n", count);
+    logPrintf("[SETUP] Total devices found: %d", count);
   }
   
   // Map found devices to known sensors
@@ -2458,11 +2458,11 @@ void scanI2CBus()
       case 0x77: name = "BME280 (Env)"; break;
     }
     
-    logPrintf("[SETUP]   0x%02X: %s\n", addr, name);
+    logPrintf("[SETUP]   0x%02X: %s", addr, name);
     tft.printf("0x%02X: %s\n", addr, name);
   }
   
-  logPrintf("[SETUP] ========== SCAN COMPLETE ==========\n");
+  logPrintf("[SETUP] ========== SCAN COMPLETE ==========");
   delay(3000);  // Show scan results for 3 seconds
 }
 
@@ -2470,7 +2470,7 @@ void detectSensors()
 {
   logPrintf("[SETUP] INA219: Probing...");
   available.ina219 = ina219.begin(&Wire);
-  logPrintf("[SETUP] INA219: %s\n", available.ina219 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] INA219: %s", available.ina219 ? "FOUND" : "NOT FOUND");
   
   // FEATURE-SPEC-010: Use SparkFun VEML6075 Library
   logPrintf("[SETUP] VEML6075: Probing...");
@@ -2510,16 +2510,16 @@ void detectSensors()
   veml6070Sensor.begin(VEML6070_HALF_T, &Wire);
   Wire.beginTransmission(VEML6070_ADDR_LSB);
   available.veml6070 = Wire.endTransmission() == 0;
-  logPrintf("[SETUP] VEML6070: %s, using Adafruit library\n", available.veml6070 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] VEML6070: %s, using Adafruit library", available.veml6070 ? "FOUND" : "NOT FOUND");
   
   logPrintf("[SETUP] SI1145: Probing...");
   available.si1145 = si1145.begin();
-  logPrintf("[SETUP] SI1145: %s\n", available.si1145 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] SI1145: %s", available.si1145 ? "FOUND" : "NOT FOUND");
   
   // FEATURE-SPEC-009: Initialize SCD30 with SparkFun library
   logPrintf("[SETUP] SCD30: Probing...");
   available.scd30 = scd30Sensor.begin();
-  logPrintf("[SETUP] SCD30: %s\n", available.scd30 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] SCD30: %s", available.scd30 ? "FOUND" : "NOT FOUND");
   if (available.scd30) {
     scd30Sensor.beginMeasuring();  // Start continuous measurement
     scd30State.lastAscQuery = 0;    // Will be queried by polling loop after 3+ seconds
@@ -2545,7 +2545,7 @@ void detectSensors()
     // Perform initial 1-Wire bus scan to discover sensors
     logPrintf("[SETUP] Starting initial DS2484 bus scan...");
     performDs2484Scan();
-    logPrintf("[SETUP] Initial scan complete: found %d sensor(s)\n", ds2484Values.sensorCount);
+    logPrintf("[SETUP] Initial scan complete: found %d sensor(s)", ds2484Values.sensorCount);
   } else {
     logPrintf("[SETUP] DS2484: NOT FOUND at 0x18");
   }
@@ -2679,7 +2679,7 @@ void setup()
   
   // Start initial DS18B20 conversion if sensors were found
   if (available.ds2484 && ds2484Values.sensorCount > 0) {
-    logPrintf("[SETUP] Starting initial DS18B20 conversion (%d sensors)...\n", ds2484Values.sensorCount);
+    logPrintf("[SETUP] Starting initial DS18B20 conversion (%d sensors)...", ds2484Values.sensorCount);
     startDs18b20Conversion();
     
     // Wait for conversion to complete (750ms + buffer)
@@ -2875,7 +2875,7 @@ void loop()
   static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
   uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
   if (currentSensorSlot != lastSensorSlotDispatched) {
-    // logPrintf("[LOOP] Slot %lu starting\n", currentSensorSlot);
+    // logPrintf("[LOOP] Slot %lu starting", currentSensorSlot);
     rotatedReadSensor(currentSensorSlot);
     lastSensorSlotDispatched = currentSensorSlot;
   }
