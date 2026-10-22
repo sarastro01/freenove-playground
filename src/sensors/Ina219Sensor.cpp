@@ -118,14 +118,14 @@ String Ina219Sensor::getLargeDisplayValue(uint8_t valueIndex,
   if (!available) {
     *outLabel = "Error";
     *outUnit = "";
-    *outColor = 0xFF0000;  // Red
+    *outColor = 0xF800;  // Red (RGB565)
     return "N/A";
   }
 
   if (valueIndex >= getParameterCount()) {
     *outLabel = "Invalid";
     *outUnit = "";
-    *outColor = 0xFF0000;
+    *outColor = 0xF800;  // Red (RGB565)
     return "";
   }
 
@@ -137,13 +137,13 @@ String Ina219Sensor::getLargeDisplayValue(uint8_t valueIndex,
   };
 
   static const ParamInfo params[] = {
-    {"Runtime", "HH:MM:SS", 0xFFFF00},   // 0: Yellow
-    {"Load Voltage", "V", 0x00FF00},     // 1: Green
-    {"Bus Voltage", "V", 0x00FFFF},      // 2: Cyan
-    {"Current", "mA", 0xFF00FF},         // 3: Magenta
-    {"Charge", "mAh", 0xFF8000},         // 4: Orange
-    {"Shunt Voltage", "mV", 0xFF0080},   // 5: Pink
-    {"Power", "mW", 0xFF0000},           // 6: Red
+    {"Runtime", "HH:MM:SS", 0xFFE0},   // 0: Yellow (RGB565)
+    {"Load Voltage", "V", 0x07E0},     // 1: Green (RGB565)
+    {"Bus Voltage", "V", 0x07FF},      // 2: Cyan (RGB565)
+    {"Current", "mA", 0xF81F},         // 3: Magenta (RGB565)
+    {"Charge", "mAh", 0xFC00},         // 4: Orange (RGB565)
+    {"Shunt Voltage", "mV", 0xF810},   // 5: Pink (RGB565)
+    {"Power", "mW", 0xF800},           // 6: Red (RGB565)
   };
 
   const ParamInfo& param = params[valueIndex];

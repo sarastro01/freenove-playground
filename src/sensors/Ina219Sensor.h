@@ -77,7 +77,7 @@ private:
   } values;
   
   /// Last value for change detection (used by display layer)
-  String lastDisplayValue;
+  mutable String lastDisplayValue;
   
   /// Statistics for performance monitoring (optional, compile-time enabled)
   struct {
