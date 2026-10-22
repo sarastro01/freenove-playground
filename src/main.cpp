@@ -59,13 +59,60 @@
 #define SCD30_CMD_GET_ASC 0x5301
 #define SCD30_CMD_SET_ASC 0x53DA
 
-constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
+// ============================================================================
+// PHASE 1: CONFIGURATION SECTION
+// ============================================================================
+// Central collection of all constants, thresholds, and tuning parameters
+// Organized by functional area for easy location and modification
+
+// Page and Display Configuration
+constexpr uint8_t PAGE_COUNT = 10;
+constexpr uint8_t CONFIG_PAGE_TITLE_MAX_LEN = 20;
+
+// Timing Configuration (milliseconds)
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
-constexpr uint32_t SLOT_COUNT = 10;  // 10 slots × 200ms = 2000ms cycle (1600ms gap between DS18B20 start→check)
-constexpr uint32_t INPUT_REFRESH_MS = 10;    // 100 Hz for responsive buttons
+constexpr uint32_t INPUT_REFRESH_MS = 10;        // 100 Hz for responsive buttons
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (10 slots = 2000 ms cycle)
+constexpr uint32_t SLOT_COUNT = 10;
+
+// Encoder Configuration
+constexpr int ENCODER_DELTA_THRESHOLD = 1;
+constexpr uint8_t ENCODER_LED_DEFAULT_BRIGHTNESS = 255;
+constexpr uint8_t ENCODER_LED_LARGE_DISPLAY_MIN = 128;   // 50% brightness
+constexpr uint8_t ENCODER_LED_LARGE_DISPLAY_MAX = 255;   // 100% brightness
+
+// Sensor Configuration
+constexpr uint32_t TSL2591_INTEGRATION_TIME_DEFAULT_MS = 200;
+constexpr uint32_t DS18B20_CONVERSION_TIME_DEFAULT_MS = 750;
+constexpr uint8_t DS18B20_ERROR_THRESHOLD = 3;    // Consecutive errors before sensor disabled
+
+// Button Configuration
 constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUTTON_Y) |
                                   (1UL << GAMEPAD_BUTTON_A) | (1UL << GAMEPAD_BUTTON_B) |
                                   (1UL << GAMEPAD_BUTTON_SELECT) | (1UL << GAMEPAD_BUTTON_START);
+
+// Display Refresh Rate Limiting
+constexpr uint32_t LARGE_DISPLAY_REFRESH_INTERVAL_MS = 200;  // Max 5 Hz
+
+// Statistics Reporting
+constexpr bool ENABLE_STATS_REPORTING_DEFAULT = true;
+
+// ============================================================================
+// Page Title Lookup Table (Eliminates String Duplication)
+// ============================================================================
+const char* const PAGE_TITLES[PAGE_COUNT] = {
+  "BME280",      // Page 0
+  "Gamepad",     // Page 1
+  "INA219",      // Page 2
+  "Encoder",     // Page 3
+  "SCD30",       // Page 4
+  "SI1145",      // Page 5
+  "TSL2591",     // Page 6
+  "VEML6070",    // Page 7
+  "VEML6075",    // Page 8
+  "DS2484"       // Page 9
+};
 
 // Display Configuration: FNK0114N 3.5" TFT with ILI9341 controller
 // Physical Resolution: 320×480 pixels
@@ -203,15 +250,6 @@ const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
 // FEATURE-SPEC-006: Non-Blocking Rotated Sensor Architecture
 // ============================================================================
 
-// Configuration constants (FEATURE-SPEC-006)
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;    // Immutable: 200 ms per slot
-constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;   // Immutable: 1 second aggregation
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Adjustable: typical 200 ms
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // Adjustable: 12-bit precision (750 ms)
-
-// Enable/disable statistics reporting (compile-time flag)
-#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled
-
 // State machines for asynchronous sensor reads (FEATURE-SPEC-006)
 enum class Tsl2591State {
   IDLE,       // 0: Not measuring; ready to start
@@ -226,6 +264,10 @@ enum class Ds18b20State {
 };
 static Ds18b20State ds18b20State = Ds18b20State::IDLE;
 static uint32_t ds18b20ConvertStartMs = 0;  // Conversion start timestamp
+
+// Sensor Timing Configuration (modifiable)
+static uint32_t TSL2591_INTEGRATION_TIME_MS = TSL2591_INTEGRATION_TIME_DEFAULT_MS;
+static uint32_t DS18B20_CONVERSION_TIME_MS = DS18B20_CONVERSION_TIME_DEFAULT_MS;
 
 // Track current sensor slot for rotation dispatch (FEATURE-SPEC-006)
 static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Previous slot number (init to invalid)
@@ -244,8 +286,9 @@ static EncoderValues lastEncoderValues{};
 static uint32_t lastTimerSeconds = 0xFFFFFFFF;
 static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limiting: max 5 Hz (200ms interval)
 
-// Statistics structures (optional, when ENABLE_STATS_REPORTING = 1)
-#if ENABLE_STATS_REPORTING
+// ============================================================================
+// STATISTICS STRUCTURES (Accessible regardless of ENABLE_STATS_REPORTING setting)
+// ============================================================================
 struct SensorReadStats {
   uint32_t minTime;   // Minimum read time (µs)
   uint32_t maxTime;   // Maximum read time (µs)
@@ -282,7 +325,7 @@ static uint32_t lastStatsUpdateMs = 0;
 static uint32_t lastGamepadStatsLogMs = 0;  // For 1-second gamepad stats reporting
 static uint32_t lastEncoderStatsLogMs = 0;  // For 1-second encoder stats reporting
 static uint32_t lastIna219StatsLogMs = 0;   // For 1-second INA219 stats reporting
-#endif
+
 
 // ============================================================================
 // FEATURE-SPEC-008: CENTRAL PARAMETER TRIPLE DEFINITIONS
@@ -517,8 +560,80 @@ String veml6075_getValue(uint8_t index) {
   }
 }
 
-// Forward declarations
+// ============================================================================
+// PHASE 2: HELPER FUNCTIONS & FORWARD DECLARATIONS
+// ============================================================================
+// Note: Forward declarations placed BEFORE helper functions that use them
+
+// Forward declarations needed by helper functions
+void drawCurrentPage(bool pageChanged = false);
+uint8_t getPageValueCount(uint8_t pageIndex);
 String formatRuntime(uint32_t elapsedUs);
+
+// ============================================================================
+// PHASE 2: HELPER FUNCTIONS
+// ============================================================================
+// Extracted functions to reduce code duplication and improve readability
+
+/// @brief Check if sensor on the given page is available
+/// Eliminates 2+ duplicate switch statements throughout the codebase
+/// (FEATURE-SPEC-011: Large Display Mode entry validation)
+bool isSensorAvailable(uint8_t pageIndex) {
+  switch (pageIndex) {
+    case 0: return available.bme280;
+    case 1: return available.gamepad;
+    case 2: return available.ina219;
+    case 3: return available.encoder;
+    case 4: return available.scd30;
+    case 5: return available.si1145;
+    case 6: return available.tsl2591;
+    case 7: return available.veml6070;
+    case 8: return available.veml6075;
+    case 9: return available.ds2484;
+    default: return false;
+  }
+}
+
+/// @brief Get the title for a page by index
+/// Replaces repeated string literals (11 instances in original code)
+const char* getPageTitle(uint8_t pageIndex) {
+  if (pageIndex < PAGE_COUNT) {
+    return PAGE_TITLES[pageIndex];
+  }
+  return "";
+}
+
+/// @brief Check if a specific gamepad button is currently pressed
+/// Helper to reduce verbosity of button state checking
+bool isGamepadButtonPressed(uint8_t buttonMask, uint32_t currentButtons, uint32_t lastButtons) {
+  const bool currentPressed = !(currentButtons & (1UL << buttonMask));
+  const bool lastPressed = !(lastButtons & (1UL << buttonMask));
+  return currentPressed && !lastPressed;  // Rising edge detection
+}
+
+/// @brief Enter Large Display Mode for the given page
+/// Centralizes Mode entry logic (eliminates 2+ duplicate blocks in gamepad/encoder handlers)
+/// Validates sensor availability before entry
+void enterLargeDisplayMode(uint8_t pageIndex) {
+  if (!isSensorAvailable(pageIndex)) return;
+  
+  uint8_t valueCount = getPageValueCount(pageIndex);
+  if (valueCount > 0) {
+    largeDisplayMode.active = true;
+    largeDisplayMode.currentPage = pageIndex;
+    largeDisplayMode.valueIndex = 0;
+    largeDisplayMode.needsFullRedraw = true;
+    largeDisplayMode.lastDisplayedValue = "";
+  }
+}
+
+/// @brief Exit Large Display Mode and redraw the current page
+/// Centralizes Mode exit logic to prevent display artifacts
+inline void exitLargeDisplayMode() {
+  largeDisplayMode.active = false;
+  largeDisplayMode.valueIndex = 0;
+  drawCurrentPage(true);  // Force full redraw
+}
 
 void writeText(int x, int y, const String &text, uint16_t color, uint8_t font = 2)
 {
@@ -2624,30 +2739,7 @@ void loop()
     // Button B: Enter mode or cycle forward
     if (bPressed && !lastB) {
       if (!largeDisplayMode.active) {
-        // Check if sensor on this page is available
-        bool sensorAvailable = false;
-        switch (currentPage) {
-          case 0: sensorAvailable = available.bme280; break;
-          case 1: sensorAvailable = available.gamepad; break;
-          case 2: sensorAvailable = available.ina219; break;
-          case 3: sensorAvailable = available.encoder; break;
-          case 4: sensorAvailable = available.scd30; break;
-          case 5: sensorAvailable = available.si1145; break;
-          case 6: sensorAvailable = available.tsl2591; break;
-          case 7: sensorAvailable = available.veml6070; break;
-          case 8: sensorAvailable = available.veml6075; break;
-          case 9: sensorAvailable = available.ds2484; break;
-          default: sensorAvailable = false; break;
-        }
-        uint8_t valueCount = getPageValueCount(currentPage);
-        if (valueCount > 0 && sensorAvailable) {
-          // Enter large display mode
-          largeDisplayMode.active = true;
-          largeDisplayMode.currentPage = currentPage;
-          largeDisplayMode.valueIndex = 0;
-          largeDisplayMode.needsFullRedraw = true;
-          largeDisplayMode.lastDisplayedValue = "";
-        }
+        enterLargeDisplayMode(currentPage);
       } else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
         // Cycle forward in large display mode
         uint8_t valueCount = getPageValueCount(currentPage);
@@ -2674,11 +2766,8 @@ void loop()
     // Button Y: Exit mode or navigate to previous page
     if (yPressed && !lastY) {
       if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
-        // Exit large display mode - force full page redraw to prevent artifacts
-        largeDisplayMode.active = false;
-        largeDisplayMode.valueIndex = 0;
-        // Trigger full redraw via drawCurrentPage with pageChanged=true
-        drawCurrentPage(true);
+        // Exit large display mode
+        exitLargeDisplayMode();
       } else {
         // Normal page navigation
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
@@ -2705,8 +2794,6 @@ void loop()
     // We need to track the last delta-processed position separately to avoid reprocessing
     static int32_t lastEncoderNavigationPosition = 0;
     int32_t currentNavigationDelta = encoderValues.position - lastEncoderNavigationPosition;
-    
-    const int ENCODER_DELTA_THRESHOLD = 1;  // Minimum steps to trigger navigation
 
     // Standard Mode: Page Navigation via Encoder Rotation
     if (!largeDisplayMode.active) {
@@ -2744,34 +2831,10 @@ void loop()
       // Rising edge: button just pressed
       if (!largeDisplayMode.active) {
         // Enter Large Display Mode for current page
-        bool sensorAvailable = false;
-        switch (currentPage) {
-          case 0: sensorAvailable = available.bme280; break;
-          case 1: sensorAvailable = available.gamepad; break;
-          case 2: sensorAvailable = available.ina219; break;
-          case 3: sensorAvailable = available.encoder; break;
-          case 4: sensorAvailable = available.scd30; break;
-          case 5: sensorAvailable = available.si1145; break;
-          case 6: sensorAvailable = available.tsl2591; break;
-          case 7: sensorAvailable = available.veml6070; break;
-          case 8: sensorAvailable = available.veml6075; break;
-          case 9: sensorAvailable = available.ds2484; break;
-          default: sensorAvailable = false; break;
-        }
-        uint8_t valueCount = getPageValueCount(currentPage);
-        if (valueCount > 0 && sensorAvailable) {
-          largeDisplayMode.active = true;
-          largeDisplayMode.currentPage = currentPage;
-          largeDisplayMode.valueIndex = 0;
-          largeDisplayMode.needsFullRedraw = true;
-          largeDisplayMode.lastDisplayedValue = "";
-        }
+        enterLargeDisplayMode(currentPage);
       } else if (largeDisplayMode.currentPage == currentPage) {
         // Exit Large Display Mode - return to standard view
-        largeDisplayMode.active = false;
-        largeDisplayMode.valueIndex = 0;
-        // Trigger full redraw via drawCurrentPage to prevent artifacts
-        drawCurrentPage(true);
+        exitLargeDisplayMode();
       }
     }
     encoderLastPressed = encoderPressed;
