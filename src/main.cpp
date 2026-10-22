@@ -99,6 +99,7 @@ constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUT
 constexpr uint32_t LARGE_DISPLAY_REFRESH_INTERVAL_MS = 200;  // Max 5 Hz
 
 // Statistics Reporting
+#define ENABLE_STATS_REPORTING 1
 constexpr bool ENABLE_STATS_REPORTING_DEFAULT = true;
 
 // ============================================================================
@@ -1079,6 +1080,17 @@ bool readScd30(Scd30Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  scd30Stats.readCount++;
+  scd30Stats.totalTime += duration;
+  if (scd30Stats.readCount == 1 || duration < scd30Stats.minTime) {
+    scd30Stats.minTime = duration;
+  }
+  if (duration > scd30Stats.maxTime) {
+    scd30Stats.maxTime = duration;
+  }
+  
   logI2cTiming("SCD30", duration);
   logPrintf("[SCD30] co2=%.0f ppm temp=%.1f°C humidity=%.1f%%", 
             values.co2, values.temp, values.humidity);
@@ -1129,6 +1141,17 @@ bool readVeml6075(Veml6075Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  veml6075Stats.readCount++;
+  veml6075Stats.totalTime += duration;
+  if (veml6075Stats.readCount == 1 || duration < veml6075Stats.minTime) {
+    veml6075Stats.minTime = duration;
+  }
+  if (duration > veml6075Stats.maxTime) {
+    veml6075Stats.maxTime = duration;
+  }
+  
   logI2cTiming("VEML6075", duration);
   logPrintf("[VEML6075] uva=%.2f uvb=%.2f index=%.2f", 
             values.uvaComp, values.uvbComp, values.index);
@@ -1145,6 +1168,17 @@ bool readVeml6070(Veml6070Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  veml6070Stats.readCount++;
+  veml6070Stats.totalTime += duration;
+  if (veml6070Stats.readCount == 1 || duration < veml6070Stats.minTime) {
+    veml6070Stats.minTime = duration;
+  }
+  if (duration > veml6070Stats.maxTime) {
+    veml6070Stats.maxTime = duration;
+  }
+  
   logI2cTiming("VEML6070", duration);
   logPrintf("[VEML6070] uv=%u (raw)", values.raw);
   return true;
@@ -1166,6 +1200,17 @@ void readBme280(Bme280Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  bme280Stats.readCount++;
+  bme280Stats.totalTime += duration;
+  if (bme280Stats.readCount == 1 || duration < bme280Stats.minTime) {
+    bme280Stats.minTime = duration;
+  }
+  if (duration > bme280Stats.maxTime) {
+    bme280Stats.maxTime = duration;
+  }
+  
   logI2cTiming("BME280", duration);
   logPrintf("[BME280] temp=%.1f°C humidity=%.1f%% pressure=%.0f hPa", 
             values.temperature, values.humidity, values.pressure);
@@ -1196,6 +1241,17 @@ void readSi1145(Si1145Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  si1145Stats.readCount++;
+  si1145Stats.totalTime += duration;
+  if (si1145Stats.readCount == 1 || duration < si1145Stats.minTime) {
+    si1145Stats.minTime = duration;
+  }
+  if (duration > si1145Stats.maxTime) {
+    si1145Stats.maxTime = duration;
+  }
+  
   logI2cTiming("SI1145", duration);
   logPrintf("[SI1145] uv=%.2f vis=%u ir=%u", 
             values.uvIndex, values.visible, values.infrared);
@@ -1219,9 +1275,9 @@ bool initDs2484()
   // Initialize Adafruit DS248x (parameter order: TwoWire*, uint8_t address)
   bool success = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (success) {
-    // logPrintf("DS2484: Initialized at 0x18");
+    logPrintf("[DS2484] Initialized at 0x18");
   } else {
-    // logPrintf("DS2484: Initialization FAILED");
+    logPrintf("[DS2484] Initialization FAILED");
   }
   return success;
 }
@@ -1555,7 +1611,7 @@ void startTsl2591Measurement()
   // 2. checkTsl2591Async(): call getFullLuminosity() after delay
   
   uint32_t endTime = micros();
-  // logPrintf("TSL2591 async START time: %lu µs", endTime - startTime);
+  logPrintf("[TSL2591] async START time: %lu µs", endTime - startTime);
 }
 
 /// @brief Check if TSL2591 measurement is complete; read result if ready (non-blocking if not ready)
@@ -1571,7 +1627,7 @@ void checkTsl2591Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < TSL2591_INTEGRATION_TIME_MS) {
-    // logPrintf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
+    logPrintf("[TSL2591] async WAITING: %lu ms elapsed, need %lu ms", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
     return;
   }
   
@@ -1603,6 +1659,16 @@ void checkTsl2591Async()
   tsl2591Values.lux = lux;
   tsl2591Values.gain = gain;
   tsl2591Values.integrationTime = integrationTime;
+  
+  // Update statistics
+  tsl2591Stats.readCount++;
+  tsl2591Stats.totalTime += duration;
+  if (tsl2591Stats.readCount == 1 || duration < tsl2591Stats.minTime) {
+    tsl2591Stats.minTime = duration;
+  }
+  if (duration > tsl2591Stats.maxTime) {
+    tsl2591Stats.maxTime = duration;
+  }
   
   // State machine back to IDLE
   tsl2591State = Tsl2591State::IDLE;
@@ -1734,6 +1800,17 @@ void readDs18b20Results()
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
+  
+  // Update statistics
+  ds18b20Stats.readCount++;
+  ds18b20Stats.totalTime += duration;
+  if (ds18b20Stats.readCount == 1 || duration < ds18b20Stats.minTime) {
+    ds18b20Stats.minTime = duration;
+  }
+  if (duration > ds18b20Stats.maxTime) {
+    ds18b20Stats.maxTime = duration;
+  }
+  
   logPrintf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs", successCount, ds2484Values.sensorCount, duration);
   
   // Reset state machine to IDLE for next conversion cycle
@@ -2055,58 +2132,58 @@ void updateInputStats()
   lastStatsUpdateMs = now;
   
   // Print aggregated statistics to Serial
-  // logPrintf("\n=== Sensor Stats (1000 ms interval) ===");
+  logPrintf("[STATS] Sensor timing (1000 ms interval)");
   
   if (bme280Stats.readCount > 0) {
-    /* // logPrintf("BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    logPrintf("  BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u",
       bme280Stats.minTime, bme280Stats.maxTime,
       bme280Stats.totalTime / bme280Stats.readCount,
-      bme280Stats.readCount); */
+      bme280Stats.readCount);
   }
   
   if (tsl2591Stats.readCount > 0) {
-    /* // logPrintf("TSL2591:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+    logPrintf("  TSL2591:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)",
       tsl2591Stats.minTime, tsl2591Stats.maxTime,
       tsl2591Stats.totalTime / tsl2591Stats.readCount,
-      tsl2591Stats.readCount); */
+      tsl2591Stats.readCount);
   }
   
   if (si1145Stats.readCount > 0) {
-    /* // logPrintf("SI1145:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    logPrintf("  SI1145:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u",
       si1145Stats.minTime, si1145Stats.maxTime,
       si1145Stats.totalTime / si1145Stats.readCount,
-      si1145Stats.readCount); */
+      si1145Stats.readCount);
   }
   
   if (veml6075Stats.readCount > 0) {
-    /* // logPrintf("VEML6075:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    logPrintf("  VEML6075:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u",
       veml6075Stats.minTime, veml6075Stats.maxTime,
       veml6075Stats.totalTime / veml6075Stats.readCount,
-      veml6075Stats.readCount); */
+      veml6075Stats.readCount);
   }
   
   if (veml6070Stats.readCount > 0) {
-    /* // logPrintf("VEML6070:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    logPrintf("  VEML6070:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u",
       veml6070Stats.minTime, veml6070Stats.maxTime,
       veml6070Stats.totalTime / veml6070Stats.readCount,
-      veml6070Stats.readCount); */
+      veml6070Stats.readCount);
   }
   
   if (scd30Stats.readCount > 0) {
-    /* // logPrintf("SCD30:        min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    logPrintf("  SCD30:        min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u",
       scd30Stats.minTime, scd30Stats.maxTime,
       scd30Stats.totalTime / scd30Stats.readCount,
-      scd30Stats.readCount); */
+      scd30Stats.readCount);
   }
   
   if (ds18b20Stats.readCount > 0) {
-    /* // logPrintf("DS18B20:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+    logPrintf("  DS18B20:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)",
       ds18b20Stats.minTime, ds18b20Stats.maxTime,
       ds18b20Stats.totalTime / ds18b20Stats.readCount,
-      ds18b20Stats.readCount); */
+      ds18b20Stats.readCount);
   }
   
-  // logPrintf("=====================================");
+  logPrintf("[STATS] ===== end of interval stats =====");
   
   // Reset counters for next interval
   bme280Stats = {};
@@ -2268,7 +2345,20 @@ void readIna219At50Hz()
   // Populate global ina219Values from sensor
   ina219Values = ina219Sensor.getValues();
   unlockI2cBus();
-  logI2cTiming("INA219", micros() - startTime);
+  
+  uint32_t duration = micros() - startTime;
+  
+  // Update statistics
+  ina219Stats.readCount++;
+  ina219Stats.totalTime += duration;
+  if (ina219Stats.readCount == 1 || duration < ina219Stats.minTime) {
+    ina219Stats.minTime = duration;
+  }
+  if (duration > ina219Stats.maxTime) {
+    ina219Stats.maxTime = duration;
+  }
+  
+  logI2cTiming("INA219", duration);
   logPrintf("[INA219] bus=%.2f V current=%.2f mA power=%.2f mW", 
             ina219Values.bus, ina219Values.current, ina219Values.power);
 }
@@ -3001,7 +3091,7 @@ void loop()
   static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
   uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
   if (currentSensorSlot != lastSensorSlotDispatched) {
-    // logPrintf("[LOOP] Slot %lu starting", currentSensorSlot);
+    logPrintf("[LOOP] Slot %lu starting", currentSensorSlot);
     rotatedReadSensor(currentSensorSlot);
     lastSensorSlotDispatched = currentSensorSlot;
   }
