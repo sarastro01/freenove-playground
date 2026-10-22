@@ -3833,7 +3833,7 @@ Boot initialization shall log to TFT display (if available) in a strict sequence
 3. TFT display initialized and ready to display boot messages
 4. bootLoggerInit() called — activates TFT terminal mode
 5. I2C bus initialized (400 kHz, 100ms timeout)
-6. I2C bus scan (if enabled): discover all device addresses
+6. I2C bus initialization complete (device discovery deferred to runtime for boot stability)
 7. Sensor presence detection: log each sensor begin() result
 8. Sensor registry initialization
 9. Initial sensor reads
@@ -3846,9 +3846,9 @@ Boot initialization shall log to TFT display (if available) in a strict sequence
 
 **Message Format (on TFT, no timestamps):**
 - Format: `[CATEGORY] message text`
-- Example: `[I2C] Found: BME280 @ 0x77`
+- Example: `[I2C] Bus initialized`
 - Maximum line length: 60 characters
-- Color: TFT_WHITE text on TFT_BLACK background
+- Color: TFT_GREEN text on TFT_BLACK background
 - Scrolling: new lines push old lines off top (~28 lines visible)
 
 **Fallback Behavior:**
@@ -3914,7 +3914,6 @@ System info page (page 10) shall display runtime diagnostics and system status i
 Version:  X.Y.Z                 (from diagnostics.h VERSION)
 Build:    YYYY-MM-DDTHH:MM:SSZ  (from diagnostics.h BUILD_DATE)
 Uptime:   HH:MM:SS              (calculated from millis(), updated 500ms)
-Boot Time: X.X seconds          (time from setup() start to boot_complete)
 Heap:     XXXXX / XXXXX bytes   (current free / total)
 Min Free: XXXXX bytes           (all-time minimum free heap)
 Sensors:  N/10 detected         (count of devices found at boot)

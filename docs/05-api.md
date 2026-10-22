@@ -1853,13 +1853,14 @@ Activate boot terminal mode on TFT display. Called after TFT initialization comp
 
 **Signature:**
 ```cpp
-void bootLogPrintf(const char* format, ...);
+void bootLogPrintf(const char* category, const char* format, ...);
 ```
 
 **Purpose:**  
 Add a formatted message to boot log (TFT display). Similar to logPrintf but without timestamps.
 
 **Parameters:**
+- `category`: Log category prefix (e.g., "BOOT", "I2C", "SETUP", "SENSOR", "ERROR")
 - `format`: Printf-style format string
 - `...`: Variable arguments (same as printf)
 
@@ -1874,9 +1875,9 @@ Add a formatted message to boot log (TFT display). Similar to logPrintf but with
 
 **Examples:**
 ```cpp
-bootLogPrintf("[I2C] Found: BME280 @ 0x77");
-bootLogPrintf("[SETUP] Initializing sensors...");
-bootLogPrintf("[ERROR] Sensor initialization failed");
+bootLogPrintf("I2C", "Bus initialized at 400 kHz");
+bootLogPrintf("SETUP", "Initializing sensors...");
+bootLogPrintf("ERROR", "Sensor initialization failed");
 ```
 
 **Differences from logPrintf():**
@@ -2650,6 +2651,15 @@ String ds2484_getLargeDisplayData(uint8_t valueIndex,
 // Value count: 3–9 (3 per discovered sensor, max 3 sensors)
 // Values: [Sensor 0: ROM-ID, Temp, Status], [Sensor 1: ROM-ID, Temp, Status], ...
 // Dynamic based on discovered sensor count
+```
+
+#### Page 10: System Information
+```cpp
+void pageSystemInfo();
+// Read-only system diagnostics page
+// Displays: Version, Build Date, Uptime, Heap Status, Min Free Heap, Sensor Count, Error Summary
+// Updates: Uptime and heap every 500ms, error counts on occurrence
+// No large display mode (always shows full system view)
 ```
 
 ---

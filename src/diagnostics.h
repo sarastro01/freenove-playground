@@ -9,8 +9,8 @@
 // VERSION & BUILD INFORMATION (FEATURE-SPEC-012)
 // ============================================================================
 
-#define VERSION "3.1.0"
-#define BUILD_DATE "2026-10-22T17:20:00Z"
+#define VERSION "3.1.13"
+#define BUILD_DATE "2026-10-22T22:49:30Z"
 
 // ============================================================================
 // TIMESTAMPED LOGGING FUNCTION (FEATURE-SPEC-012)

@@ -1208,3 +1208,124 @@ See [BUILD-VERSIONING.md](/docs/BUILD-VERSIONING.md) for complete technical deta
 
 ---
 
+## Boot Logger Configuration (FEATURE-SPEC-013)
+
+**Feature:** Configurable boot terminal logging during system initialization.
+
+**Overview:** The boot logger displays initialization progress on the TFT display in real-time during `setup()`. This feature can be enabled or disabled via compile-time configuration.
+
+### Boot Logger Enable/Disable
+
+**Configuration Flag:**
+```cpp
+// In src/main.cpp or src/diagnostics.h
+#define ENABLE_BOOT_LOGGING 1    // 1 = enabled (default), 0 = disabled
+```
+
+**Default Value:** `1` (enabled)
+
+**Effect When Enabled:**
+- TFT boot terminal mode activates after TFT initialization
+- Boot progress messages displayed on display during setup()
+- Circular buffer stores ~30 lines of messages
+- Uses ~2 KB of RAM for message buffer
+- No impact on boot time (asynchronous rendering)
+
+**Effect When Disabled:**
+- Boot terminal mode skipped
+- All boot messages logged to Serial only (via logPrintf with timestamps)
+- Saves ~2 KB of RAM
+- Boot sequence proceeds normally, no visual feedback on display
+- Error messages still available via Serial monitor
+
+### Configuration Method
+
+**Option 1: Edit Source Code**
+```cpp
+// File: src/main.cpp (near top of file)
+#define ENABLE_BOOT_LOGGING 1    // Change to 0 to disable
+```
+
+Then rebuild and upload:
+```bash
+cd sensor-pages-dashboard
+platformio run --target upload
+```
+
+**Option 2: Conditional Compilation (Advanced)**
+Add to `platformio.ini`:
+```ini
+[env:esp32dev]
+...
+build_flags = 
+    -DENABLE_BOOT_LOGGING=0    ; Disable boot logger
+```
+
+Then rebuild:
+```bash
+platformio run --target upload
+```
+
+### Boot Logger Functions (When Enabled)
+
+The following functions are available only when `ENABLE_BOOT_LOGGING` is defined:
+
+**bootLoggerInit()**
+- Called after TFT display is ready (in setup())
+- Initializes circular buffer for boot messages
+- Must be called before first bootLogPrintf() call
+
+**bootLogPrintf(category, format, ...)**
+- Adds formatted message to boot terminal
+- Parameters:
+  - `category`: Message category (e.g., "BOOT", "I2C", "SETUP", "SENSOR")
+  - `format`: Printf-style format string
+  - `...`: Variable arguments
+- Example: `bootLogPrintf("I2C", "Bus initialized at 400 kHz");`
+
+**bootLoggerComplete()**
+- Called after "BOOT COMPLETE" message and 1000ms delay
+- Exits boot terminal mode
+- Transitions to normal page display
+
+**bootLoggerRender()**
+- Manually re-render boot log to TFT display
+- Called automatically after each bootLogPrintf()
+- Rarely needs manual invocation
+
+### Boot Logger Limitations
+
+- **Message Buffer:** Circular buffer holds ~30 lines of 64 characters each
+- **Max Line Length:** Text truncated at 60 characters (4-char prefix + message)
+- **Update Rate:** Messages render immediately (no debouncing)
+- **Overflow:** Old messages pushed off top when buffer fills
+- **Persistence:** Messages cleared on boot (no persistence between reboots)
+
+### Memory Impact
+
+| Setting | RAM Used | Notes |
+|---------|----------|-------|
+| `ENABLE_BOOT_LOGGING=1` | +2 KB | Circular buffer (30×64 bytes) + overhead |
+| `ENABLE_BOOT_LOGGING=0` | +0 KB | Boot messages log to Serial only |
+
+For systems with limited RAM, disabling boot logging frees 2 KB for other use.
+
+### Related Requirements
+
+- FR-028: Boot Sequence Logging to TFT Display
+- BR-BOOT-001: Boot Sequence Logging Order
+- BR-BOOT-003: Boot Logger Initialization Order
+
+### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| No boot messages on display | `ENABLE_BOOT_LOGGING=0` | Set to `1` in src/main.cpp |
+| Boot messages in Serial only | TFT init failed | Check TFT wiring and initialization |
+| Garbled boot messages | TFT color mode mismatch | Verify 16-bit color mode enabled |
+| Boot takes longer than expected | High Serial baud rate causing slow I2C | Reduce Serial output volume or increase I2C clock |
+| "bootLogPrintf not found" compile error | Missing category parameter | Use: `bootLogPrintf("BOOT", "message");` |
+
+---
+
+

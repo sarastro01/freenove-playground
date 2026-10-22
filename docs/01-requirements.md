@@ -1180,13 +1180,13 @@ The system shall display initialization progress messages on the TFT display dur
 - Display format: `[CATEGORY] message text`
 - Maximum line length: 60 characters
 - Messages scroll: new lines push old lines off top
-- Text color: TFT_WHITE on TFT_BLACK background
+- Text color: TFT_GREEN on TFT_BLACK background
 - Boot stages logged (in order):
   1. Serial port initialized
   2. Diagnostics initialized (reboot reason, heap status)
   3. TFT display initialized and ready for boot messages
   4. I2C bus initialized (400 kHz, 100ms timeout)
-  5. I2C bus scan (if enabled): discovered device addresses
+  5. I2C bus initialization (boot stability mode, I2C scan disabled)
   6. Sensor presence detection: per-sensor initialization
   7. Sensor registry initialization
   8. Boot complete message + 1000ms pause
@@ -1220,7 +1220,6 @@ The system shall provide a dedicated display page (page 10) showing runtime diag
   - Software Version (from diagnostics.h VERSION)
   - Build Date (from diagnostics.h BUILD_DATE)
   - Uptime (HH:MM:SS format, updated every 500ms)
-  - Boot Time (seconds from start of setup() to boot complete)
   - Heap Status (free bytes / total bytes)
   - Min Free Heap (all-time minimum since boot)
   - Sensor Count (number of devices detected at boot, format: N/10)
