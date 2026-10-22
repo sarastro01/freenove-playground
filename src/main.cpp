@@ -1041,7 +1041,7 @@ bool readScd30(Scd30Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("SCD30 read time: %lu µs\n", duration);
+  logPrintf("SCD30 read time: %lu µs\n", duration);
   return true;
 }
 
@@ -1089,7 +1089,7 @@ bool readVeml6075(Veml6075Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("VEML6075 read time: %lu µs\n", duration);
+  logPrintf("VEML6075 read time: %lu µs\n", duration);
   return true;
 }
 
@@ -1103,7 +1103,7 @@ bool readVeml6070(Veml6070Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("VEML6070 read time: %lu µs\n", duration);
+  logPrintf("VEML6070 read time: %lu µs\n", duration);
   return true;
 }
 
@@ -1123,7 +1123,7 @@ void readBme280(Bme280Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("BME280 read time: %lu µs\n", duration);
+  logPrintf("BME280 read time: %lu µs\n", duration);
 }
 
 void readTsl2591(Tsl2591Values &values)
@@ -1151,7 +1151,7 @@ void readSi1145(Si1145Values &values)
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("SI1145 read time: %lu µs\n", duration);
+  logPrintf("SI1145 read time: %lu µs\n", duration);
 }
 
 // DS2484 1-Wire temperature sensor functions
@@ -1172,9 +1172,9 @@ bool initDs2484()
   // Initialize Adafruit DS248x (parameter order: TwoWire*, uint8_t address)
   bool success = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (success) {
-    // Serial.println("DS2484: Initialized at 0x18");
+    // logPrintf("DS2484: Initialized at 0x18");
   } else {
-    // Serial.println("DS2484: Initialization FAILED");
+    // logPrintf("DS2484: Initialization FAILED");
   }
   return success;
 }
@@ -1209,7 +1209,7 @@ void performDs2484Scan()
   bool firstScan = ds2484Values.sensorCount == 0;
   if (!firstScan && (int32_t)(nowMs - ds2484Values.lastScanMs) < 60000) return;
   
-  Serial.println("[DS2484] Scanning 1-Wire bus...");
+  logPrintf("[DS2484] Scanning 1-Wire bus...");
   
   // Reset sensor count and clear all sensors
   ds2484Values.sensorCount = 0;
@@ -1236,12 +1236,12 @@ void performDs2484Scan()
     sensor.temperature = 0.0f;
     sensor.lastReadMs = nowMs;
     
-    Serial.printf("[DS2484] Found sensor %d: Family=%02X, Address=%02X%02X%02X%02X%02X%02X%02X%02X\n", 
+    logPrintf("[DS2484] Found sensor %d: Family=%02X, Address=%02X%02X%02X%02X%02X%02X%02X%02X\n", 
       ds2484Values.sensorCount, address[0], address[1], address[2], address[3], address[4], address[5], address[6], address[7]);
     ds2484Values.sensorCount++;
   }
   
-  Serial.printf("[DS2484] Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
+  logPrintf("[DS2484] Bus scan complete - found %d sensors\n", ds2484Values.sensorCount);
   ds2484Values.lastScanMs = nowMs;
 }
 
@@ -1337,12 +1337,12 @@ void readDs2484Temperatures()
     sensor.available = true;
     sensor.lastReadMs = nowMs;
     
-    // Serial.printf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
+    // logPrintf("DS2484: Sensor %d temp = %.2f°C\n", i, sensor.temperature);
   }
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("DS2484 read time: %lu µs\n", duration);
+  logPrintf("DS2484 read time: %lu µs\n", duration);
   
   ds2484Values.lastConversionMs = nowMs;
 }
@@ -1471,7 +1471,7 @@ void startTsl2591Measurement()
   // 2. checkTsl2591Async(): call getFullLuminosity() after delay
   
   uint32_t endTime = micros();
-  // Serial.printf("TSL2591 async START time: %lu µs\n", endTime - startTime);
+  // logPrintf("TSL2591 async START time: %lu µs\n", endTime - startTime);
 }
 
 /// @brief Check if TSL2591 measurement is complete; read result if ready (non-blocking if not ready)
@@ -1487,7 +1487,7 @@ void checkTsl2591Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < TSL2591_INTEGRATION_TIME_MS) {
-    // Serial.printf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
+    // logPrintf("TSL2591 async WAITING: %lu ms elapsed, need %lu ms\n", elapsedMs, TSL2591_INTEGRATION_TIME_MS);
     return;
   }
   
@@ -1523,7 +1523,7 @@ void checkTsl2591Async()
   // State machine back to IDLE
   tsl2591State = Tsl2591State::IDLE;
   
-  Serial.printf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", duration, elapsedMs);
+  logPrintf("TSL2591 I2C read time: %lu µs (integration wait: %lu ms)\n", duration, elapsedMs);
 }
 
 /// @brief Start DS18B20 asynchronous temperature conversion (non-blocking, ~1 ms)
@@ -1535,21 +1535,21 @@ void startDs18b20Conversion()
   if (!available.ds2484 || ds2484Values.sensorCount == 0) return;
   
   uint32_t startTime = micros();
-  Serial.printf("[DS18B20] Starting conversion for %d sensors...\n", ds2484Values.sensorCount);
+  logPrintf("[DS18B20] Starting conversion for %d sensors...\n", ds2484Values.sensorCount);
   
   // Send Convert T command to all devices (0x44 via Skip ROM 0xCC)
   if (!ds2484Master.OneWireReset()) {
-    Serial.println("[DS18B20] ERROR: OneWire Reset failed");
+    logPrintf("[DS18B20] ERROR: OneWire Reset failed");
     return;
   }
   
   if (!ds2484Master.OneWireWriteByte(0xCC)) {  // Skip ROM
-    Serial.println("[DS18B20] ERROR: Skip ROM write failed");
+    logPrintf("[DS18B20] ERROR: Skip ROM write failed");
     return;
   }
   
   if (!ds2484Master.OneWireWriteByte(0x44)) {  // Convert T
-    Serial.println("[DS18B20] ERROR: Convert T write failed");
+    logPrintf("[DS18B20] ERROR: Convert T write failed");
     return;
   }
   
@@ -1558,7 +1558,7 @@ void startDs18b20Conversion()
   ds18b20ConvertStartMs = millis();
   
   uint32_t endTime = micros();
-  Serial.printf("[DS18B20] Conversion started (took %lu µs)\n", endTime - startTime);
+  logPrintf("[DS18B20] Conversion started (took %lu µs)\n", endTime - startTime);
 }
 
 /// @brief Read DS18B20 temperature results from all discovered sensors (blocking, ~X ms)
@@ -1571,7 +1571,7 @@ void readDs18b20Results()
   
   const uint32_t nowMs = millis();
   uint32_t startTime = micros();
-  Serial.printf("[DS18B20] Reading results from %d sensors...\n", ds2484Values.sensorCount);
+  logPrintf("[DS18B20] Reading results from %d sensors...\n", ds2484Values.sensorCount);
   
   uint8_t successCount = 0;
   // Read temperature for each discovered sensor
@@ -1581,14 +1581,14 @@ void readDs18b20Results()
     // Skip if already offline after 3 errors
     if (sensor.errorCount >= 3) {
       sensor.available = false;
-      Serial.printf("[DS18B20] Sensor %d: OFFLINE (3+ errors)\n", i);
+      logPrintf("[DS18B20] Sensor %d: OFFLINE (3+ errors)\n", i);
       continue;
     }
     
     // Reset and select device using Match ROM
     if (!ds2484Master.OneWireReset()) {
       sensor.errorCount++;
-      Serial.printf("[DS18B20] Sensor %d: Reset failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Reset failed (error %d/3)\n", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1596,7 +1596,7 @@ void readDs18b20Results()
     // Match ROM (0x55) command
     if (!ds2484Master.OneWireWriteByte(0x55)) {
       sensor.errorCount++;
-      Serial.printf("[DS18B20] Sensor %d: Match ROM failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Match ROM failed (error %d/3)\n", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1612,7 +1612,7 @@ void readDs18b20Results()
     
     if (!romWriteOk) {
       sensor.errorCount++;
-      Serial.printf("[DS18B20] Sensor %d: ROM address write failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: ROM address write failed (error %d/3)\n", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1620,7 +1620,7 @@ void readDs18b20Results()
     // Read Scratchpad command (0xBE)
     if (!ds2484Master.OneWireWriteByte(0xBE)) {
       sensor.errorCount++;
-      Serial.printf("[DS18B20] Sensor %d: Read Scratchpad failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Read Scratchpad failed (error %d/3)\n", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1629,7 +1629,7 @@ void readDs18b20Results()
     uint8_t tempLsb, tempMsb;
     if (!ds2484Master.OneWireReadByte(&tempLsb) || !ds2484Master.OneWireReadByte(&tempMsb)) {
       sensor.errorCount++;
-      Serial.printf("[DS18B20] Sensor %d: Temperature read failed (error %d/3)\n", i, sensor.errorCount);
+      logPrintf("[DS18B20] Sensor %d: Temperature read failed (error %d/3)\n", i, sensor.errorCount);
       if (sensor.errorCount >= 3) sensor.available = false;
       continue;
     }
@@ -1643,12 +1643,12 @@ void readDs18b20Results()
     sensor.lastReadMs = nowMs;
     successCount++;
     
-    Serial.printf("[DS18B20] Sensor %d: TEMP = %.2f°C\n", i, sensor.temperature);
+    logPrintf("[DS18B20] Sensor %d: TEMP = %.2f°C\n", i, sensor.temperature);
   }
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
-  Serial.printf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs\n", successCount, ds2484Values.sensorCount, duration);
+  logPrintf("[DS18B20] Results read: %d/%d sensors OK, took %lu µs\n", successCount, ds2484Values.sensorCount, duration);
   
   // Reset state machine to IDLE for next conversion cycle
   ds18b20State = Ds18b20State::IDLE;
@@ -1667,11 +1667,11 @@ void checkDs18b20Async()
   
   // Not ready yet; will retry next cycle
   if (elapsedMs < DS18B20_CONVERSION_TIME_MS) {
-    Serial.printf("[DS18B20] Waiting: %lu ms elapsed (need %lu ms)\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
+    logPrintf("[DS18B20] Waiting: %lu ms elapsed (need %lu ms)\n", elapsedMs, DS18B20_CONVERSION_TIME_MS);
     return;
   }
   
-  Serial.println("[DS18B20] Conversion ready, reading results...");
+  logPrintf("[DS18B20] Conversion ready, reading results...");
   // Ready to read; call blocking read function
   uint32_t startTime = micros();
   readDs18b20Results();
@@ -1680,7 +1680,7 @@ void checkDs18b20Async()
   // State machine back to IDLE
   ds18b20State = Ds18b20State::IDLE;
   
-  Serial.printf("[DS18B20] Complete: read took %lu µs, total wait was %lu ms\n", endTime - startTime, elapsedMs);
+  logPrintf("[DS18B20] Complete: read took %lu µs, total wait was %lu ms\n", endTime - startTime, elapsedMs);
 }
 
 /// @brief Rotated sensor read dispatcher (FEATURE-SPEC-006 non-blocking architecture)
@@ -1965,58 +1965,58 @@ void updateInputStats()
   lastStatsUpdateMs = now;
   
   // Print aggregated statistics to Serial
-  // Serial.println("\n=== Sensor Stats (1000 ms interval) ===");
+  // logPrintf("\n=== Sensor Stats (1000 ms interval) ===");
   
   if (bme280Stats.readCount > 0) {
-    /* // Serial.printf("BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    /* // logPrintf("BME280:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
       bme280Stats.minTime, bme280Stats.maxTime,
       bme280Stats.totalTime / bme280Stats.readCount,
       bme280Stats.readCount); */
   }
   
   if (tsl2591Stats.readCount > 0) {
-    /* // Serial.printf("TSL2591:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+    /* // logPrintf("TSL2591:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
       tsl2591Stats.minTime, tsl2591Stats.maxTime,
       tsl2591Stats.totalTime / tsl2591Stats.readCount,
       tsl2591Stats.readCount); */
   }
   
   if (si1145Stats.readCount > 0) {
-    /* // Serial.printf("SI1145:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    /* // logPrintf("SI1145:       min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
       si1145Stats.minTime, si1145Stats.maxTime,
       si1145Stats.totalTime / si1145Stats.readCount,
       si1145Stats.readCount); */
   }
   
   if (veml6075Stats.readCount > 0) {
-    /* // Serial.printf("VEML6075:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    /* // logPrintf("VEML6075:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
       veml6075Stats.minTime, veml6075Stats.maxTime,
       veml6075Stats.totalTime / veml6075Stats.readCount,
       veml6075Stats.readCount); */
   }
   
   if (veml6070Stats.readCount > 0) {
-    /* // Serial.printf("VEML6070:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    /* // logPrintf("VEML6070:     min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
       veml6070Stats.minTime, veml6070Stats.maxTime,
       veml6070Stats.totalTime / veml6070Stats.readCount,
       veml6070Stats.readCount); */
   }
   
   if (scd30Stats.readCount > 0) {
-    /* // Serial.printf("SCD30:        min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
+    /* // logPrintf("SCD30:        min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u\n",
       scd30Stats.minTime, scd30Stats.maxTime,
       scd30Stats.totalTime / scd30Stats.readCount,
       scd30Stats.readCount); */
   }
   
   if (ds18b20Stats.readCount > 0) {
-    /* // Serial.printf("DS18B20:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
+    /* // logPrintf("DS18B20:      min=%lu µs, max=%lu µs, avg=%lu µs, reads=%u (async)\n",
       ds18b20Stats.minTime, ds18b20Stats.maxTime,
       ds18b20Stats.totalTime / ds18b20Stats.readCount,
       ds18b20Stats.readCount); */
   }
   
-  // Serial.println("=====================================\n");
+  // logPrintf("=====================================\n");
   
   // Reset counters for next interval
   bme280Stats = {};
@@ -2043,7 +2043,7 @@ void printGamepadStats()
   if ((int32_t)(nowMs - lastGamepadStatsLogMs) < 1000) return;
   
   if (gamepadStats.readCount > 0) {
-    Serial.printf("Gamepad stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("Gamepad stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
       gamepadStats.readCount,
       gamepadStats.minTime,
       gamepadStats.maxTime,
@@ -2069,7 +2069,7 @@ void printEncoderStats()
   if ((int32_t)(nowMs - lastEncoderStatsLogMs) < 1000) return;
   
   if (encoderStats.readCount > 0) {
-    Serial.printf("Encoder stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("Encoder stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
       encoderStats.readCount,
       encoderStats.minTime,
       encoderStats.maxTime,
@@ -2095,7 +2095,7 @@ void printIna219Stats()
   if ((int32_t)(nowMs - lastIna219StatsLogMs) < 1000) return;
   
   if (ina219Stats.readCount > 0) {
-    Serial.printf("INA219  stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
+    logPrintf("INA219  stats (1000ms): reads=%lu, min=%lu µs, max=%lu µs, total=%lu µs\n",
       ina219Stats.readCount,
       ina219Stats.minTime,
       ina219Stats.maxTime,
@@ -2398,7 +2398,7 @@ void drawCurrentPage(bool pageChanged)
 /// @brief Scan I2C bus and display results on screen
 void scanI2CBus()
 {
-  Serial.println("\n[SETUP] ========== I2C BUS SCAN ==========");
+  logPrintf("[SETUP] ========== I2C BUS SCAN ==========");
   
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -2417,7 +2417,7 @@ void scanI2CBus()
     
     if (error == 0) {
       addresses[count++] = addr;
-      Serial.printf("[SETUP] Found device at 0x%02X\n", addr);
+      logPrintf("[SETUP] Found device at 0x%02X\n", addr);
       
       // Display on screen (max 14 lines on 320x240 display with text size 2)
       if (count <= 14) {
@@ -2430,14 +2430,14 @@ void scanI2CBus()
   tft.setTextSize(1);
   if (count == 0) {
     tft.println("\nNo devices found!");
-    Serial.println("[SETUP] No I2C devices found!");
+    logPrintf("[SETUP] No I2C devices found!");
   } else {
     tft.printf("\nTotal: %d device(s)", count);
-    Serial.printf("[SETUP] Total devices found: %d\n", count);
+    logPrintf("[SETUP] Total devices found: %d\n", count);
   }
   
   // Map found devices to known sensors
-  Serial.println("\n[SETUP] Device identification:");
+  logPrintf("[SETUP] Device identification:");
   tft.println("\nIdentified:");
   
   for (uint8_t i = 0; i < count; i++) {
@@ -2458,41 +2458,41 @@ void scanI2CBus()
       case 0x77: name = "BME280 (Env)"; break;
     }
     
-    Serial.printf("[SETUP]   0x%02X: %s\n", addr, name);
+    logPrintf("[SETUP]   0x%02X: %s\n", addr, name);
     tft.printf("0x%02X: %s\n", addr, name);
   }
   
-  Serial.println("[SETUP] ========== SCAN COMPLETE ==========\n");
+  logPrintf("[SETUP] ========== SCAN COMPLETE ==========\n");
   delay(3000);  // Show scan results for 3 seconds
 }
 
 void detectSensors()
 {
-  Serial.println("[SETUP] INA219: Probing...");
+  logPrintf("[SETUP] INA219: Probing...");
   available.ina219 = ina219.begin(&Wire);
-  Serial.printf("[SETUP] INA219: %s\n", available.ina219 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] INA219: %s\n", available.ina219 ? "FOUND" : "NOT FOUND");
   
   // FEATURE-SPEC-010: Use SparkFun VEML6075 Library
-  Serial.println("[SETUP] VEML6075: Probing...");
+  logPrintf("[SETUP] VEML6075: Probing...");
   if (veml6075Sensor.begin(Wire) == VEML6075_ERROR_SUCCESS) {
     available.veml6075 = true;
-    Serial.println("[SETUP] VEML6075: FOUND, using SparkFun library");
+    logPrintf("[SETUP] VEML6075: FOUND, using SparkFun library");
   } else {
     available.veml6075 = false;
-    Serial.println("[SETUP] VEML6075: NOT FOUND");
+    logPrintf("[SETUP] VEML6075: NOT FOUND");
   }
   
-  Serial.println("[SETUP] TSL2591: Probing...");
+  logPrintf("[SETUP] TSL2591: Probing...");
   available.tsl2591 = tsl2591.begin();
   if (available.tsl2591) {
     tsl2591.setGain(TSL2591_GAIN_MED);
     tsl2591.setTiming(TSL2591_INTEGRATIONTIME_200MS);
-    Serial.println("[SETUP] TSL2591: FOUND");
+    logPrintf("[SETUP] TSL2591: FOUND");
   } else {
-    Serial.println("[SETUP] TSL2591: NOT FOUND");
+    logPrintf("[SETUP] TSL2591: NOT FOUND");
   }
   
-  Serial.println("[SETUP] Encoder: Probing...");
+  logPrintf("[SETUP] Encoder: Probing...");
   available.encoder = encoder.begin(ENCODER_ADDR);
   if (available.encoder) {
     encoder.pinMode(ENCODER_BUTTON_PIN, INPUT_PULLUP);
@@ -2500,31 +2500,31 @@ void detectSensors()
     encoderLed.begin(ENCODER_ADDR);
     encoderLed.setBrightness(encoderBrightness);
     updateEncoderLed();
-    Serial.println("[SETUP] Encoder: FOUND");
+    logPrintf("[SETUP] Encoder: FOUND");
   } else {
-    Serial.println("[SETUP] Encoder: NOT FOUND");
+    logPrintf("[SETUP] Encoder: NOT FOUND");
   }
   
   // FEATURE-SPEC-010: Use Adafruit VEML6070 Library
-  Serial.println("[SETUP] VEML6070: Probing...");
+  logPrintf("[SETUP] VEML6070: Probing...");
   veml6070Sensor.begin(VEML6070_HALF_T, &Wire);
   Wire.beginTransmission(VEML6070_ADDR_LSB);
   available.veml6070 = Wire.endTransmission() == 0;
-  Serial.printf("[SETUP] VEML6070: %s, using Adafruit library\n", available.veml6070 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] VEML6070: %s, using Adafruit library\n", available.veml6070 ? "FOUND" : "NOT FOUND");
   
-  Serial.println("[SETUP] SI1145: Probing...");
+  logPrintf("[SETUP] SI1145: Probing...");
   available.si1145 = si1145.begin();
-  Serial.printf("[SETUP] SI1145: %s\n", available.si1145 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] SI1145: %s\n", available.si1145 ? "FOUND" : "NOT FOUND");
   
   // FEATURE-SPEC-009: Initialize SCD30 with SparkFun library
-  Serial.println("[SETUP] SCD30: Probing...");
+  logPrintf("[SETUP] SCD30: Probing...");
   available.scd30 = scd30Sensor.begin();
-  Serial.printf("[SETUP] SCD30: %s\n", available.scd30 ? "FOUND" : "NOT FOUND");
+  logPrintf("[SETUP] SCD30: %s\n", available.scd30 ? "FOUND" : "NOT FOUND");
   if (available.scd30) {
     scd30Sensor.beginMeasuring();  // Start continuous measurement
     scd30State.lastAscQuery = 0;    // Will be queried by polling loop after 3+ seconds
     scd30State.pendingAscWrite = false;
-    Serial.println("[SETUP] SCD30: FOUND, using SparkFun library");
+    logPrintf("[SETUP] SCD30: FOUND, using SparkFun library");
   }
   
   available.bme280 = bme280.begin(BME280_ADDR, &Wire);
@@ -2533,21 +2533,21 @@ void detectSensors()
   if (available.gamepad) gamepad.setGPIOInterrupts(BUTTON_MASK, true);
   
   // Probe DS2484 I2C-to-1-Wire adapter at 0x18
-  Serial.println("[SETUP] Probing DS2484 at 0x18...");
+  logPrintf("[SETUP] Probing DS2484 at 0x18...");
   available.ds2484 = ds2484Master.begin(&Wire, DS2484_ADDR);
   if (available.ds2484) {
-    Serial.println("[SETUP] DS2484: FOUND, initializing...");
+    logPrintf("[SETUP] DS2484: FOUND, initializing...");
     initDs2484();  // Initialize DS2484
     ds2484Values.masterPresent = true;
     ds2484Values.lastScanMs = 0;  // Trigger immediate bus scan
     ds2484Values.lastConversionMs = 0;
     
     // Perform initial 1-Wire bus scan to discover sensors
-    Serial.println("[SETUP] Starting initial DS2484 bus scan...");
+    logPrintf("[SETUP] Starting initial DS2484 bus scan...");
     performDs2484Scan();
-    Serial.printf("[SETUP] Initial scan complete: found %d sensor(s)\n", ds2484Values.sensorCount);
+    logPrintf("[SETUP] Initial scan complete: found %d sensor(s)\n", ds2484Values.sensorCount);
   } else {
-    Serial.println("[SETUP] DS2484: NOT FOUND at 0x18");
+    logPrintf("[SETUP] DS2484: NOT FOUND at 0x18");
   }
 }
 
@@ -2584,11 +2584,51 @@ void initializeSensorCaches()
   }
 }
 
+// ============================================================================
+// LOGGING INFRASTRUCTURE (FEATURE-SPEC-012)
+// ============================================================================
+
+void logPrintf(const char* format, ...)
+{
+  // Calculate timestamp from millis() using integer-only arithmetic
+  uint32_t elapsedMs = millis();
+  uint8_t h = (elapsedMs / 3600000) % 24;
+  uint8_t m = (elapsedMs / 60000) % 60;
+  uint8_t s = (elapsedMs / 1000) % 60;
+  uint16_t ms = elapsedMs % 1000;
+  
+  // Format message with timestamp prefix and the user's message
+  char buffer[512];
+  va_list args;
+  va_start(args, format);
+  
+  int len = vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  
+  // Print timestamp + formatted message + newline
+  if (len > 0) {
+    ::Serial.printf("[%02d:%02d:%02d.%03d] %s\n", h, m, s, ms, buffer);
+  } else {
+    ::Serial.printf("[%02d:%02d:%02d.%03d] \n", h, m, s, ms);
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
   delay(100);  // Give serial time to init
-  Serial.println("\n\n[SETUP] ========== BOOT START ==========");
+  
+  // Boot banner with version and build date (FEATURE-SPEC-012)
+  logPrintf("========================================");
+  logPrintf("Sensor Pages Dashboard");
+  logPrintf("Version: %s", VERSION);
+  logPrintf("Build Date: %s", BUILD_DATE);
+  logPrintf("Compiler: arm-none-eabi-g++");
+  logPrintf("ESP32-WROOM-32 Detected");
+  logPrintf("========================================");
+  logPrintf("[BOOT] Starting setup...");
+  
+  logPrintf("[SETUP] ========== BOOT START ==========");
   
   // Initialize diagnostics FIRST
   initDiagnostics();
@@ -2604,19 +2644,19 @@ void setup()
   tft.setRotation(3);
   
   // FEATURE-SPEC-010: Scan I2C bus and display results
-  Serial.println("[SETUP] Scanning I2C bus...");
+  logPrintf("[SETUP] Scanning I2C bus...");
   scanI2CBus();
   
   drawHeader("Sensor Dashboard");
   
-  Serial.println("[SETUP] Detecting sensors...");
+  logPrintf("[SETUP] Detecting sensors...");
   detectSensors();
   
-  Serial.println("[SETUP] Initializing sensor caches...");
+  logPrintf("[SETUP] Initializing sensor caches...");
   initializeSensorCaches();
   
   // PHASE-4: Initialize the Sensor Registry with all 8 working sensors
-  Serial.println("[SETUP] Initializing Sensor Registry...");
+  logPrintf("[SETUP] Initializing Sensor Registry...");
   sensorRegistry.registerSensor(0, &ina219Sensor, "INA219", 0xF800);  // Red
   // sensorRegistry.registerSensor(1, &gamepadSensor, "Gamepad", 0xF81F);  // DISABLED - Magenta
   // sensorRegistry.registerSensor(2, &encoderSensor, "Encoder", 0xFC00);  // DISABLED - Orange
@@ -2632,30 +2672,30 @@ void setup()
   veml6070Sensor_class.setDevice(&veml6070Sensor);  // Pass global device instance to wrapper
   
   // Initialize all sensors
-  Serial.println("[SETUP] Initializing all sensors via registry...");
+  logPrintf("[SETUP] Initializing all sensors via registry...");
   sensorRegistry.initializeAll();
   
-  Serial.println("[SETUP] Performing initial sensor reads...");
+  logPrintf("[SETUP] Performing initial sensor reads...");
   readSensors();
   
   // Start initial DS18B20 conversion if sensors were found
   if (available.ds2484 && ds2484Values.sensorCount > 0) {
-    Serial.printf("[SETUP] Starting initial DS18B20 conversion (%d sensors)...\n", ds2484Values.sensorCount);
+    logPrintf("[SETUP] Starting initial DS18B20 conversion (%d sensors)...\n", ds2484Values.sensorCount);
     startDs18b20Conversion();
     
     // Wait for conversion to complete (750ms + buffer)
-    Serial.println("[SETUP] Waiting 1000ms for initial DS18B20 conversion...");
+    logPrintf("[SETUP] Waiting 1000ms for initial DS18B20 conversion...");
     delay(1000);
     
     // Read the results
-    Serial.println("[SETUP] Reading initial DS18B20 results...");
+    logPrintf("[SETUP] Reading initial DS18B20 results...");
     readDs18b20Results();
   }
   
-  Serial.println("[SETUP] Drawing initial page...");
+  logPrintf("[SETUP] Drawing initial page...");
   drawCurrentPage(true);
   
-  Serial.println("[SETUP] ========== BOOT COMPLETE ==========");
+  logPrintf("[SETUP] ========== BOOT COMPLETE ==========");
 }
 
 void loop()
@@ -2686,6 +2726,7 @@ void loop()
     // Large Display Mode Logic (All Pages) - FEATURE-SPEC-007
     // Button B: Enter mode or cycle forward
     if (bPressed && !lastB) {
+      logPrintf("[INPUT] GAMEPAD Button B: PRESSED");
       if (!largeDisplayMode.active) {
         enterLargeDisplayMode(currentPage);
       } else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
@@ -2698,6 +2739,7 @@ void loop()
     
     // Button X: Toggle ASC (page 4, normal mode) or cycle backward (large display mode)
     if (xPressed && !lastX) {
+      logPrintf("[INPUT] GAMEPAD Button X: PRESSED");
       // FEATURE-SPEC-009: Toggle ASC on Page 4 in normal mode
       if (currentPage == 4 && !largeDisplayMode.active && available.scd30) {
         bool currentAsc = scd30Sensor.getAutoSelfCalibration();
@@ -2713,20 +2755,26 @@ void loop()
     
     // Button Y: Exit mode or navigate to previous page
     if (yPressed && !lastY) {
+      logPrintf("[INPUT] GAMEPAD Button Y: PRESSED");
       if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
         // Exit large display mode
         exitLargeDisplayMode();
       } else {
         // Normal page navigation
+        uint8_t oldPage = currentPage;
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+        logPrintf("[MODE] page change: %d → %d (source: GAMEPAD Button Y)", oldPage, currentPage);
       }
     }
     
     // Button A: Inactive in large display mode, or navigate to next page
     if (aPressed && !lastA) {
+      logPrintf("[INPUT] GAMEPAD Button A: PRESSED");
       if (!largeDisplayMode.active || largeDisplayMode.currentPage != currentPage) {
         // Normal page navigation
+        uint8_t oldPage = currentPage;
         currentPage = (currentPage + 1) % PAGE_COUNT;
+        logPrintf("[MODE] page change: %d → %d (source: GAMEPAD Button A)", oldPage, currentPage);
       }
       // else: Button A is inactive in large display mode (do nothing)
     }
@@ -2747,11 +2795,19 @@ void loop()
     if (!largeDisplayMode.active) {
       if (currentNavigationDelta >= ENCODER_DELTA_THRESHOLD) {
         // Clockwise rotation: next page
+        uint8_t oldPage = currentPage;
         currentPage = (currentPage + 1) % PAGE_COUNT;
+        logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: +%d, CLOCKWISE)", 
+                  lastEncoderNavigationPosition, encoderValues.position, currentNavigationDelta);
+        logPrintf("[MODE] page change: %d → %d (source: ENCODER rotation CW)", oldPage, currentPage);
         lastEncoderNavigationPosition = encoderValues.position;
       } else if (currentNavigationDelta <= -ENCODER_DELTA_THRESHOLD) {
         // Counter-clockwise rotation: previous page
+        uint8_t oldPage = currentPage;
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+        logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: %d, CCW)", 
+                  lastEncoderNavigationPosition, encoderValues.position, currentNavigationDelta);
+        logPrintf("[MODE] page change: %d → %d (source: ENCODER rotation CCW)", oldPage, currentPage);
         lastEncoderNavigationPosition = encoderValues.position;
       }
     }
@@ -2761,11 +2817,15 @@ void loop()
       if (paramCount > 0) {
         if (currentNavigationDelta >= ENCODER_DELTA_THRESHOLD) {
           // Clockwise rotation: next parameter value
+          logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: +%d, CLOCKWISE)", 
+                    lastEncoderNavigationPosition, encoderValues.position, currentNavigationDelta);
           largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex + 1) % paramCount;
           largeDisplayMode.needsFullRedraw = true;
           lastEncoderNavigationPosition = encoderValues.position;
         } else if (currentNavigationDelta <= -ENCODER_DELTA_THRESHOLD) {
           // Counter-clockwise rotation: previous parameter value
+          logPrintf("[INPUT] ENCODER Rotation: position %d → %d (delta: %d, CCW)", 
+                    lastEncoderNavigationPosition, encoderValues.position, currentNavigationDelta);
           largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + paramCount) % paramCount;
           largeDisplayMode.needsFullRedraw = true;
           lastEncoderNavigationPosition = encoderValues.position;
@@ -2777,13 +2837,20 @@ void loop()
     bool encoderPressed = encoderValues.pressed == 0;  // active-low
     if (encoderPressed && !encoderLastPressed) {
       // Rising edge: button just pressed
+      logPrintf("[INPUT] ENCODER Button: PRESSED");
       if (!largeDisplayMode.active) {
         // Enter Large Display Mode for current page
         enterLargeDisplayMode(currentPage);
+        logPrintf("[MODE] Large Display enter (page %d, valueIndex 0)", currentPage);
       } else if (largeDisplayMode.currentPage == currentPage) {
         // Exit Large Display Mode - return to standard view
         exitLargeDisplayMode();
+        logPrintf("[MODE] Large Display exit (returning to page %d)", currentPage);
       }
+    }
+    if (!encoderPressed && encoderLastPressed) {
+      // Falling edge: button just released
+      logPrintf("[INPUT] ENCODER Button: RELEASED");
     }
     encoderLastPressed = encoderPressed;
   }
@@ -2809,7 +2876,7 @@ void loop()
   static uint32_t lastSensorSlotDispatched = 0xFFFFFFFF;
   uint32_t currentSensorSlot = (now / SENSOR_SLOT_INTERVAL_MS) % SLOT_COUNT;
   if (currentSensorSlot != lastSensorSlotDispatched) {
-    // Serial.printf("[LOOP] Slot %lu starting\n", currentSensorSlot);
+    // logPrintf("[LOOP] Slot %lu starting\n", currentSensorSlot);
     rotatedReadSensor(currentSensorSlot);
     lastSensorSlotDispatched = currentSensorSlot;
   }
