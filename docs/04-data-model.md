@@ -734,6 +734,139 @@ uint8_t encoderBrightness = 64;       // 1 byte — LED brightness (0–255, def
 
 **Reboot Behavior:** All reset to zero/false.
 
+### 3.1 Cache Synchronization Pattern (Phase 3a-3h)
+
+**Phase 3a-3h refactoring** introduced sensor wrapper classes that maintain **private caches** of sensor values. A two-level cache architecture provides both encapsulation (wrapper owns authoritative cache) and backward compatibility (global caches for display layer).
+
+#### **Two-Level Cache Architecture**
+
+**Level 1: Wrapper Class Private Cache (Authoritative)**
+
+Each sensor wrapper (Bme280Sensor, Ina219Sensor, etc.) contains a private mutable cache:
+
+```cpp
+class Bme280Sensor : public BaseSensor {
+private:
+  Bme280Values bme280Cache;  // Private cache, owned by wrapper
+  
+public:
+  const Bme280Values& getValues() const {
+    return bme280Cache;       // Read-only access
+  }
+  
+  void update() {
+    // Read hardware via I2C
+    // On success: update bme280Cache with new values
+    // On failure: preserve old values (fail-silent)
+  }
+};
+```
+
+**Key Properties:**
+- Updated only by `update()` method (encapsulated)
+- Accessed only via `getValues() const` (read-only)
+- Stale on I2C failure (old value persists)
+- CRC validation, error handling all internal to wrapper
+
+**Level 2: Global Cache Variables (Secondary)**
+
+Main.cpp maintains global struct instances for backward compatibility:
+
+```cpp
+Bme280Values bme280Values{};   // Global cache, synced from wrapper
+Ina219Values ina219Values{};   // Global cache
+// ... all 8 sensors ...
+EncoderValues encoderValues{}; // Input devices
+GamepadValues gamepadValues{};
+```
+
+**Key Properties:**
+- Read-only after sync (updated once per 500 ms cycle)
+- Used by all page renderers (UI layer)
+- Same in-memory layout as wrapper's private cache
+- Unchanged from pre-refactoring code (backward compatible)
+
+#### **Synchronization Cycle (Main Loop)**
+
+Every 500 ms:
+
+```cpp
+if (millis() - lastSensorReadMs >= SENSOR_REFRESH_MS) {
+  // Step 1: Update all wrapper caches
+  registry.update();  // Calls wrapper.update() for each sensor
+  
+  // Step 2: Sync to global caches
+  if (available.bme280) {
+    bme280Values = bme280Sensor_class.getValues();
+  }
+  if (available.ina219) {
+    ina219Values = ina219Sensor_class.getValues();
+  }
+  // ... repeat for all 8 sensors ...
+  
+  // Step 3: Render display (uses global caches)
+  if (pageChanged) {
+    pageHandlers[currentPage].renderPage(pageChanged);
+  }
+  
+  lastSensorReadMs = millis();
+}
+```
+
+**Flow Diagram:**
+```
+Hardware (I2C) → wrapper.update() → wrapper's private cache
+                                 ↓
+                         wrapper.getValues()
+                                 ↓
+                    bme280Values = <copy>  (global cache sync)
+                                 ↓
+                       page renderer reads bme280Values
+                                 ↓
+                            TFT display
+```
+
+#### **Benefits of Two-Level Architecture**
+
+1. **Encapsulation:** Wrapper hides hardware I2C details, CRC checks, error handling
+2. **Backward Compatibility:** Display layer unchanged; still accesses global caches
+3. **Testability:** Can mock wrapper or global cache independently
+4. **Extensibility:** Adding a new sensor adds one wrapper class + one sync line in main loop
+5. **Fail-Safety:** I2C error on one sensor doesn't affect others; old values persist
+
+#### **Struct Location Changes (Phase 3a-3h)**
+
+All sensor value struct definitions moved from main.cpp to individual sensor header files:
+
+| Value Struct | Old Location | New Location (Phase 3a-3h) |
+|---|---|---|
+| Bme280Values | main.cpp | src/sensors/Bme280Sensor.h, lines 48-56 |
+| Ina219Values | main.cpp | src/sensors/Ina219Sensor.h, lines 47-55 |
+| Scd30Values | main.cpp | src/sensors/Scd30Sensor.h, lines 45-50 |
+| Si1145Values | main.cpp | src/sensors/Si1145Sensor.h, lines 41-46 |
+| Tsl2591Values | main.cpp | src/sensors/Tsl2591Sensor.h | 
+| Veml6070Values | main.cpp | src/sensors/Veml6070Sensor.h, lines 31-36 |
+| Veml6075Values | main.cpp | src/sensors/Veml6075Sensor.h |
+| Ds2484Values | main.cpp | src/sensors/Ds2484Types.h, lines 26-45 |
+| EncoderValues | main.cpp | src/sensors/EncoderSensor.h |
+| GamepadValues | main.cpp | src/sensors/GamepadSensor.h |
+
+**Impact:**
+- Struct definitions now co-located with wrapper classes (single definition principle)
+- Eliminates duplicate type definitions
+- Makes struct lifecycle clear (created at wrapper init, destroyed with wrapper)
+- Requires `#include` of each sensor header to access values
+- Global cache instances still in main.cpp (backward compatible)
+
+#### **Migration Timeline**
+
+- **Phase 3a (First):** BME280, INA219 refactored to wrapper pattern
+- **Phases 3b-3h (Iterative):** All remaining sensors refactored one by one
+- **Phase 4:** Global variables reorganized into 12 logical sections (independent of wrapper pattern)
+- **Phase 5:** Data-driven PageHandler array introduced (independent of wrapper pattern)
+
+**No breaking changes:** Old code using global caches continues to work; gradual migration to wrapper classes possible.
+
 ---
 
 ## 4. Data Initialization

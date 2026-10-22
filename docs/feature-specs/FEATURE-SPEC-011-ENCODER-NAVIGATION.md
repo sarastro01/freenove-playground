@@ -90,9 +90,10 @@ This feature enables users to navigate the sensor dashboard display and control 
 
 | Rule | Description | Enforcement |
 |------|-------------|------------|
-| VR-ENC-BTN-001 | Encoder button press detected only on state change | Rising edge detection via `lastEncoderPressed` |
+| VR-ENC-BTN-001 | Encoder button press detected only on state change | Rising edge detection via `encoderLastPressed` |
 | VR-ENC-BTN-002 | No mode transition occurs if already in target mode | Guard condition before state change |
-| VR-ENC-BTN-003 | Press event cleared after processing | Reset debounce flag after transition |
+| VR-ENC-BTN-003 | Large Display Mode entry only allowed if sensor data available | Check `available[]` struct for current page before mode transition |
+| VR-ENC-BTN-004 | Press event cleared after processing | Reset debounce flag after transition |
 
 ### 2.3 Mode Transition Validity
 
@@ -482,51 +483,29 @@ brightness = 128 + (valueIndex / paramCount[currentPage]) * 127
 
 **File: `src/main.cpp`**
 
-1. **Global state additions (~line 60):**
+1. **Global state additions (~line 190-193):**
    ```cpp
-   bool lastEncoderPressed = false;
-   int32_t lastEncoderPosition = 0;
-   const int ENCODER_DELTA_THRESHOLD = 1;  // Steps per transition
+   bool encoderLastPressed = false;      // Debounce flag for button press
+   int32_t encoderLastPosition = 0;      // Position tracking for polling layer
+   // Note: ENCODER_DELTA_THRESHOLD is NOT global; see item 3 below
    ```
 
 2. **pollEncoder() function (~line 1270):**
    - Already tracks `encoderValues.position` and `encoderValues.pressed`
    - No changes needed to polling layer
 
-3. **handleButtons() function (~line 2556-2563) - MAJOR CHANGES:**
+3. **handleButtons() function (~line 2700-2777) - MAJOR CHANGES:**
+   
+   **Local constants within handleButtons():**
+   ```cpp
+   const int ENCODER_DELTA_THRESHOLD = 1;  // Steps per transition (LOCAL SCOPE)
+   static int32_t lastEncoderNavigationPosition = 0;  // Static local, not global
+   ```
    
    **New encoder delta calculation logic:**
    ```cpp
-   // Calculate encoder position delta
-   int32_t encoderDelta = encoderValues.position - lastEncoderPosition;
-   lastEncoderPosition = encoderValues.position;
-   
-   // Standard mode: page navigation via delta
-   if (!largeDisplayMode.active) {
-       if (encoderDelta >= ENCODER_DELTA_THRESHOLD) {
-           currentPage = (currentPage + 1) % 10;
-           needsPageRedraw = true;
-       } else if (encoderDelta <= -ENCODER_DELTA_THRESHOLD) {
-           currentPage = (currentPage - 1 + 10) % 10;
-           needsPageRedraw = true;
-       }
-   } 
-   // Large Display mode: value scrolling via delta
-   else {
-       uint8_t paramCount = getParameterCount(currentPage);
-       if (encoderDelta >= ENCODER_DELTA_THRESHOLD) {
-           largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex + 1) % paramCount;
-           largeDisplayMode.needsFullRedraw = true;
-       } else if (encoderDelta <= -ENCODER_DELTA_THRESHOLD) {
-           largeDisplayMode.valueIndex = (largeDisplayMode.valueIndex - 1 + paramCount) % paramCount;
-           largeDisplayMode.needsFullRedraw = true;
-       }
-   }
-   ```
-   
-   **Encoder button press debounce (rising edge detection):**
-   ```cpp
-   bool encoderPressed = encoderValues.pressed == 0;  // Active LOW
+   // Calculate encoder position delta for navigation
+   int32_t currentNavigationDelta = encoderValues.position - lastEncoderNavigationPosition;
    if (encoderPressed && !lastEncoderPressed) {
        // Rising edge: button just pressed
        if (!largeDisplayMode.active) {

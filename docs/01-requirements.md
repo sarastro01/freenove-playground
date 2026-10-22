@@ -579,50 +579,61 @@ The system shall implement large display rendering via single unified renderer f
 ### FR-020: Encoder Navigation — Standard Mode Page Switching — **NEW (FEATURE-SPEC-011)**
 
 **Requirement:**  
-The system shall enable page navigation using rotary encoder rotation as an alternative to gamepad buttons.
+The system shall enable page navigation using rotary encoder rotation as an alternative to gamepad buttons, with visual LED feedback.
 
 **Details:**
 - **Navigation input:** Encoder position delta (rotation per cycle)
-- **Delta calculation:** `encoderDelta = encoderValues.position - lastEncoderPosition`
+- **Delta calculation:** `encoderDelta = encoderValues.position - encoderLastPosition`
+  - `encoderLastPosition`: Global variable tracking position at polling layer (updated every 10 ms cycle)
+  - `lastEncoderNavigationPosition`: Static local variable in navigation handler for preventing reprocessing
+  - See FEATURE-SPEC-011 §5.1 for architectural details on dual tracking
 - **Page increment:** When `encoderDelta >= ENCODER_DELTA_THRESHOLD` (default 1): `currentPage = (currentPage + 1) % 10`
 - **Page decrement:** When `encoderDelta <= -ENCODER_DELTA_THRESHOLD`: `currentPage = (currentPage - 1 + 10) % 10`
 - **Threshold:** Minimum 1 encoder position unit per cycle = ±1 page step (matches gamepad button feel)
 - **Circular wrapping:** Pages cycle 0→9→0 as user rotates encoder
 - **Redundancy:** Encoder rotation and gamepad Y/A buttons both active simultaneously (no mutual exclusion)
-- **Performance:** Navigation processed every 20 ms (encoder read frequency); display update subject to rate limiter
+- **LED feedback:** Encoder LED displays page-specific color (10-color map: Red → Orange → Yellow → Green → Cyan → Blue → Purple → White → Pink → Sky Blue for pages 0–9)
+  - See BR-ENC-NAV-003 for LED color mapping details
+  - LED brightness: Fixed at 100% in standard mode
+- **Performance:** Navigation processed every 10 ms (encoder read frequency); display update subject to rate limiter
 
 **Evidence:**
 - FEATURE-SPEC-011 §12.1: Delta-based stepping confirmed as decision
 - Implementation location: `handleButtons()` function in src/main.cpp
-- Global state tracking: `lastEncoderPosition` variable for delta calculation
+- Global state tracking: `encoderLastPosition` (polling layer), `lastEncoderNavigationPosition` (navigation layer)
 
 ---
 
 ### FR-021: Encoder Navigation — Large Display Mode Value Scrolling & Mode Toggle — **NEW (FEATURE-SPEC-011)**
 
 **Requirement:**  
-The system shall enable Large Display Mode entry/exit via encoder button press, and value scrolling via encoder rotation.
+The system shall enable Large Display Mode entry/exit via encoder button press, and value scrolling via encoder rotation, with adaptive LED brightness feedback.
 
 **Details:**
 - **Mode entry:** Encoder button press (rising edge: NOT pressed → pressed) while in standard mode
   - Action: Activate `largeDisplayMode.active = true`, set `largeDisplayMode.valueIndex = 0`
   - Display: Update to large display view for current page
+  - Validation: Only allowed if sensor data available for current page (see VR-ENC-BT-003)
 - **Mode exit:** Encoder button press while in large display mode
   - Action: Deactivate `largeDisplayMode.active = false`, return to standard page view
   - Display: Restore standard page layout
 - **Value scrolling in Large Display Mode:** Encoder rotation delta used for value navigation
   - Forward: `encoderDelta >= ENCODER_DELTA_THRESHOLD` → `valueIndex = (valueIndex + 1) % paramCount[page]`
   - Backward: `encoderDelta <= -ENCODER_DELTA_THRESHOLD` → `valueIndex = (valueIndex - 1 + paramCount[page]) % paramCount[page]`
-- **Button debounce:** Rising-edge detection with `lastEncoderPressed` flag (no-repeat behavior)
+- **Button debounce:** Rising-edge detection with `encoderLastPressed` flag (no-repeat behavior)
   - Single press = one transition
   - Held button ignored after first transition
+- **LED feedback:** Encoder LED provides adaptive brightness feedback
+  - Standard mode: LED color reflects page (BR-ENC-NAV-003), brightness fixed at 100%
+  - Large Display mode: LED color unchanged (page color), brightness scales from 50% to 100% based on valueIndex position
+  - See BR-ENC-NAV-004 for brightness calculation details
 - **Redundancy:** Encoder button and gamepad B/X buttons both active (no mutual exclusion)
-- **Performance:** Button press detected every 20 ms (encoder read frequency); mode transition completes within single update cycle
+- **Performance:** Button press detected every 10 ms (encoder read frequency); mode transition completes within single update cycle
 
 **Evidence:**
 - FEATURE-SPEC-011 §12.2: No-repeat button behavior confirmed
 - Implementation location: `handleButtons()` function in src/main.cpp
-- Global state tracking: `lastEncoderPressed` flag for debounce, `largeDisplayMode` struct for state
+- Global state tracking: `encoderLastPressed` flag for debounce, `largeDisplayMode` struct for state
 - Relatedness to FR-016/FR-017: Reuses existing Large Display Mode infrastructure
 
 ---

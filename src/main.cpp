@@ -11,9 +11,14 @@
 #include <OneWire.h>
 #include <SparkFun_SCD30_Arduino_Library.h>  // FEATURE-SPEC-009: Upgraded to SparkFun library
 #include <SparkFun_VEML6075_Arduino_Library.h>  // FEATURE-SPEC-010: Upgraded to SparkFun library
-#include <Adafruit_VEML6070.h>  // FEATURE-SPEC-010: Upgraded to Adafruit library
+// PHASE-4: Removed direct Adafruit_VEML6070.h include to avoid redefinition (included via sensors.h)
+// #include <Adafruit_VEML6070.h>  // FEATURE-SPEC-010: Upgraded to Adafruit library
 #include <math.h>
 #include <string.h>
+
+// PHASE-4: Include sensor registry and all sensor classes
+#include "sensors/sensors.h"
+#include "diagnostics.h"
 
 #define SDA_PIN 32
 #define SCL_PIN 25
@@ -55,20 +60,74 @@
 #define SCD30_CMD_GET_ASC 0x5301
 #define SCD30_CMD_SET_ASC 0x53DA
 
-constexpr uint8_t PAGE_COUNT = 10;  // Updated: Added DS2484 page
+// ============================================================================
+// PHASE 1: CONFIGURATION SECTION
+// ============================================================================
+// Central collection of all constants, thresholds, and tuning parameters
+// Organized by functional area for easy location and modification
+
+// Page and Display Configuration
+constexpr uint8_t PAGE_COUNT = 10;
+constexpr uint8_t CONFIG_PAGE_TITLE_MAX_LEN = 20;
+
+// Timing Configuration (milliseconds)
 constexpr uint32_t SENSOR_REFRESH_MS = 500;
-constexpr uint32_t SLOT_COUNT = 10;  // 10 slots × 200ms = 2000ms cycle (1600ms gap between DS18B20 start→check)
-constexpr uint32_t INPUT_REFRESH_MS = 10;    // 100 Hz for responsive buttons
+constexpr uint32_t INPUT_REFRESH_MS = 10;        // 100 Hz for responsive buttons
+constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;
+constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;  // 200 ms per slot (10 slots = 2000 ms cycle)
+constexpr uint32_t SLOT_COUNT = 10;
+
+// Encoder Configuration
+constexpr int ENCODER_DELTA_THRESHOLD = 1;
+constexpr uint8_t ENCODER_LED_DEFAULT_BRIGHTNESS = 255;
+constexpr uint8_t ENCODER_LED_LARGE_DISPLAY_MIN = 128;   // 50% brightness
+constexpr uint8_t ENCODER_LED_LARGE_DISPLAY_MAX = 255;   // 100% brightness
+
+// Sensor Configuration
+constexpr uint32_t TSL2591_INTEGRATION_TIME_DEFAULT_MS = 200;
+constexpr uint32_t DS18B20_CONVERSION_TIME_DEFAULT_MS = 750;
+constexpr uint8_t DS18B20_ERROR_THRESHOLD = 3;    // Consecutive errors before sensor disabled
+
+// Button Configuration
 constexpr uint32_t BUTTON_MASK = (1UL << GAMEPAD_BUTTON_X) | (1UL << GAMEPAD_BUTTON_Y) |
                                   (1UL << GAMEPAD_BUTTON_A) | (1UL << GAMEPAD_BUTTON_B) |
                                   (1UL << GAMEPAD_BUTTON_SELECT) | (1UL << GAMEPAD_BUTTON_START);
 
+// Display Refresh Rate Limiting
+constexpr uint32_t LARGE_DISPLAY_REFRESH_INTERVAL_MS = 200;  // Max 5 Hz
+
+// Statistics Reporting
+constexpr bool ENABLE_STATS_REPORTING_DEFAULT = true;
+
+// ============================================================================
+// Page Title Lookup Table (Eliminates String Duplication)
+// ============================================================================
+const char* const PAGE_TITLES[PAGE_COUNT] = {
+  "BME280",      // Page 0
+  "Gamepad",     // Page 1
+  "INA219",      // Page 2
+  "Encoder",     // Page 3
+  "SCD30",       // Page 4
+  "SI1145",      // Page 5
+  "TSL2591",     // Page 6
+  "VEML6070",    // Page 7
+  "VEML6075",    // Page 8
+  "DS2484"       // Page 9
+};
+
+// ============================================================================
+// SECTION 1: HARDWARE DISPLAY
+// ============================================================================
 // Display Configuration: FNK0114N 3.5" TFT with ILI9341 controller
 // Physical Resolution: 320×480 pixels
 // Display Mode: LANDSCAPE (rotation=3 via User_Setup.h)
 // Effective Coordinate System: x=0-480 (horizontal), y=0-320 (vertical)
 // Header: y=0-38, Content Area: y=40-320
 TFT_eSPI tft = TFT_eSPI(320, 480);
+
+// ============================================================================
+// SECTION 2: HARDWARE DEVICES (Adafruit Library Instances)
+// ============================================================================
 Adafruit_INA219 ina219(0x40);
 Adafruit_TSL2591 tsl2591(2591);
 Adafruit_SI1145 si1145;
@@ -76,15 +135,29 @@ Adafruit_BME280 bme280;
 Adafruit_seesaw gamepad;
 Adafruit_seesaw encoder;
 seesaw_NeoPixel encoderLed(1, ENCODER_NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800, &Wire);
-SCD30 scd30Sensor;  // FEATURE-SPEC-009: SparkFun SCD30 Library instance
+SCD30 scd30Sensor;                           // SparkFun SCD30 library instance
+VEML6075 veml6075Sensor;                     // SparkFun VEML6075 library instance
+Adafruit_VEML6070 veml6070Sensor;            // Adafruit VEML6070 library instance
+Adafruit_DS248x ds2484Master;                // DS2484 I2C-to-1-Wire adapter
 
-// FEATURE-SPEC-010: UV Sensors upgraded to libraries
-VEML6075 veml6075Sensor;  // SparkFun VEML6075 instance
-Adafruit_VEML6070 veml6070Sensor;  // Adafruit VEML6070 instance
+// ============================================================================
+// SECTION 3: SENSOR WRAPPERS & REGISTRY
+// ============================================================================
+SensorRegistry sensorRegistry;               // Registry manages all 8 sensor wrappers polymorphically
+DiagnosticStats diagStats = {0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0};
 
-// DS2484 I2C-to-1-Wire adapter via Adafruit library
-Adafruit_DS248x ds2484Master;
+Ina219Sensor ina219Sensor;
+Bme280Sensor bme280Sensor;
+Si1145Sensor si1145Sensor;
+Tsl2591Sensor tsl2591Sensor;
+Veml6075Sensor veml6075Sensor_new;
+Veml6070Sensor veml6070Sensor_class;
+Scd30Sensor scd30Sensor_class;
+Ds2484Sensor ds2484Sensor;
 
+// ============================================================================
+// SECTION 4: SENSOR STATUS & AVAILABILITY
+// ============================================================================
 struct SensorStatus {
   bool ina219;
   bool veml6075;
@@ -95,138 +168,27 @@ struct SensorStatus {
   bool scd30;
   bool bme280;
   bool gamepad;
-  bool ds2484;      // DS2484 I2C-to-1-Wire adapter detected
+  bool ds2484;
 };
 SensorStatus available{};
 
-struct Ina219Values { float shunt; float bus; float load; float current; float power; float chargeMah; bool initialized; uint32_t lastSampleUs; uint32_t startTimeUs; };
-struct Veml6075Values { uint16_t uva; uint16_t uvb; uint16_t comp1; uint16_t comp2; float uvaComp; float uvbComp; float index; };
-struct Veml6070Values { uint16_t raw; uint8_t lsb; uint8_t msb; };
-struct Scd30Values { float co2; float temp; float humidity; };
-struct Scd30State {
-  uint32_t lastAscQuery;    // Timestamp of last ASC status query (ms)
-  bool pendingAscWrite;     // Whether an ASC toggle is in-flight
-};
-
-struct EncoderValues { int32_t position; int32_t delta; bool pressed; uint32_t presses; uint8_t brightness; const char *color; };
-struct GamepadValues { int x; int y; uint32_t buttons; uint8_t eventCount; uint8_t lastEvent; bool hasEvent; };
-
-// 1-Wire temperature sensor struct (single sensor on DS2484)
-struct Ds18b20Sensor {
-  uint8_t address[8];      // 8-byte ROM-ID
-  uint8_t familyCode;      // First byte of ROM-ID (0x28, 0x22, 0x10, etc.)
-  float temperature;       // Latest temperature reading (°C)
-  uint32_t lastReadMs;     // Timestamp of last read
-  bool available;          // Online/offline status
-  uint8_t errorCount;      // Error counter (0-3, then offline)
-};
-
-// DS2484 I2C-to-1-Wire adapter struct
-struct Ds2484Values {
-  bool masterPresent;           // DS2484 adapter detected via I2C probe
-  uint8_t sensorCount;          // Number of discovered sensors (0-3)
-  Ds18b20Sensor sensors[3];     // Array of up to 3 sensors
-  uint32_t lastScanMs;          // Timestamp of last bus scan (60s interval)
-  uint32_t lastConversionMs;    // Timestamp of last temperature conversion (3s interval)
-};
-
-// BME280 climate sensor cache struct (FEATURE-SPEC-005)
-struct Bme280Values {
-  float temperature;      // °C
-  float humidity;         // %RH
-  float pressure;         // hPa
-  float altitude;         // m
-  float dewPoint;         // °C
-};
-
-// TSL2591 light sensor cache struct (FEATURE-SPEC-005)
-struct Tsl2591Values {
-  uint32_t fullSpectrum;       // Full spectrum raw (16-bit CHAN0)
-  uint32_t infrared;           // Infrared raw (16-bit CHAN1)
-  uint32_t visible;            // Visible light (calculated)
-  float lux;                   // Illuminance in lux
-  uint16_t gain;               // Sensor gain setting
-  uint16_t integrationTime;    // Integration time in ms
-};
-
-// SI1145 multi-spectrum sensor cache struct (FEATURE-SPEC-005)
-struct Si1145Values {
-  uint16_t visible;       // Visible light raw (16-bit)
-  uint16_t infrared;      // Infrared raw (16-bit)
-  uint16_t uv;            // UV raw (register 0x2C)
-  float uvIndex;          // UV index (calculated: uv / 100.0f)
-};
+// ============================================================================
+// SECTION 5: SENSOR DATA CACHES (Global)
+// ============================================================================
+// Struct definitions moved to sensor headers; included via sensors.h
+// PHASE 3a (INA219), 3b (BME280), 3c (SI1145), 3d (TSL2591), 3e (VEML6075), 3f (VEML6070), 3g (SCD30)
+#include "sensors/Ds2484Types.h"
 
 Ina219Values ina219Values{};
+Bme280Values bme280Values{};
+Si1145Values si1145Values{};
+Tsl2591Values tsl2591Values{};
 Veml6075Values veml6075Values{};
 Veml6070Values veml6070Values{};
 Scd30Values scd30Values{};
-Scd30State scd30State{};
-Bme280Values bme280Values{};       // BME280 cache
-Tsl2591Values tsl2591Values{};     // TSL2591 cache
-Si1145Values si1145Values{};       // SI1145 cache
-EncoderValues encoderValues{};
-GamepadValues gamepadValues{};
-Ds2484Values ds2484Values{};  // DS2484 1-Wire adapter and sensors
-uint32_t fwVersion = 0;
-uint32_t optionsMask = 0;
-float seesawTemperature = 0.0f;
-uint8_t currentPage = 2;  // Start with INA219 page (Page 2)
-uint8_t lastPage = 255;
+Ds2484Values ds2484Values{};
 
-// FEATURE-SPEC-007: Universal Large Display Mode (All Pages)
-struct {
-  bool active;              // Large display mode currently active
-  uint8_t currentPage;      // Page index where mode was entered (0-9)
-  uint8_t valueIndex;       // Current value being displayed (0 to pageValueCount-1)
-  bool needsFullRedraw;     // Redraw entire screen (not just incremental update)
-  String lastDisplayedValue; // Track last displayed value to detect changes
-} largeDisplayMode = {false, 0, 0, false, ""};
-
-int32_t encoderLastPosition = 0;
-uint32_t encoderPressCount = 0;
-uint32_t encoderPressedSince = 0;
-bool encoderLastPressed = false;
-uint8_t encoderColorIndex = 0;
-uint8_t encoderBrightness = 64;
-const uint32_t encoderColors[] = {
-  seesaw_NeoPixel::Color(0, 96, 255), seesaw_NeoPixel::Color(0, 255, 32),
-  seesaw_NeoPixel::Color(255, 48, 0), seesaw_NeoPixel::Color(180, 0, 255)
-};
-const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
-
-// ============================================================================
-// FEATURE-SPEC-006: Non-Blocking Rotated Sensor Architecture
-// ============================================================================
-
-// Configuration constants (FEATURE-SPEC-006)
-constexpr uint32_t SENSOR_SLOT_INTERVAL_MS = 200;    // Immutable: 200 ms per slot
-constexpr uint32_t INPUT_STATS_INTERVAL_MS = 1000;   // Immutable: 1 second aggregation
-static uint32_t TSL2591_INTEGRATION_TIME_MS = 200;    // Adjustable: typical 200 ms
-static uint32_t DS18B20_CONVERSION_TIME_MS = 750;     // Adjustable: 12-bit precision (750 ms)
-
-// Enable/disable statistics reporting (compile-time flag)
-#define ENABLE_STATS_REPORTING 1  // 1 = enabled (default), 0 = disabled
-
-// State machines for asynchronous sensor reads (FEATURE-SPEC-006)
-enum class Tsl2591State {
-  IDLE,       // 0: Not measuring; ready to start
-  MEASURING   // 1: Measurement in progress (ADC integrating)
-};
-static Tsl2591State tsl2591State = Tsl2591State::IDLE;
-static uint32_t tsl2591MeasureStartMs = 0;  // Measurement start timestamp
-
-enum class Ds18b20State {
-  IDLE,       // 0: Not converting; ready to start
-  CONVERTING  // 1: Conversion in progress (1-Wire measuring)
-};
-static Ds18b20State ds18b20State = Ds18b20State::IDLE;
-static uint32_t ds18b20ConvertStartMs = 0;  // Conversion start timestamp
-
-// Track current sensor slot for rotation dispatch (FEATURE-SPEC-006)
-static uint32_t lastSensorSlot = 0xFFFFFFFF;  // Previous slot number (init to invalid)
-
-// Cached values for display refresh optimization (FEATURE-SPEC-006)
+// Change detection caches for display refresh optimization
 static Ina219Values lastIna219Values{};
 static Bme280Values lastBme280Values{};
 static Tsl2591Values lastTsl2591Values{};
@@ -235,39 +197,119 @@ static Veml6075Values lastVeml6075Values{};
 static Veml6070Values lastVeml6070Values{};
 static Scd30Values lastScd30Values{};
 static Ds2484Values lastDs2484Values{};
-static GamepadValues lastGamepadValues{};
-static EncoderValues lastEncoderValues{};
-static uint32_t lastTimerSeconds = 0xFFFFFFFF;
-static uint32_t nextLargeDisplayRefreshMs = 0;  // Rate limiting: max 5 Hz (200ms interval)
 
-// Statistics structures (optional, when ENABLE_STATS_REPORTING = 1)
-#if ENABLE_STATS_REPORTING
+// ============================================================================
+// SECTION 6: DISPLAY & UI STATE
+// ============================================================================
+uint8_t currentPage = 2;                     // Start with INA219 page (Page 2)
+uint8_t lastPage = 255;
+uint32_t nextLargeDisplayRefreshMs = 0;      // Rate limiting: max 5 Hz (200ms interval)
+
+struct {
+  bool active;                               // Large display mode currently active
+  uint8_t currentPage;                       // Page index where mode was entered (0-9)
+  uint8_t valueIndex;                        // Current value being displayed (0 to pageValueCount-1)
+  bool needsFullRedraw;                      // Redraw entire screen (not just incremental update)
+  String lastDisplayedValue;                 // Track last displayed value to detect changes
+} largeDisplayMode = {false, 0, 0, false, ""};
+
+static uint32_t lastTimerSeconds = 0xFFFFFFFF;
+
+// ============================================================================
+// SECTION 7: INPUT DEVICE STATE - ENCODER
+// ============================================================================
+struct EncoderValues { 
+  int32_t position; int32_t delta; bool pressed; 
+  uint32_t presses; uint8_t brightness; const char *color; 
+};
+EncoderValues encoderValues{};
+static EncoderValues lastEncoderValues{};
+
+int32_t encoderLastPosition = 0;
+uint32_t encoderPressCount = 0;
+uint32_t encoderPressedSince = 0;
+bool encoderLastPressed = false;
+uint8_t encoderColorIndex = 0;
+uint8_t encoderBrightness = 64;
+
+const uint32_t encoderColors[] = {
+  seesaw_NeoPixel::Color(0, 96, 255), seesaw_NeoPixel::Color(0, 255, 32),
+  seesaw_NeoPixel::Color(255, 48, 0), seesaw_NeoPixel::Color(180, 0, 255)
+};
+const char *const encoderColorNames[] = {"blue", "green", "red", "purple"};
+
+// ============================================================================
+// SECTION 8: INPUT DEVICE STATE - GAMEPAD
+// ============================================================================
+struct GamepadValues { 
+  int x; int y; uint32_t buttons; 
+  uint8_t eventCount; uint8_t lastEvent; bool hasEvent; 
+};
+GamepadValues gamepadValues{};
+static GamepadValues lastGamepadValues{};
+
+// ============================================================================
+// SECTION 9: SCD30 STATE MACHINE (ASC - Auto Self Calibration)
+// ============================================================================
+struct Scd30State {
+  uint32_t lastAscQuery;                     // Timestamp of last ASC status query (ms)
+  bool pendingAscWrite;                      // Whether an ASC toggle is in-flight
+};
+Scd30State scd30State{};
+
+// ============================================================================
+// SECTION 10: ASYNC SENSOR STATE MACHINES
+// ============================================================================
+enum class Tsl2591State { IDLE, MEASURING };
+static Tsl2591State tsl2591State = Tsl2591State::IDLE;
+static uint32_t tsl2591MeasureStartMs = 0;
+
+enum class Ds18b20State { IDLE, CONVERTING };
+static Ds18b20State ds18b20State = Ds18b20State::IDLE;
+static uint32_t ds18b20ConvertStartMs = 0;
+
+// Track current sensor slot for rotation dispatch
+static uint32_t lastSensorSlot = 0xFFFFFFFF;
+
+// ============================================================================
+// SECTION 11: CONFIGURATION & TUNING
+// ============================================================================
+static uint32_t TSL2591_INTEGRATION_TIME_MS = TSL2591_INTEGRATION_TIME_DEFAULT_MS;
+static uint32_t DS18B20_CONVERSION_TIME_MS = DS18B20_CONVERSION_TIME_DEFAULT_MS;
+
+uint32_t fwVersion = 0;
+uint32_t optionsMask = 0;
+float seesawTemperature = 0.0f;
+
+// ============================================================================
+// SECTION 12: STATISTICS & MONITORING
+// ============================================================================
 struct SensorReadStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint16_t readCount; // Number of reads in this interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint16_t readCount;
 };
 
 struct GamepadStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 struct EncoderStats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 struct Ina219Stats {
-  uint32_t minTime;   // Minimum read time (µs)
-  uint32_t maxTime;   // Maximum read time (µs)
-  uint32_t totalTime; // Cumulative time (µs)
-  uint32_t readCount; // Number of reads in this 1-second interval
+  uint32_t minTime;
+  uint32_t maxTime;
+  uint32_t totalTime;
+  uint32_t readCount;
 };
 
 static SensorReadStats bme280Stats, tsl2591Stats, si1145Stats, veml6075Stats, veml6070Stats, scd30Stats, ds18b20Stats;
@@ -275,10 +317,10 @@ static GamepadStats gamepadStats{};
 static EncoderStats encoderStats{};
 static Ina219Stats ina219Stats{};
 static uint32_t lastStatsUpdateMs = 0;
-static uint32_t lastGamepadStatsLogMs = 0;  // For 1-second gamepad stats reporting
-static uint32_t lastEncoderStatsLogMs = 0;  // For 1-second encoder stats reporting
-static uint32_t lastIna219StatsLogMs = 0;   // For 1-second INA219 stats reporting
-#endif
+static uint32_t lastGamepadStatsLogMs = 0;
+static uint32_t lastEncoderStatsLogMs = 0;
+static uint32_t lastIna219StatsLogMs = 0;
+
 
 // ============================================================================
 // FEATURE-SPEC-008: CENTRAL PARAMETER TRIPLE DEFINITIONS
@@ -389,6 +431,43 @@ const ParameterTriple veml6075_params[] = {
 const uint8_t VEML6075_PARAM_COUNT = 6;
 
 // ============================================================================
+// FORWARD DECLARATIONS - Page Handler Functions (for PageHandler array)
+// ============================================================================
+void pageBme280();
+void pageGamepad();
+void pageIna219();
+void pageEncoder();
+void pageScd30(bool pageChanged);
+void pageSi1145();
+void pageTsl2591();
+void pageVeml6070();
+void pageVeml6075();
+void pageDs2484();
+
+// ============================================================================
+// PHASE 5: PAGE HANDLER ARRAY (Data-Driven Page Dispatch)
+// ============================================================================
+struct PageHandler {
+  const char* name;                  // Page title (e.g., "BME280")
+  void (*renderPage)(bool changed);  // Function pointer to page render function
+  uint16_t color;                    // LED indicator color for this page
+};
+
+// Array maps page index (0-9) to handler (replaces switch statement)
+const PageHandler pageHandlers[PAGE_COUNT] = {
+  {"BME280",   [](bool changed) { pageBme280(); }, 0x07E0},      // Page 0: Green
+  {"Gamepad",  [](bool changed) { pageGamepad(); }, 0xF81F},     // Page 1: Magenta
+  {"INA219",   [](bool changed) { pageIna219(); }, 0xF800},      // Page 2: Red
+  {"Encoder",  [](bool changed) { pageEncoder(); }, 0xFC00},     // Page 3: Orange
+  {"SCD30",    [](bool changed) { pageScd30(changed); }, 0x0810},// Page 4: Blue
+  {"SI1145",   [](bool changed) { pageSi1145(); }, 0xFFE0},      // Page 5: Yellow
+  {"TSL2591",  [](bool changed) { pageTsl2591(); }, 0x07FF},     // Page 6: Cyan
+  {"VEML6070", [](bool changed) { pageVeml6070(); }, 0xFC00},    // Page 7: Orange
+  {"VEML6075", [](bool changed) { pageVeml6075(); }, 0xF81F},    // Page 8: Magenta
+  {"DS2484",   [](bool changed) { pageDs2484(); }, 0xFBE0}       // Page 9: Light Gray
+};
+
+// ============================================================================
 // FORWARD DECLARATIONS - Required for Value Getters to use helper functions
 // ============================================================================
 String formatRuntime(uint32_t elapsedUs);
@@ -431,15 +510,15 @@ String ina219_getValue(uint8_t index) {
   if (index >= INA219_PARAM_COUNT || !available.ina219) return "";
   switch (index) {
     case 0: {  // Runtime
-      const uint32_t runtimeUs = micros() - ina219Values.startTimeUs;
+      const uint32_t runtimeUs = micros() - ina219Sensor.getValues().startTimeUs;
       return formatRuntime(runtimeUs);
     }
-    case 1: return String(ina219Values.load, 3);
-    case 2: return String(ina219Values.bus, 3);
-    case 3: return String(ina219Values.current, 1);
-    case 4: return String(ina219Values.chargeMah, 3);
-    case 5: return String(ina219Values.shunt, 2);
-    case 6: return String((uint16_t)ina219Values.power);
+    case 1: return String(ina219Sensor.getValues().load, 3);
+    case 2: return String(ina219Sensor.getValues().bus, 3);
+    case 3: return String(ina219Sensor.getValues().current, 1);
+    case 4: return String(ina219Sensor.getValues().chargeMah, 3);
+    case 5: return String(ina219Sensor.getValues().shunt, 2);
+    case 6: return String((uint16_t)ina219Sensor.getValues().power);
     default: return "";
   }
 }
@@ -513,8 +592,80 @@ String veml6075_getValue(uint8_t index) {
   }
 }
 
-// Forward declarations
+// ============================================================================
+// PHASE 2: HELPER FUNCTIONS & FORWARD DECLARATIONS
+// ============================================================================
+// Note: Forward declarations placed BEFORE helper functions that use them
+
+// Forward declarations needed by helper functions
+void drawCurrentPage(bool pageChanged = false);
+uint8_t getPageValueCount(uint8_t pageIndex);
 String formatRuntime(uint32_t elapsedUs);
+
+// ============================================================================
+// PHASE 2: HELPER FUNCTIONS
+// ============================================================================
+// Extracted functions to reduce code duplication and improve readability
+
+/// @brief Check if sensor on the given page is available
+/// Eliminates 2+ duplicate switch statements throughout the codebase
+/// (FEATURE-SPEC-011: Large Display Mode entry validation)
+bool isSensorAvailable(uint8_t pageIndex) {
+  switch (pageIndex) {
+    case 0: return available.bme280;
+    case 1: return available.gamepad;
+    case 2: return available.ina219;
+    case 3: return available.encoder;
+    case 4: return available.scd30;
+    case 5: return available.si1145;
+    case 6: return available.tsl2591;
+    case 7: return available.veml6070;
+    case 8: return available.veml6075;
+    case 9: return available.ds2484;
+    default: return false;
+  }
+}
+
+/// @brief Get the title for a page by index
+/// Replaces repeated string literals (11 instances in original code)
+const char* getPageTitle(uint8_t pageIndex) {
+  if (pageIndex < PAGE_COUNT) {
+    return PAGE_TITLES[pageIndex];
+  }
+  return "";
+}
+
+/// @brief Check if a specific gamepad button is currently pressed
+/// Helper to reduce verbosity of button state checking
+bool isGamepadButtonPressed(uint8_t buttonMask, uint32_t currentButtons, uint32_t lastButtons) {
+  const bool currentPressed = !(currentButtons & (1UL << buttonMask));
+  const bool lastPressed = !(lastButtons & (1UL << buttonMask));
+  return currentPressed && !lastPressed;  // Rising edge detection
+}
+
+/// @brief Enter Large Display Mode for the given page
+/// Centralizes Mode entry logic (eliminates 2+ duplicate blocks in gamepad/encoder handlers)
+/// Validates sensor availability before entry
+void enterLargeDisplayMode(uint8_t pageIndex) {
+  if (!isSensorAvailable(pageIndex)) return;
+  
+  uint8_t valueCount = getPageValueCount(pageIndex);
+  if (valueCount > 0) {
+    largeDisplayMode.active = true;
+    largeDisplayMode.currentPage = pageIndex;
+    largeDisplayMode.valueIndex = 0;
+    largeDisplayMode.needsFullRedraw = true;
+    largeDisplayMode.lastDisplayedValue = "";
+  }
+}
+
+/// @brief Exit Large Display Mode and redraw the current page
+/// Centralizes Mode exit logic to prevent display artifacts
+inline void exitLargeDisplayMode() {
+  largeDisplayMode.active = false;
+  largeDisplayMode.valueIndex = 0;
+  drawCurrentPage(true);  // Force full redraw
+}
 
 void writeText(int x, int y, const String &text, uint16_t color, uint8_t font = 2)
 {
@@ -884,13 +1035,9 @@ bool readScd30(Scd30Values &values)
 {
   uint32_t startTime = micros();
   
-  // FEATURE-SPEC-010: Use SparkFun SCD30 Library methods instead of raw I2C reads
-  // BUGFIX: Always read values (don't check dataAvailable first) to prevent flickering
-  // The library caches values internally, so reading when no new data is available
-  // just returns the last measurement, preventing display flicker
-  values.co2 = scd30Sensor.getCO2();
-  values.temp = scd30Sensor.getTemperature();
-  values.humidity = scd30Sensor.getHumidity();
+  // PHASE 3g: Delegate to sensor class wrapper
+  scd30Sensor_class.update();
+  values = scd30Sensor_class.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -950,11 +1097,9 @@ bool readVeml6070(Veml6070Values &values)
 {
   uint32_t startTime = micros();
   
-  // FEATURE-SPEC-010: Use Adafruit VEML6070 Library for robust I2C communication
-  uint16_t raw = veml6070Sensor.readUV();
-  values.raw = raw;
-  values.lsb = raw & 0xFF;
-  values.msb = (raw >> 8) & 0xFF;
+  // PHASE 3f: Delegate to sensor class wrapper
+  veml6070Sensor_class.update();
+  values = veml6070Sensor_class.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -970,36 +1115,11 @@ void readBme280(Bme280Values &values)
   
   uint32_t startTime = micros();
   
-  // Read sensor values
-  float temperature = bme280.readTemperature();
-  float humidity = bme280.readHumidity();
-  float pressure = bme280.readPressure() / 100.0f;  // Pa → hPa
-  float altitude = bme280.readAltitude(1013.25f);   // m, using 1013.25 hPa reference
+  // PHASE 3: Delegate to sensor class
+  bme280Sensor.update();
   
-  // Plausibility check: Verify values in valid ranges
-  // Valid ranges: T[-40,85]°C, RH[0,100]%, P[300,1100]hPa
-  if (temperature < -40 || temperature > 85 ||
-      humidity < 0 || humidity > 100 ||
-      pressure < 300 || pressure > 1100) {
-    /* // Serial.printf("ERROR: BME280 read returned invalid values: T=%.1f, RH=%.1f, P=%.1f\n",
-                  temperature, humidity, pressure); */
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Calculate dew point using Alduchov & Eskridge formula (±0.35°C accuracy)
-  // Valid for 0-50°C, 1-100%RH
-  const float a = 17.62f;
-  const float b = 243.12f;
-  float alpha = ((a * temperature) / (b + temperature)) + log(humidity / 100.0f);
-  float dewPoint = (b * alpha) / (a - alpha);
-  
-  // Update cache (only on successful read)
-  values.temperature = temperature;
-  values.humidity = humidity;
-  values.pressure = pressure;
-  values.altitude = altitude;
-  values.dewPoint = dewPoint;
+  // Copy from sensor accessor to global struct
+  values = bme280Sensor.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1010,31 +1130,11 @@ void readTsl2591(Tsl2591Values &values)
 {
   if (!available.tsl2591) return;
   
-  // Read sensor values using Adafruit_TSL2591 API
-  uint32_t fullLum = tsl2591.getFullLuminosity();
-  uint32_t fullSpectrum = fullLum & 0xFFFF;        // Lower 16 bits (CHAN0)
-  uint32_t infrared = fullLum >> 16;               // Upper 16 bits (CHAN1)
-  uint32_t visible = (fullSpectrum > infrared) ? (fullSpectrum - infrared) : 0;
-  float lux = tsl2591.calculateLux(fullSpectrum, infrared);
-  uint16_t gain = tsl2591.getGain();
-  uint16_t integrationTime = tsl2591.getTiming();
+  // PHASE 3: Delegate to sensor class
+  tsl2591Sensor.update();
   
-  // Error check: If both channels read as zero, likely I2C error
-  if (fullSpectrum == 0 && infrared == 0) {
-    // Serial.println("ERROR: TSL2591 read returned zero values");
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Update cache (only on successful read)
-  values.fullSpectrum = fullSpectrum;
-  values.infrared = infrared;
-  values.visible = visible;
-  values.lux = lux;
-  values.gain = gain;
-  values.integrationTime = integrationTime;
-  
-  // NOTE: Timing measurement removed - this sync function is no longer used (replaced by async startTsl2591Measurement/checkTsl2591Async)
+  // Copy from sensor accessor to global struct
+  values = tsl2591Sensor.getValues();
 }
 
 void readSi1145(Si1145Values &values)
@@ -1043,26 +1143,11 @@ void readSi1145(Si1145Values &values)
   
   uint32_t startTime = micros();
   
-  // Read sensor values using Adafruit_SI1145 API
-  uint16_t visible = si1145.readVisible();
-  uint16_t infrared = si1145.readIR();
-  uint16_t uv = si1145.readUV();  // Raw UV from register 0x2C
+  // PHASE 3: Delegate to sensor class
+  si1145Sensor.update();
   
-  // Error check: If all three values are 0, likely I2C error
-  if (visible == 0 && infrared == 0 && uv == 0) {
-    // Serial.println("ERROR: SI1145 read returned all zeros");
-    // Do NOT update cache; last known values persist
-    return;
-  }
-  
-  // Calculate UV index (standard Adafruit formula: raw / 100.0)
-  float uvIndex = uv / 100.0f;
-  
-  // Update cache (only on successful read)
-  values.visible = visible;
-  values.infrared = infrared;
-  values.uv = uv;
-  values.uvIndex = uvIndex;
+  // Copy from sensor accessor to global struct
+  values = si1145Sensor.getValues();
   
   uint32_t endTime = micros();
   uint32_t duration = endTime - startTime;
@@ -1100,6 +1185,18 @@ bool ds2484ResetBus()
 {
   // DS2484 reset bus via Adafruit library
   return ds2484Master.reset();
+}
+
+// PHASE 3h: Sync DS2484 wrapper values to global cache for display layer
+void syncDs2484Values()
+{
+  if (!available.ds2484) return;
+  
+  // Get current values from sensor wrapper (updated via registry)
+  const Ds2484Values &wrapperValues = ds2484Sensor.getValues();
+  
+  // Sync to global cache for backward compatibility
+  ds2484Values = wrapperValues;
 }
 
 void performDs2484Scan()
@@ -1333,6 +1430,10 @@ void readEncoderAt50Hz()
 
 void readSensors()
 {
+  // PHASE-4: Update all sensors via registry
+  sensorRegistry.updateAll();
+  
+  // Legacy sensor reads (kept for backwards compatibility during transition)
   if (available.bme280) readBme280(bme280Values);       // New: BME280 caching (FEATURE-SPEC-005)
   // NOTE: TSL2591 is async - starts measurement in rotatedReadSensor(), checked later
   // if (available.tsl2591) readTsl2591(tsl2591Values);  // Removed: async via startTsl2591Measurement()
@@ -1341,10 +1442,9 @@ void readSensors()
   if (available.veml6070) readVeml6070(veml6070Values);
   // FEATURE-SPEC-010: Use SparkFun SCD30 dataAvailable() instead of scd30Ready()
   if (available.scd30 && scd30Sensor.dataAvailable()) readScd30(scd30Values);
+  // PHASE 3h: Sync DS2484 wrapper values to global cache
   if (available.ds2484) {
-    performDs2484Scan();      // 60-second bus scan
-    // NOTE: DS18B20 is async - conversion starts in rotatedReadSensor(), results checked later
-    // readDs2484Temperatures(); // Removed: async via startDs18b20Conversion()
+    syncDs2484Values();       // Sync wrapper updates to global cache for display layer
   }
 }
 
@@ -1711,12 +1811,12 @@ void rotatedReadSensor(uint32_t slot)
 bool valuesChanged()
 {
   // INA219 changed?
-  if (ina219Values.load != lastIna219Values.load ||
-      ina219Values.bus != lastIna219Values.bus ||
-      ina219Values.current != lastIna219Values.current ||
-      ina219Values.power != lastIna219Values.power ||
-      ina219Values.shunt != lastIna219Values.shunt ||
-      ina219Values.chargeMah != lastIna219Values.chargeMah) {
+  if (ina219Sensor.getValues().load != lastIna219Values.load ||
+      ina219Sensor.getValues().bus != lastIna219Values.bus ||
+      ina219Sensor.getValues().current != lastIna219Values.current ||
+      ina219Sensor.getValues().power != lastIna219Values.power ||
+      ina219Sensor.getValues().shunt != lastIna219Values.shunt ||
+      ina219Sensor.getValues().chargeMah != lastIna219Values.chargeMah) {
     return true;
   }
   
@@ -1835,7 +1935,7 @@ bool largeDisplayValueChanged()
 /// @brief Update cached values snapshot after display redraw (for next comparison)
 void updateCachedValues()
 {
-  lastIna219Values = ina219Values;
+  lastIna219Values = ina219Sensor.getValues();
   lastBme280Values = bme280Values;
   lastTsl2591Values = tsl2591Values;
   lastSi1145Values = si1145Values;
@@ -2043,40 +2143,12 @@ void readIna219At50Hz()
 {
   if (!available.ina219) return;
 
-  const uint32_t nowUs = micros();
-  if (ina219Values.initialized) {
-    const uint32_t elapsedUs = nowUs - ina219Values.lastSampleUs;
-    if (elapsedUs < 200000) {
-      ina219Values.chargeMah += ina219Values.current * (float)elapsedUs / 3600000000.0f;
-    }
-  } else {
-    // Store start time when first initialized
-    ina219Values.startTimeUs = nowUs;
-    ina219Values.initialized = true;
-  }
-
-  ina219Values.lastSampleUs = nowUs;
-  uint32_t readStartUs = micros();
-  ina219Values.shunt = -ina219.getShuntVoltage_mV();
-  ina219Values.bus = ina219.getBusVoltage_V();
-  ina219Values.current = -ina219.getCurrent_mA();
-  ina219Values.power = ina219.getPower_mW();
-  uint32_t readEndUs = micros();
-  uint32_t readDuration = readEndUs - readStartUs;
-  ina219Values.load = ina219Values.bus - ina219Values.shunt / 1000.0f;
+  // PHASE 3a: Use ina219Sensor for hardware reads (single I2C instance)
+  // Then copy to global ina219Values for backward compatibility
+  ina219Sensor.update();
   
-  // Aggregate stats for 1-second reporting
-  #if ENABLE_STATS_REPORTING
-  ina219Stats.readCount++;
-  ina219Stats.totalTime += readDuration;
-  if (ina219Stats.readCount == 1) {
-    ina219Stats.minTime = readDuration;
-    ina219Stats.maxTime = readDuration;
-  } else {
-    if (readDuration < ina219Stats.minTime) ina219Stats.minTime = readDuration;
-    if (readDuration > ina219Stats.maxTime) ina219Stats.maxTime = readDuration;
-  }
-  #endif
+  // Populate global ina219Values from sensor
+  ina219Values = ina219Sensor.getValues();
 }
 
 // Format runtime as HH:MM:SS
@@ -2316,17 +2388,10 @@ void drawCurrentPage(bool pageChanged)
       drawHeader(titles[currentPage]);
     }
   }
-  switch (currentPage) {
-    case 0: pageBme280(); break;
-    case 1: pageGamepad(); break;
-    case 2: pageIna219(); break;
-    case 3: pageEncoder(); break;
-    case 4: pageScd30(pageChanged); break;
-    case 5: pageSi1145(); break;
-    case 6: pageTsl2591(); break;
-    case 7: pageVeml6070(); break;
-    case 8: pageVeml6075(); break;
-    case 9: pageDs2484(); break;
+  
+  // PHASE 5: Data-driven page dispatch using PageHandler array (replaces switch statement)
+  if (currentPage < PAGE_COUNT) {
+    pageHandlers[currentPage].renderPage(pageChanged);
   }
 }
 
@@ -2525,6 +2590,9 @@ void setup()
   delay(100);  // Give serial time to init
   Serial.println("\n\n[SETUP] ========== BOOT START ==========");
   
+  // Initialize diagnostics FIRST
+  initDiagnostics();
+  
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
   
@@ -2546,6 +2614,26 @@ void setup()
   
   Serial.println("[SETUP] Initializing sensor caches...");
   initializeSensorCaches();
+  
+  // PHASE-4: Initialize the Sensor Registry with all 8 working sensors
+  Serial.println("[SETUP] Initializing Sensor Registry...");
+  sensorRegistry.registerSensor(0, &ina219Sensor, "INA219", 0xF800);  // Red
+  // sensorRegistry.registerSensor(1, &gamepadSensor, "Gamepad", 0xF81F);  // DISABLED - Magenta
+  // sensorRegistry.registerSensor(2, &encoderSensor, "Encoder", 0xFC00);  // DISABLED - Orange
+  sensorRegistry.registerSensor(3, &bme280Sensor, "BME280", 0x07E0);  // Green
+  sensorRegistry.registerSensor(4, &si1145Sensor, "SI1145", 0xFFE0);  // Yellow
+  sensorRegistry.registerSensor(5, &tsl2591Sensor, "TSL2591", 0x07FF);  // Cyan
+  sensorRegistry.registerSensor(6, &veml6075Sensor_new, "VEML6075", 0xF81F);  // Magenta
+  sensorRegistry.registerSensor(7, &veml6070Sensor_class, "VEML6070", 0xFC00);  // Orange
+  sensorRegistry.registerSensor(8, &scd30Sensor_class, "SCD30", 0x0810);  // Blue
+  sensorRegistry.registerSensor(9, &ds2484Sensor, "DS2484", 0xFBE0);  // Light Gray
+  
+  // PHASE-4: Set device pointers for sensors that use global device instances
+  veml6070Sensor_class.setDevice(&veml6070Sensor);  // Pass global device instance to wrapper
+  
+  // Initialize all sensors
+  Serial.println("[SETUP] Initializing all sensors via registry...");
+  sensorRegistry.initializeAll();
   
   Serial.println("[SETUP] Performing initial sensor reads...");
   readSensors();
@@ -2579,6 +2667,9 @@ void loop()
   static uint32_t nextInaSampleUs = 0;
   uint32_t now = millis();
 
+  // Monitor heap every 10 seconds
+  monitorHeap(now);
+
   // PRIORITY 1: Read gamepad input FIRST (no drawing, just read state)
   if (available.gamepad && (int32_t)(now - nextGamepadMs) >= 0) {
     const uint32_t buttonsBefore = gamepadValues.buttons;
@@ -2596,30 +2687,7 @@ void loop()
     // Button B: Enter mode or cycle forward
     if (bPressed && !lastB) {
       if (!largeDisplayMode.active) {
-        // Check if sensor on this page is available
-        bool sensorAvailable = false;
-        switch (currentPage) {
-          case 0: sensorAvailable = available.bme280; break;
-          case 1: sensorAvailable = available.gamepad; break;
-          case 2: sensorAvailable = available.ina219; break;
-          case 3: sensorAvailable = available.encoder; break;
-          case 4: sensorAvailable = available.scd30; break;
-          case 5: sensorAvailable = available.si1145; break;
-          case 6: sensorAvailable = available.tsl2591; break;
-          case 7: sensorAvailable = available.veml6070; break;
-          case 8: sensorAvailable = available.veml6075; break;
-          case 9: sensorAvailable = available.ds2484; break;
-          default: sensorAvailable = false; break;
-        }
-        uint8_t valueCount = getPageValueCount(currentPage);
-        if (valueCount > 0 && sensorAvailable) {
-          // Enter large display mode
-          largeDisplayMode.active = true;
-          largeDisplayMode.currentPage = currentPage;
-          largeDisplayMode.valueIndex = 0;
-          largeDisplayMode.needsFullRedraw = true;
-          largeDisplayMode.lastDisplayedValue = "";
-        }
+        enterLargeDisplayMode(currentPage);
       } else if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
         // Cycle forward in large display mode
         uint8_t valueCount = getPageValueCount(currentPage);
@@ -2646,11 +2714,8 @@ void loop()
     // Button Y: Exit mode or navigate to previous page
     if (yPressed && !lastY) {
       if (largeDisplayMode.active && largeDisplayMode.currentPage == currentPage) {
-        // Exit large display mode - force full page redraw to prevent artifacts
-        largeDisplayMode.active = false;
-        largeDisplayMode.valueIndex = 0;
-        // Trigger full redraw via drawCurrentPage with pageChanged=true
-        drawCurrentPage(true);
+        // Exit large display mode
+        exitLargeDisplayMode();
       } else {
         // Normal page navigation
         currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
@@ -2677,8 +2742,6 @@ void loop()
     // We need to track the last delta-processed position separately to avoid reprocessing
     static int32_t lastEncoderNavigationPosition = 0;
     int32_t currentNavigationDelta = encoderValues.position - lastEncoderNavigationPosition;
-    
-    const int ENCODER_DELTA_THRESHOLD = 1;  // Minimum steps to trigger navigation
 
     // Standard Mode: Page Navigation via Encoder Rotation
     if (!largeDisplayMode.active) {
@@ -2716,34 +2779,10 @@ void loop()
       // Rising edge: button just pressed
       if (!largeDisplayMode.active) {
         // Enter Large Display Mode for current page
-        bool sensorAvailable = false;
-        switch (currentPage) {
-          case 0: sensorAvailable = available.bme280; break;
-          case 1: sensorAvailable = available.gamepad; break;
-          case 2: sensorAvailable = available.ina219; break;
-          case 3: sensorAvailable = available.encoder; break;
-          case 4: sensorAvailable = available.scd30; break;
-          case 5: sensorAvailable = available.si1145; break;
-          case 6: sensorAvailable = available.tsl2591; break;
-          case 7: sensorAvailable = available.veml6070; break;
-          case 8: sensorAvailable = available.veml6075; break;
-          case 9: sensorAvailable = available.ds2484; break;
-          default: sensorAvailable = false; break;
-        }
-        uint8_t valueCount = getPageValueCount(currentPage);
-        if (valueCount > 0 && sensorAvailable) {
-          largeDisplayMode.active = true;
-          largeDisplayMode.currentPage = currentPage;
-          largeDisplayMode.valueIndex = 0;
-          largeDisplayMode.needsFullRedraw = true;
-          largeDisplayMode.lastDisplayedValue = "";
-        }
+        enterLargeDisplayMode(currentPage);
       } else if (largeDisplayMode.currentPage == currentPage) {
         // Exit Large Display Mode - return to standard view
-        largeDisplayMode.active = false;
-        largeDisplayMode.valueIndex = 0;
-        // Trigger full redraw via drawCurrentPage to prevent artifacts
-        drawCurrentPage(true);
+        exitLargeDisplayMode();
       }
     }
     encoderLastPressed = encoderPressed;
